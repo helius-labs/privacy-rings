@@ -24,7 +24,7 @@ use spr_tree::{INITIALIZED, PAUSED};
 
 use shielded_pool_tests::support::{
     fixtures::Pool,
-    mollusk::{pause_tree_fixture, protocol_config_fixture, setup_mollusk},
+    mollusk::{pause_tree_fixture, protocol_config_fixture, setup_mollusk_like},
     runtime::{program_test, tree_account_size},
 };
 
@@ -126,7 +126,7 @@ fn tree_creation_changes_only_the_tree_account() {
         fees: default_tree_fees(),
     };
     let ix = create.allocation_step();
-    let (mollusk, program_id) = setup_mollusk();
+    let (mollusk, program_id) = setup_mollusk_like(&test);
     let accounts = snapshot_instruction_accounts(&ix, (&PROGRAM_ID_PUBKEY, program_id), |key| {
         test.svm.get_account(key)
     });

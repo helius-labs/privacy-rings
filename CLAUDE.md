@@ -230,8 +230,9 @@ prints them per shape.
 ### The localnet runtime is surfpool
 
 `just` starts surfpool, not solana-test-validator, pinned to a `-light` release
-of `Lightprotocol/surfpool` built on **litesvm 0.16 / agave 4.2.x** so it is the
-same SVM revision as the in-process tests.
+of `Lightprotocol/surfpool` built on **litesvm 0.16 / agave 4.2.x**. The
+in-process tests run **litesvm 0.18 / agave 4.3.x**, so the two SVM revisions
+differ until a `-light` release on litesvm 0.18 is pinned here.
 
 **litesvm 0.16 is a hard floor, not a preference.** litesvm 0.14 and 0.15
 *accept* a v1 transaction and then execute it on the legacy per-instruction

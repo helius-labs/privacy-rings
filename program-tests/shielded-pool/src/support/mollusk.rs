@@ -35,6 +35,15 @@ pub fn setup_mollusk() -> (Mollusk, Pubkey) {
     )
 }
 
+/// A Mollusk under the rent of the LiteSVM state its accounts are snapshotted
+/// from. The two harnesses default to different `lamports_per_byte`, and the
+/// program reads the rent sysvar to size a tree's reserve.
+pub fn setup_mollusk_like(test: &SprProgramTest) -> (Mollusk, Pubkey) {
+    let (mut mollusk, program_id) = setup_mollusk();
+    mollusk.sysvars.rent = test.svm.get_sysvar();
+    (mollusk, program_id)
+}
+
 /// The snapshot or result account stored under `key`.
 pub fn account_named<'a>(
     accounts: &'a [(Pubkey, MolluskAccount)],
@@ -85,7 +94,7 @@ pub fn deposit_fixture() -> (Mollusk, Instruction, Vec<(Pubkey, MolluskAccount)>
     }
     .instruction()
     .expect("build deposit instruction");
-    let (mollusk, program_id) = setup_mollusk();
+    let (mollusk, program_id) = setup_mollusk_like(&test);
     let accounts = snapshot(&test, &ix, program_id);
     (mollusk, mollusk_instruction(&ix), accounts)
 }
@@ -114,7 +123,7 @@ pub fn protocol_config_fixture() -> (Mollusk, Instruction, Vec<(Pubkey, MolluskA
         fee_authority: authority_address,
     }
     .instruction();
-    let (mollusk, program_id) = setup_mollusk();
+    let (mollusk, program_id) = setup_mollusk_like(&test);
     let accounts = snapshot(&test, &ix, program_id);
     (mollusk, mollusk_instruction(&ix), accounts)
 }
@@ -137,7 +146,7 @@ pub fn set_tree_fees_fixture() -> (Mollusk, Instruction, Vec<(Pubkey, MolluskAcc
         fees: SET_TREE_FEES_FIXTURE_SCHEDULE,
     }
     .instruction();
-    let (mollusk, program_id) = setup_mollusk();
+    let (mollusk, program_id) = setup_mollusk_like(&test);
     let accounts = snapshot(&test, &ix, program_id);
     (mollusk, mollusk_instruction(&ix), accounts)
 }
@@ -161,7 +170,7 @@ pub fn claim_tree_lamports_fixture() -> (Mollusk, Instruction, Vec<(Pubkey, Moll
         recipient,
     }
     .instruction();
-    let (mollusk, program_id) = setup_mollusk();
+    let (mollusk, program_id) = setup_mollusk_like(&test);
     let accounts = snapshot(&test, &ix, program_id);
     (mollusk, mollusk_instruction(&ix), accounts)
 }
@@ -178,7 +187,7 @@ pub fn pause_tree_fixture() -> (Mollusk, Instruction, Vec<(Pubkey, MolluskAccoun
         paused: true,
     }
     .instruction();
-    let (mollusk, program_id) = setup_mollusk();
+    let (mollusk, program_id) = setup_mollusk_like(&test);
     let accounts = snapshot(&test, &ix, program_id);
     (mollusk, mollusk_instruction(&ix), accounts)
 }
