@@ -334,7 +334,10 @@ fn mollusk_claim_tree_lamports_moves_only_lamports() {
         tree_after, &expected_tree,
         "claim must move only the surplus"
     );
-    assert_eq!(tree_after.lamports, reserve(&mollusk.sysvars.rent, tree_after));
+    assert_eq!(
+        tree_after.lamports,
+        reserve(&mollusk.sysvars.rent, tree_after)
+    );
 
     let mut expected_recipient = account_named(&accounts, &recipient).clone();
     expected_recipient.lamports += CLAIM_TREE_LAMPORTS_FIXTURE_SURPLUS;
