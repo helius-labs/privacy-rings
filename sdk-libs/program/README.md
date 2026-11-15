@@ -15,7 +15,7 @@ The SDK for Solana programs built on the shielded pool (SPP). It has three parts
   one of its PDAs owns, and creates, updates and reads them through a `transact` CPI.
 - **ZK programs.** A program with its own Groth16 circuit, whose proof shares `private_tx_hash`
   with the SPP transaction it CPIs. The circuit is ordinary Rust compiled by
-  [Xark](https://github.com/blueshift-gg/xark/tree/v0.3.0)
+  [Xark](https://github.com/blueshift-gg/xark/tree/v0.3.1)
   0.3, the release the root `Cargo.toml` pins. The same `execute` method runs twice:
   - natively on the client, where it builds the SPP transaction's inputs and outputs;
   - compiled by Xark to R1CS over BN254, where the proof checks it against the public hash.
@@ -227,7 +227,7 @@ impl Escrow {
 
 `execute` is restricted to the Rust subset Xark compiles: loop bounds and array sizes known
 when the circuit is built, branches on private values evaluated on both arms. Xark's
-[`docs/subset.md`](https://github.com/blueshift-gg/xark/blob/v0.3.0/docs/subset.md)
+[`docs/subset.md`](https://github.com/blueshift-gg/xark/blob/v0.3.1/docs/subset.md)
 is the reference.
 
 ### 5. Build
@@ -435,7 +435,7 @@ A `CircuitError` that `execute` returns with `?` reaches the client as `ClientEr
 In the circuit build the generated entry calls `execute().expect(..)`, so such an error is a
 panic, and Xark treats a branch that can only panic as one the inputs must not take. Write
 conditions on input values with `require` and `require_eq`; [Xark's
-`LIMITATIONS.md`](https://github.com/ananas-block/xark/blob/13c3f0c28eb202bc34f075ee5414a01c3cac51b8/LIMITATIONS.md)
+`LIMITATIONS.md`](https://github.com/ananas-block/xark/blob/a2021cde1f612657804b49ef8dfda40b5972b83d/LIMITATIONS.md)
 explains why its own requirements are not recoverable.
 
 ## Client and WASM integration
@@ -480,7 +480,7 @@ Web Worker and needs cross-origin isolation: pass the application module's glue 
 `createPool({ threads, wasm })` from `xark/pool.mjs`, so each pool worker loads its own
 instance of the application module instead of Xark's stock one.
 
-Xark 0.3.0's runtime draws each proof's blinding randomness from WebCrypto and does not check
+Xark 0.3.1's runtime draws each proof's blinding randomness from WebCrypto and does not check
 it. Never pass its `seed` option: anyone who knows a proof's randomness can recover the
 private inputs from the proof. Prove only where `crypto.getRandomValues` is the platform's
 own; the runtime does not detect one that returns zeros. Its proving functions also take their
@@ -538,7 +538,7 @@ without it fresh randomness; in both cases the setup metadata says `single-party
 generated `<program>.vk.rs` is an insecure test setup that contains a `compile_error!` unless
 the crate enables its `insecure-test-setup` feature. A deployment needs keys from Xark's phase-2
 setup or multi-party ceremony
-([`docs/trusted-setup.md`](https://github.com/blueshift-gg/xark/blob/v0.3.0/docs/trusted-setup.md)),
+([`docs/trusted-setup.md`](https://github.com/blueshift-gg/xark/blob/v0.3.1/docs/trusted-setup.md)),
 whose metadata the CLI accepts as production.
 
 - The CLI never replaces production keys. `--test` against production keys fails, and an

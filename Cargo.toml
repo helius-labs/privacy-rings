@@ -77,12 +77,12 @@ tools-version = "v1.54"
 
 [workspace.dependencies]
 # Released Xark for the circuits, the SDK crates and the WASM runtime.
-xark = "0.3.0"
-xark-groth16 = "0.3.0"
-xark-wasm = "0.3.0"
+xark = "0.3.1"
+xark-groth16 = "0.3.1"
+xark-wasm = "0.3.1"
 # The CLI embeds Xark's build, setup and TypeScript client generation, which
-# only this fork exposes as a library: Xark v0.3.0 plus that one commit.
-xark-cli = { git = "https://github.com/ananas-block/xark", rev = "13c3f0c28eb202bc34f075ee5414a01c3cac51b8" }
+# only this fork exposes as a library: Xark v0.3.1 plus that one commit.
+xark-cli = { git = "https://github.com/ananas-block/xark", rev = "a2021cde1f612657804b49ef8dfda40b5972b83d" }
 form_urlencoded = "1.2.2"
 # Solana platform-tools Cargo 1.84 cannot build edition2024 crates pulled by
 # newer time-core releases.
@@ -218,7 +218,7 @@ console = "0.16"
 coset = "0.4.2"
 dashmap = "6.1.0"
 # At least 0.6.5 for CVE-2026-22696, since collateral arrives from the prover.
-dcap-qvl = { version = "0.6.5", default-features = false, features = ["std", "rustcrypto", "default-x509"] }
+dcap-qvl = { version = "0.6.6", default-features = false, features = ["std", "rustcrypto", "default-x509"] }
 darling = "0.21"
 dialoguer = { version = "0.12", default-features = false }
 env_logger = "0.11"
