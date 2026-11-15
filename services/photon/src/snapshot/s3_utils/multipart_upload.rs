@@ -22,8 +22,7 @@ async fn read_chunk<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>, S3E
     Ok(chunk)
 }
 
-// Slightly modified implementation of the multipart upload to avoid loading all chunks into
-// memory and limiting concurrency.
+// Uploads a stream with one part buffered at a time.
 pub async fn put_object_stream_custom<R: AsyncRead + Unpin>(
     bucket: &Bucket,
     reader: &mut R,
@@ -44,122 +43,63 @@ async fn put_object_stream_with_content_type_and_retries<R: AsyncRead + Unpin>(
     s3_path: &str,
     content_type: &str,
 ) -> Result<PutStreamResponse, S3Error> {
-    // If the file is smaller than MULTIPART_CHUNK_SIZE, just do a regular upload.
-    // Otherwise perform a multi-part upload.
     let first_chunk = read_chunk(reader).await?;
     if first_chunk.len() < MULTIPART_CHUNK_SIZE {
         let total_size = first_chunk.len();
-        let response_data = bucket
-            .put_object_with_content_type(s3_path, first_chunk.as_slice(), content_type)
+        let response = bucket
+            .put_object_with_content_type(s3_path, &first_chunk, content_type)
             .await?;
-        if response_data.status_code() >= 300 {
-            return Err(error_from_response_data(response_data)?);
+        if !(200..300).contains(&response.status_code()) {
+            return Err(error_from_response_data(response)?);
         }
-        return Ok(PutStreamResponse::new(
-            response_data.status_code(),
-            total_size,
-        ));
+        return Ok(PutStreamResponse::new(response.status_code(), total_size));
     }
 
-    let msg = bucket
+    let upload = bucket
         .initiate_multipart_upload(s3_path, content_type)
         .await?;
-    let path = msg.key;
-    let upload_id = &msg.upload_id;
-
-    let mut part_number: u32 = 1;
-    let mut etags = Vec::new();
-
-    // Collect request handles
-    let mut total_size = first_chunk.len();
-
-    // Upload the first chunk
-    let response = make_multipart_request(
-        bucket,
-        &path,
-        first_chunk,
-        part_number,
-        upload_id,
-        content_type,
-    )
-    .await?;
-    if !(200..300).contains(&response.status_code()) {
-        // if chunk upload failed - abort the upload
-        bucket.abort_upload(&path, upload_id).await?;
-        return Err(error_from_response_data(response)?);
-    }
-    let etag = response.as_str()?;
-    etags.push(etag.to_string());
-
-    loop {
-        let mut handles = vec![];
-        let mut done = false;
-
-        for _ in 0..10 {
-            let chunk = read_chunk(reader).await?;
+    let result = async {
+        let mut chunk = first_chunk;
+        let mut total_size = 0;
+        let mut parts = Vec::new();
+        loop {
             total_size += chunk.len();
-
-            done = chunk.len() < MULTIPART_CHUNK_SIZE;
-
-            // Start chunk upload
-            part_number += 1;
-            handles.push(make_multipart_request(
+            let part_number = u32::try_from(parts.len() + 1).unwrap_or(u32::MAX);
+            let response = make_multipart_request(
                 bucket,
-                &path,
+                &upload.key,
                 chunk,
                 part_number,
-                upload_id,
+                &upload.upload_id,
                 content_type,
-            ));
-
-            if done {
+            )
+            .await?;
+            if !(200..300).contains(&response.status_code()) {
+                return Err(error_from_response_data(response)?);
+            }
+            parts.push(Part {
+                etag: response.as_str()?.to_string(),
+                part_number,
+            });
+            // Finish the upload before reading another part, including the HTTP client's body copies.
+            chunk = read_chunk(reader).await?;
+            if chunk.is_empty() {
                 break;
             }
         }
-
-        // Wait for all chunks to finish (or fail)
-        let responses = futures::future::join_all(handles).await;
-
-        for response in responses {
-            let response_data = response?;
-            if !(200..300).contains(&response_data.status_code()) {
-                // if chunk upload failed - abort the upload
-                match bucket.abort_upload(&path, upload_id).await {
-                    Ok(_) => {
-                        return Err(error_from_response_data(response_data)?);
-                    }
-                    Err(error) => {
-                        return Err(error);
-                    }
-                }
-            }
-
-            let etag = response_data.as_str()?;
-            etags.push(etag.to_string());
+        let response = bucket
+            .complete_multipart_upload(&upload.key, &upload.upload_id, parts)
+            .await?;
+        if !(200..300).contains(&response.status_code()) {
+            return Err(error_from_response_data(response)?);
         }
-
-        if done {
-            break;
-        }
+        Ok(PutStreamResponse::new(response.status_code(), total_size))
     }
-
-    // Finish the upload
-    let inner_data = etags
-        .into_iter()
-        .enumerate()
-        .map(|(i, x)| Part {
-            etag: x,
-            part_number: u32::try_from(i.saturating_add(1)).unwrap_or(u32::MAX),
-        })
-        .collect::<Vec<Part>>();
-    let response_data = bucket
-        .complete_multipart_upload(&path, &msg.upload_id, inner_data)
-        .await?;
-
-    Ok(PutStreamResponse::new(
-        response_data.status_code(),
-        total_size,
-    ))
+    .await;
+    if result.is_err() {
+        let _ = bucket.abort_upload(&upload.key, &upload.upload_id).await;
+    }
+    result
 }
 
 async fn make_multipart_request(
@@ -186,4 +126,239 @@ fn error_from_response_data(response_data: ResponseData) -> Result<S3Error, S3Er
         response_data.status_code(),
         utf8_content,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use s3::{creds::Credentials, Region};
+    use std::{
+        io::{BufRead, BufReader, Read, Write},
+        net::TcpListener,
+        pin::Pin,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+        task::{Context, Poll},
+        thread::JoinHandle,
+        time::{Duration, Instant},
+    };
+    use tokio::io::ReadBuf;
+
+    struct BudgetedReader {
+        remaining: usize,
+        read: usize,
+        acknowledged: Arc<AtomicUsize>,
+        peak: usize,
+        fail_after: Option<usize>,
+    }
+
+    impl AsyncRead for BudgetedReader {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            buffer: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            if self.remaining == 0 || buffer.remaining() == 0 {
+                return Poll::Ready(Ok(()));
+            }
+            if self.fail_after.is_some_and(|limit| self.read >= limit) {
+                return Poll::Ready(Err(std::io::Error::other("source failed")));
+            }
+            let pending = self.read - self.acknowledged.load(Ordering::SeqCst);
+            if pending >= MULTIPART_CHUNK_SIZE {
+                return Poll::Ready(Err(std::io::Error::other(
+                    "read ahead of the unacknowledged part",
+                )));
+            }
+            let mut count = self
+                .remaining
+                .min(buffer.remaining())
+                .min(64 * 1024)
+                .min(MULTIPART_CHUNK_SIZE - pending);
+            if let Some(limit) = self.fail_after {
+                count = count.min(limit - self.read);
+            }
+            buffer.initialize_unfilled_to(count).fill(0x5a);
+            buffer.advance(count);
+            self.remaining -= count;
+            self.read += count;
+            self.peak = self.peak.max(pending + count);
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct Uploads {
+        parts: Vec<usize>,
+        completed: bool,
+        aborted: bool,
+    }
+
+    fn server(size: usize, fail_completion: bool) -> (Bucket, BudgetedReader, JoinHandle<Uploads>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let acknowledged = Arc::new(AtomicUsize::new(0));
+        let uploaded = acknowledged.clone();
+        let handle = std::thread::spawn(move || {
+            let mut uploads = Uploads::default();
+            loop {
+                let deadline = Instant::now() + Duration::from_secs(30);
+                let (mut socket, _) = loop {
+                    match listener.accept() {
+                        Ok(connection) => break connection,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline, "expected another S3 request");
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        Err(error) => panic!("{error}"),
+                    }
+                };
+                socket.set_nonblocking(false).unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(30)))
+                    .unwrap();
+                socket
+                    .set_write_timeout(Some(Duration::from_secs(30)))
+                    .unwrap();
+                let mut reader = BufReader::new(&mut socket);
+                let mut first_line = String::new();
+                reader.read_line(&mut first_line).unwrap();
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    assert!(reader.read_line(&mut line).unwrap() > 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+                }
+                let put = first_line.starts_with("PUT ");
+                let mut body = Vec::new();
+                let mut left = length;
+                let mut buffer = [0; 64 * 1024];
+                while left > 0 {
+                    let count = reader.read(&mut buffer[..left.min(64 * 1024)]).unwrap();
+                    assert!(count > 0);
+                    if put {
+                        assert!(buffer[..count].iter().all(|byte| *byte == 0x5a));
+                    } else {
+                        body.extend_from_slice(&buffer[..count]);
+                    }
+                    left -= count;
+                }
+                let (status, answer, done) = if put {
+                    if let Some(query) = first_line.split("partNumber=").nth(1) {
+                        let part = query
+                            .split(['&', ' '])
+                            .next()
+                            .unwrap()
+                            .parse::<usize>()
+                            .unwrap();
+                        assert_eq!(part, uploads.parts.len() + 1);
+                    }
+                    uploads.parts.push(length);
+                    uploaded.fetch_add(length, Ordering::SeqCst);
+                    (200, String::new(), !first_line.contains("uploadId="))
+                } else if first_line.starts_with("DELETE ") {
+                    uploads.aborted = true;
+                    (204, String::new(), true)
+                } else if first_line.contains("uploadId=") {
+                    if fail_completion {
+                        (400, "<Error><Code>InvalidPart</Code><Message>completion failed</Message></Error>".into(), false)
+                    } else {
+                        let body = String::from_utf8(body).unwrap();
+                        for part in 1..=uploads.parts.len() {
+                            assert!(body.contains(&format!("<PartNumber>{part}</PartNumber>")));
+                        }
+                        uploads.completed = true;
+                        (200, String::new(), true)
+                    }
+                } else {
+                    (200, "<InitiateMultipartUploadResult><Bucket>bucket</Bucket><Key>snapshot</Key><UploadId>upload-1</UploadId></InitiateMultipartUploadResult>".into(), false)
+                };
+                write!(socket, "HTTP/1.1 {status} Result\r\nContent-Length: {}\r\nETag: \"part\"\r\nConnection: close\r\n\r\n{answer}", answer.len()).unwrap();
+                if done {
+                    return uploads;
+                }
+            }
+        });
+        let bucket = *Bucket::new(
+            "bucket",
+            Region::Custom {
+                region: "us-east-1".into(),
+                endpoint,
+            },
+            Credentials::new(Some("test"), Some("test"), None, None, None).unwrap(),
+        )
+        .unwrap()
+        .with_path_style();
+        (
+            bucket,
+            BudgetedReader {
+                remaining: size,
+                read: 0,
+                acknowledged,
+                peak: 0,
+                fail_after: None,
+            },
+            handle,
+        )
+    }
+
+    #[tokio::test]
+    async fn large_upload_never_reads_ahead_of_the_current_part() {
+        let size = 13 * MULTIPART_CHUNK_SIZE + 17;
+        let (bucket, mut reader, server) = server(size, false);
+        let result = put_object_stream_custom(&bucket, &mut reader, "snapshot")
+            .await
+            .unwrap();
+        let uploads = server.join().unwrap();
+        assert_eq!(result.uploaded_bytes(), size);
+        assert_eq!(uploads.parts.len(), 14);
+        assert_eq!(uploads.parts.iter().sum::<usize>(), size);
+        assert_eq!(uploads.parts.last(), Some(&17));
+        assert!(uploads.completed);
+        assert!(!uploads.aborted);
+        assert!(reader.peak <= MULTIPART_CHUNK_SIZE);
+    }
+
+    #[tokio::test]
+    async fn exact_part_boundary_does_not_upload_an_empty_part() {
+        let (bucket, mut reader, server) = server(MULTIPART_CHUNK_SIZE, false);
+        put_object_stream_custom(&bucket, &mut reader, "snapshot")
+            .await
+            .unwrap();
+        let uploads = server.join().unwrap();
+        assert_eq!(uploads.parts, vec![MULTIPART_CHUNK_SIZE]);
+        assert!(uploads.completed);
+    }
+
+    #[tokio::test]
+    async fn read_failure_aborts_the_incomplete_upload() {
+        let (bucket, mut reader, server) = server(2 * MULTIPART_CHUNK_SIZE, false);
+        reader.fail_after = Some(MULTIPART_CHUNK_SIZE + 17);
+        assert!(put_object_stream_custom(&bucket, &mut reader, "snapshot")
+            .await
+            .is_err());
+        let uploads = server.join().unwrap();
+        assert!(uploads.aborted);
+        assert!(!uploads.completed);
+        assert_eq!(uploads.parts, vec![MULTIPART_CHUNK_SIZE]);
+    }
+
+    #[tokio::test]
+    async fn rejected_completion_is_not_reported_as_success() {
+        let (bucket, mut reader, server) = server(MULTIPART_CHUNK_SIZE, true);
+        assert!(put_object_stream_custom(&bucket, &mut reader, "snapshot")
+            .await
+            .is_err());
+        let uploads = server.join().unwrap();
+        assert!(uploads.aborted);
+        assert!(!uploads.completed);
+    }
 }
