@@ -134,7 +134,8 @@ fn constructor_rejects_missing_and_dummy_first_inputs() {
 fn a_deposit_spends_only_dummies_of_its_tree() {
     let funder = keypair(1);
     let recipient = keypair(2).shielded_address().unwrap();
-    let mut tx = ConfidentialTransaction::new_deposit(7, payer(&funder)).unwrap();
+    let ring = Address::new_from_array([5; 32]);
+    let mut tx = ConfidentialTransaction::new_deposit_with_ring(7, payer(&funder), ring).unwrap();
     tx.deposit_sol(5, payer(&funder)).unwrap();
     tx.transfer_sol(&recipient, 5).unwrap();
     let key = ViewingKey::new();
@@ -145,6 +146,7 @@ fn a_deposit_spends_only_dummies_of_its_tree() {
         .all(|input| input.is_dummy() && input.tree_id == 7));
     assert_eq!(proof.output_tree_id, 7);
     assert_eq!(proof.output_utxos[0].amount, 5);
+    assert_eq!(proof.output_utxos[0].ring_program_id, Some(ring));
     proof.check_shape().unwrap();
 }
 

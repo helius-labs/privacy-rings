@@ -36,7 +36,7 @@ pub(super) fn pad_inputs(
     // 2. Select the padding tree. Random dummy commitments and nullifiers use
     //    the last declared tree, as the prover does for those slots. Compact
     //    padding takes the first tree: SPP reads its omitted tree index as 0.
-    //    A deposit has only dummies and pads in its first dummy's tree.
+    // Only dummies pad in the first dummy's tree.
     let tree_ids = if input_utxos.iter().all(SppProofInputUtxo::is_dummy) {
         input_utxos
             .first()
