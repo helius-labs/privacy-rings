@@ -186,13 +186,10 @@ impl IndexedProofRequest {
             .inputs
             .first()
             .is_some_and(|lookup| lookup.nullifier.is_none())
-            && metadata.inputs.iter().all(|input| {
-                input
-                    .is_dummy
-                    .as_deref()
-                    .and_then(|flag| decode_field(flag).ok())
-                    == Some(scalar_one())
-            });
+            && metadata
+                .inputs
+                .iter()
+                .all(|input| input.is_dummy.as_deref() == Some("0x1"));
         let mut next_tree = 0usize;
         for (index, (lookup, input)) in data.inputs.iter().zip(metadata.inputs.iter()).enumerate() {
             let slot = usize::from(lookup.tree_slot);
