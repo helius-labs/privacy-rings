@@ -1,0 +1,35 @@
+name: release-tags
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "programs/**"
+      - "tools/create-release-tags.py"
+      - "tools/test_create_release_tags.py"
+      - ".github/workflows/release-tags.yml"
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "programs/**"
+      - "tools/create-release-tags.py"
+      - "tools/test_create_release_tags.py"
+      - ".github/workflows/release-tags.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: release tags / tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest discover -s tools -p test_create_release_tags.py -v
