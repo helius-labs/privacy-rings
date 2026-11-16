@@ -1,3 +1,4 @@
+use bytemuck::Pod;
 use pinocchio::{error::ProgramError, AccountView, Address};
 use shielded_pool_program::instructions::create_spl_interface::validate::validate_token_mint_for_interface;
 use spl_token_2022_interface::{
@@ -5,9 +6,9 @@ use spl_token_2022_interface::{
         confidential_mint_burn::ConfidentialMintBurn,
         confidential_transfer::ConfidentialTransferMint,
         confidential_transfer_fee::ConfidentialTransferFeeConfig,
-        metadata_pointer::MetadataPointer, permanent_delegate::PermanentDelegate,
-        transfer_fee::TransferFeeConfig, BaseStateWithExtensionsMut, ExtensionType,
-        PodStateWithExtensionsMut,
+        metadata_pointer::MetadataPointer, mint_close_authority::MintCloseAuthority,
+        permanent_delegate::PermanentDelegate, transfer_fee::TransferFeeConfig,
+        BaseStateWithExtensionsMut, Extension, ExtensionType, PodStateWithExtensionsMut,
     },
     pod::{PodAccount, PodMint},
 };
@@ -82,10 +83,10 @@ fn token_2022_mint_with_confidential_extensions() -> AccountView {
     )
 }
 
-fn token_2022_mint_with_permanent_delegate() -> AccountView {
-    let mut data = token_2022_mint_data(&[ExtensionType::PermanentDelegate]);
+fn token_2022_mint_with<E: Extension + Pod + Default>() -> AccountView {
+    let mut data = token_2022_mint_data(&[E::TYPE]);
     let mut state = PodStateWithExtensionsMut::<PodMint>::unpack_uninitialized(&mut data).unwrap();
-    state.init_extension::<PermanentDelegate>(false).unwrap();
+    state.init_extension::<E>(false).unwrap();
     state.base.is_initialized = true.into();
     state.init_account_type().unwrap();
     get_account_view(
@@ -136,11 +137,21 @@ fn accepts_confidential_token_extensions() {
 }
 
 #[test]
+fn accepts_a_permanent_delegate_at_the_base_vault_size() {
+    let mint = token_2022_mint_with::<PermanentDelegate>();
+    let validated =
+        validate_token_mint_for_interface(&mint, &Address::from(SPL_TOKEN_2022_PROGRAM_ID))
+            .unwrap();
+
+    assert_eq!(validated.token_account_len, SPL_TOKEN_ACCOUNT_LEN);
+}
+
+#[test]
 fn rejects_unsupported_token_2022_extensions() {
-    let mint = token_2022_mint_with_permanent_delegate();
+    let mint = token_2022_mint_with::<MintCloseAuthority>();
     let error =
         match validate_token_mint_for_interface(&mint, &Address::from(SPL_TOKEN_2022_PROGRAM_ID)) {
-            Ok(_) => panic!("permanent-delegate mints must be rejected"),
+            Ok(_) => panic!("a mint with a close authority must be rejected"),
             Err(error) => error,
         };
 

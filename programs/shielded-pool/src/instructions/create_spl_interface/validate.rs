@@ -67,5 +67,7 @@ fn is_allowed_mint_extension(extension: &ExtensionType) -> bool {
             | ExtensionType::ConfidentialTransferFeeConfig
             | ExtensionType::ConfidentialMintBurn
             | ExtensionType::TransferFeeConfig
+            // The delegate can empty the vault of its own mint, no other mint shares that vault.
+            | ExtensionType::PermanentDelegate
     )
 }
