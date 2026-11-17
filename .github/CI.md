@@ -4,7 +4,7 @@ Current behavior in this branch. Links contain the exact path filters and comman
 
 Changes under `programs/` run every validation workflow.
 
-Most validation jobs skip draft PRs. TypeScript and script checks also run on drafts.
+Most validation jobs skip draft PRs. TypeScript and deployment-script checks also run on drafts.
 
 Cargo resolves Xark from crates.io (0.3.1), except `xark-cli`, which comes from
 the Xark fork commit pinned in the workspace dependencies: the Zolana CLI embeds
@@ -400,19 +400,3 @@ and verifies real proofs and rejected witness/public-input mutations.
     **Runs:**
 
     1. PR-only push policy: `bash`.
-
-18. [Release tags](workflows/release-tags.yml)
-
-    **Triggered by:** PR/main changes to:
-
-    1. `programs/`.
-    2. `tools/create-release-tags.py`.
-    3. `tools/test_create_release_tags.py`.
-    4. This workflow.
-
-    **Runs:**
-
-    1. Release tag and GitHub release integration tests:
-       `python3 -m unittest discover -s tools -p test_create_release_tags.py -v`.
-
-    Tests use temporary Git repositories and a mocked GitHub CLI.
