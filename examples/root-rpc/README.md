@@ -5,6 +5,8 @@ All public indexer, encrypted prover, private-wallet and decryption calls can us
 end-to-end encrypted. This is an opt-in experiment for the companion gateway
 feature `spr-root-rpc-prototype`, not a deployed endpoint or a published SDK API.
 
+Companion gateway draft: [monorepo #22388](https://github.com/helius-labs/monorepo/pull/22388).
+
 The feature is additive. Existing `/v1/spr/*`, `/v1/private-wallet/*` and
 `/v1/decryption/*` requests keep their current behavior. Removing the adapter
 restores existing transport without migrating wallet keys or stored state.
