@@ -172,6 +172,7 @@ pub(crate) fn process_merge_core(
                 tree_fee,
                 fee_balance: tree.fee_balance(),
                 tree_id: tree.tree_id(),
+                payer_funded: false,
             },
             derived,
         )

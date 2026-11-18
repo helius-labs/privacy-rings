@@ -4,6 +4,13 @@ pub const NULLIFIER_PDA_SEED: &[u8] = b"nullifier";
 /// Account length: the discriminator byte, then the little-endian
 /// `queue_index` and `tree_id`.
 pub const NULLIFIER_PDA_SIZE: usize = 11;
+/// Account length of a payer-funded nullifier PDA: only the
+/// [`PAYER_FUNDED_NULLIFIER_PDA`](super::discriminator::PAYER_FUNDED_NULLIFIER_PDA)
+/// discriminator. It shares the seeds of [`NULLIFIER_PDA_SEED`], so a nullifier
+/// has at most one PDA of either kind. Its nullifier is never queued, so it
+/// records no queue index, and it is never closed: it is the nullifier's only
+/// double-spend guard.
+pub const PAYER_FUNDED_NULLIFIER_PDA_SIZE: usize = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NullifierPda {
