@@ -306,9 +306,10 @@ impl<R: AsyncRpc, I: AsyncIndexer> AsyncRpc for AsyncSprClient<R, I> {
             &witnesses.spend_proofs,
             &witnesses.dummy_nullifier_proofs,
         )?;
-        let inputs = &mut assembled.prover_inputs;
-        authority.complete_inputs(&mut inputs.inputs)?;
-        let proof = self.prove_transfer(inputs).await?;
+        authority.complete_inputs(&mut assembled.prover_inputs.inputs)?;
+        let (inputs, proof) = self
+            .prove_owned(assembled.prover_inputs, crate::prover::requests::transfer)
+            .await?;
         match self.key_set() {
             Some(keys) => keys.verify(
                 &crate::prover::ExpectedProvingKey::transfer_confidential(
@@ -320,7 +321,7 @@ impl<R: AsyncRpc, I: AsyncIndexer> AsyncRpc for AsyncSprClient<R, I> {
                 &proof,
             )?,
             None => {
-                verify_confidential_transfer_inputs(inputs, assembled.public_input_hash, &proof)?
+                verify_confidential_transfer_inputs(&inputs, assembled.public_input_hash, &proof)?
             }
         }
         let circuit_id = 0;

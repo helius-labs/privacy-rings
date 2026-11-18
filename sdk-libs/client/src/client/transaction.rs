@@ -46,11 +46,15 @@ pub struct SignedPrivateTransaction {
 impl<R: AsyncRpc, I: AsyncIndexer> AsyncSprClient<R, I> {
     /// Ask the configured prover for a default-ring EdDSA transfer proof and
     /// verify it locally before returning its transaction wire encoding.
+    /// A custom backend receives a zeroizing wire request for this borrowed
+    /// API. Use the client's transaction APIs for owned native inputs.
     pub async fn prove_confidential_transfer_result(
         &self,
         result: &TransferProofResult,
     ) -> Result<ProofCompressed, ClientError> {
-        let proof = self.prove_transfer(&result.inputs).await?;
+        let proof = self
+            .prove_borrowed(crate::prover::requests::transfer(&result.inputs)?)
+            .await?;
         match self.key_set() {
             Some(keys) => keys.verify(
                 &crate::prover::ExpectedProvingKey::transfer_confidential(
@@ -94,12 +98,12 @@ impl<R: AsyncRpc, I: AsyncIndexer> AsyncSprClient<R, I> {
             .indexer
             .transaction_proofs(&proof_inputs.input_utxos, config)
             .await?;
-        let mut assembled = assemble(
+        let assembled = assemble(
             proof_inputs,
             &witnesses.spend_proofs,
             &witnesses.dummy_nullifier_proofs,
         )?;
-        let proof = self.prove_assembled(&mut assembled, authority).await?;
+        let (assembled, proof) = self.prove_assembled(assembled, authority).await?;
         Ok(assembled.with_proof(proof))
     }
 
@@ -131,13 +135,13 @@ impl<R: AsyncRpc, I: AsyncIndexer> AsyncSprClient<R, I> {
             .indexer
             .transaction_proofs(&proof_inputs.input_utxos, config)
             .await?;
-        let mut assembled = assemble_confidential_eddsa(
+        let assembled = assemble_confidential_eddsa(
             proof_inputs,
             &witnesses.spend_proofs,
             &witnesses.dummy_nullifier_proofs,
             owner,
         )?;
-        let proof = self.prove_assembled(&mut assembled, authority).await?;
+        let (assembled, proof) = self.prove_assembled(assembled, authority).await?;
         Ok(assembled.with_proof(proof))
     }
 
@@ -146,16 +150,18 @@ impl<R: AsyncRpc, I: AsyncIndexer> AsyncSprClient<R, I> {
     /// prover has any use for a witness carrying key material.
     async fn prove_assembled(
         &self,
-        assembled: &mut AssembledTransfer,
+        mut assembled: AssembledTransfer,
         authority: &dyn ProofAuthority,
-    ) -> Result<TransactProof, ClientError> {
+    ) -> Result<(AssembledTransfer, TransactProof), ClientError> {
         assembled.check_key_set(self.key_set())?;
         authority.complete_inputs(&mut assembled.prover_inputs.inputs)?;
-        let proof = {
+        let (mut assembled, proof) = {
             let _t = crate::prover::timing::Phase::start("prove_transfer", 0);
-            self.prove_request(assembled.request()?).await?
+            self.prove_owned(assembled, AssembledTransfer::request)
+                .await?
         };
-        assembled.accept_proof_with_keys(proof, self.key_set())
+        let proof = assembled.accept_proof_with_keys(proof, self.key_set())?;
+        Ok((assembled, proof))
     }
 }
 
@@ -313,21 +319,22 @@ impl<'a> Submission<'a> {
                             &witnesses.dummy_nullifier_proofs,
                         )?,
                     };
-                    let proof = match prover {
+                    let (assembled, proof) = match prover {
                         Some(prover) => {
                             assembled.check_key_set(prover.key_set())?;
                             self.authority
                                 .complete_inputs(&mut assembled.prover_inputs.inputs)?;
+                            let (mut assembled, proof) = prove_on_blocking_pool(
+                                Arc::clone(prover),
+                                assembled,
+                                AssembledTransfer::request,
+                            )
+                            .await?;
                             let proof =
-                                prove_on_blocking_pool(Arc::clone(prover), assembled.request()?)
-                                    .await?;
-                            assembled.accept_proof_with_keys(proof, prover.key_set())?
+                                assembled.accept_proof_with_keys(proof, prover.key_set())?;
+                            (assembled, proof)
                         }
-                        None => {
-                            client
-                                .prove_assembled(&mut assembled, self.authority)
-                                .await?
-                        }
+                        None => client.prove_assembled(assembled, self.authority).await?,
                     };
                     (
                         transact_trees(&assembled, &self.signed.transaction),
