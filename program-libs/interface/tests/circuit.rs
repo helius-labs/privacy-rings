@@ -199,3 +199,118 @@ fn every_supported_shape_resolves_exactly_one_key() {
         .verifying_key()
         .is_none());
 }
+
+const EDDSA_PROOF_DATA: spr_interface::verifying_keys::EddsaProofData =
+    spr_interface::verifying_keys::EddsaProofData {
+        bsb22_commitment: COMMITMENT,
+        owner_pk: [6u8; 32],
+    };
+
+/// Every selector paired with its payer-funded twin, at `(n_inputs, n_outputs)`.
+fn payer_funded_pairs(n_inputs: u8, n_outputs: u8) -> [(CircuitId, CircuitId); 9] {
+    let slots = PUBLIC_ASSET_SLOTS;
+    let tagged = AnonymousRingEddsaProofData {
+        bsb22_commitment: COMMITMENT,
+        default_owner_tag: Some([7u8; 32]),
+    };
+    [
+        (
+            CircuitId::ConfidentialSigner(n_inputs, n_outputs, slots),
+            CircuitId::ConfidentialSignerPayerFunded(n_inputs, n_outputs, slots),
+        ),
+        (
+            CircuitId::ConfidentialRingEddsa(n_inputs, n_outputs, slots),
+            CircuitId::ConfidentialRingEddsaPayerFunded(n_inputs, n_outputs, slots),
+        ),
+        (
+            CircuitId::RingAuthority(n_inputs, n_outputs, slots),
+            CircuitId::RingAuthorityPayerFunded(n_inputs, n_outputs, slots),
+        ),
+        (
+            CircuitId::AnonymousRingEddsa(n_inputs, n_outputs, slots, tagged),
+            CircuitId::AnonymousRingEddsaPayerFunded(n_inputs, n_outputs, slots, tagged),
+        ),
+        (
+            CircuitId::ConfidentialSignerCached(n_inputs, n_outputs, slots, CACHE),
+            CircuitId::ConfidentialSignerCachedPayerFunded(n_inputs, n_outputs, slots, CACHE),
+        ),
+        (
+            CircuitId::ConfidentialRingEddsaCached(n_inputs, n_outputs, slots, CACHE),
+            CircuitId::ConfidentialRingEddsaCachedPayerFunded(n_inputs, n_outputs, slots, CACHE),
+        ),
+        (
+            CircuitId::AnonymousRingEddsaCached(n_inputs, n_outputs, slots, tagged, CACHE),
+            CircuitId::AnonymousRingEddsaCachedPayerFunded(
+                n_inputs, n_outputs, slots, tagged, CACHE,
+            ),
+        ),
+        (
+            CircuitId::ConfidentialEddsa(n_inputs, n_outputs, slots, EDDSA_PROOF_DATA),
+            CircuitId::ConfidentialEddsaPayerFunded(n_inputs, n_outputs, slots, EDDSA_PROOF_DATA),
+        ),
+        (
+            CircuitId::ConfidentialEddsaCached(n_inputs, n_outputs, slots, EDDSA_PROOF_DATA, CACHE),
+            CircuitId::ConfidentialEddsaCachedPayerFunded(
+                n_inputs,
+                n_outputs,
+                slots,
+                EDDSA_PROOF_DATA,
+                CACHE,
+            ),
+        ),
+    ]
+}
+
+/// A payer-funded twin differs from its selector only in who funds the
+/// nullifier PDAs: every rail, shape, cache and proof-data accessor agrees.
+#[test]
+fn a_payer_funded_twin_answers_every_accessor_like_its_selector() {
+    for (rail, twin) in payer_funded_pairs(2, 3) {
+        assert!(twin.payer_funds_nullifiers(), "{twin:?}");
+        assert!(!rail.payer_funds_nullifiers(), "{rail:?}");
+        assert_eq!(twin.tree_funded(), rail);
+        assert_eq!(rail.tree_funded(), rail);
+        assert_eq!(twin.uncached(), rail.uncached());
+        assert_eq!(twin.shape(), rail.shape());
+        assert_eq!(twin.cache_access(), rail.cache_access());
+        assert_eq!(twin.is_confidential(), rail.is_confidential());
+        assert_eq!(twin.is_ring(), rail.is_ring());
+        assert_eq!(twin.is_authority(), rail.is_authority());
+        assert_eq!(twin.is_anonymous(), rail.is_anonymous());
+        assert_eq!(twin.has_message_hash(), rail.has_message_hash());
+        assert_eq!(twin.bsb22_commitment(), rail.bsb22_commitment());
+        assert_eq!(twin.eddsa_owner_pk(), rail.eddsa_owner_pk());
+        assert_eq!(twin.default_owner_tag(), rail.default_owner_tag());
+        assert_eq!(
+            twin.requires_input_signatures(),
+            rail.requires_input_signatures()
+        );
+        assert_eq!(twin.output_owner_mode(), rail.output_owner_mode());
+        assert_eq!(twin.is_supported(), rail.is_supported());
+    }
+}
+
+/// Each twin resolves its selector's own verifying key and proving-key digest
+/// on every shape the selector supports, and no key where the selector has none.
+#[cfg(feature = "verifying-keys")]
+#[test]
+fn a_payer_funded_twin_resolves_its_selectors_key_on_every_shape() {
+    let mut resolved = 0;
+    for n_inputs in 1..=52u8 {
+        for n_outputs in 1..=16u8 {
+            for (rail, twin) in payer_funded_pairs(n_inputs, n_outputs) {
+                assert_eq!(twin.is_supported(), rail.is_supported(), "{twin:?}");
+                match (rail.verifying_key(), twin.verifying_key()) {
+                    (Some(rail_key), Some(twin_key)) => {
+                        assert!(core::ptr::eq(rail_key, twin_key), "{twin:?}");
+                        assert_eq!(rail.proving_key_sha256(), twin.proving_key_sha256());
+                        resolved += 1;
+                    }
+                    (None, None) => {}
+                    _ => panic!("{twin:?} resolves a key its selector does not"),
+                }
+            }
+        }
+    }
+    assert!(resolved > 0);
+}

@@ -9,7 +9,7 @@ use spr_event::{
 };
 use spr_event_parser::{
     indexed_events_from_instruction_groups, reconstruct_general_event, EventDecodeError,
-    InstructionGroup, ParsedInstruction,
+    InstructionGroup, ParsedInstruction, NOT_QUEUED,
 };
 use spr_interface::instruction::instruction_data::merge_transact::MERGE_DEFAULT_INPUT_COUNT;
 use spr_interface::instruction::{InputUtxo, InterfaceTransfer, OwnerTag, TransactOutput};
@@ -438,6 +438,54 @@ fn input_sequences_count_per_tree_when_the_indexes_interleave() {
             },
         ]))
     );
+}
+
+/// A payer-funded transact queues no nullifier: every input keeps its tree and
+/// nullifier but carries `NOT_QUEUED` instead of a queue sequence, while the
+/// same instruction under its tree-funded twin numbers its inputs as before.
+#[test]
+fn payer_funded_transact_inputs_carry_no_queue_sequence() {
+    let inputs = vec![
+        input_in_tree(0xA0, 0),
+        input_in_tree(0xA1, 1),
+        input_in_tree(0xA2, 0),
+    ];
+    let trees = input_trees_in_order([(INPUT_TREE, 10), (SECOND_INPUT_TREE, 70)]);
+    let spp = Pubkey::new_unique();
+    let tree_funded = transact_ix(inputs.clone(), Vec::new(), Vec::new(), Vec::new());
+    let mut payer_funded = tree_funded.clone();
+    payer_funded.circuit = CircuitId::ConfidentialSignerPayerFunded(3, 0, 0);
+    let mut event = transfer_event();
+    event.input_trees = trees;
+    let event_data = emit_event_data(EventKind::Transact, &event);
+
+    let rebuilt = |ix| {
+        reconstruct_general_event(
+            &transact_source(spp, tag::TRANSACT, Vec::new(), &ix, 1),
+            &event_data,
+        )
+    };
+    let expected = |seqs: [u64; 3]| {
+        Ok(expected_input_only_event(vec![
+            Input {
+                tree: INPUT_TREE,
+                input_queue_seq: seqs[0],
+                nullifier: [0xA0; 32],
+            },
+            Input {
+                tree: SECOND_INPUT_TREE,
+                input_queue_seq: seqs[1],
+                nullifier: [0xA1; 32],
+            },
+            Input {
+                tree: INPUT_TREE,
+                input_queue_seq: seqs[2],
+                nullifier: [0xA2; 32],
+            },
+        ]))
+    };
+    assert_eq!(rebuilt(payer_funded), expected([NOT_QUEUED; 3]));
+    assert_eq!(rebuilt(tree_funded), expected([10, 70, 11]));
 }
 
 #[test]

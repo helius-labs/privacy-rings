@@ -26,7 +26,7 @@ pub use indexed::{
 pub use instruction::{InstructionGroup, ParsedInstruction};
 pub use reconstruct::{
     merge_general_event, reconstruct_general_event, reconstruct_general_event_from_payload,
-    transact_general_event,
+    transact_general_event, NOT_QUEUED,
 };
 
 /// Why an emitted event or output payload could not be decoded or rebuilt.

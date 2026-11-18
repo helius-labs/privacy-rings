@@ -313,6 +313,14 @@ the proof-backed binary `nullifier_pdas_proof` covers the success path.
   - Severity: Critical (PDA is the only pending double-spend guard)
   - Suggested test: positive; harness: program-tests integration (proofs tier)
 
+- [x] **INV-TRANSACT-51: a payer-funded transact gives every input a permanent PDA and queues nothing**
+  - Covered by: `program-tests/shielded-pool/tests/nullifier/nullifier_pdas_proof.rs` `payer_funded_transact_creates_permanent_nullifier_pdas`, `payer_funded_transact_still_pays_the_tree_fee`, `payer_funded_transact_pays_only_the_missing_rent_of_a_prefunded_pda`, `a_nullifier_spent_in_either_mode_cannot_be_spent_again`; `nullifier_pdas.rs` `a_permanent_nullifier_pda_rejects_every_later_spend`, `close_rejects_a_permanent_nullifier_pda`, `close_rejects_a_batch_that_includes_a_permanent_nullifier_pda`; localnet: `tests/localnet/photon/forester.rs` `phase_assert_payer_funded_nullifiers`
+  - Kind: postcondition
+  - Statement: after a successful transact whose `circuit` is payer-funded, for every input `i` the account at `PDA(["nullifier", input_tree, nullifier_i])` is owned by the program, is exactly `PAYER_FUNDED_NULLIFIER_PDA_SIZE` (1) byte equal to `PAYER_FUNDED_NULLIFIER_PDA`, and holds exactly its rent, of which the payer paid everything not prefunded; the tree's `queue_next_index` and `live_nullifier_pdas` are unchanged, its lamports and `fee_balance` grow by exactly its `fee_per_tree`, and no instruction can close the PDA, so the nullifier can never be spent again in either mode.
+  - Location: `programs/shielded-pool/src/instructions/transact/tree.rs` (`apply_input_trees`), `programs/shielded-pool/src/instructions/nullifier_pda/create.rs` (`PayerFundedNullifierPdaCreate`)
+  - Severity: Critical (the permanent PDA is the only double-spend guard of a never-queued nullifier)
+  - Suggested test: positive + replay; harness: program-tests integration (proofs tier)
+
 - [x] **INV-TRANSACT-49: the tree funds only the missing PDA rent and never drops below its rent floor plus the fee balance**
   - Covered by: `program-tests/shielded-pool/tests/nullifier/nullifier_pdas.rs` `transact_rejects_a_tree_short_of_nullifier_pda_rent` (bare rent and `rent + 2 * nullifier_pda_rent - 1` both rejected, no PDA survives), `transact_rejects_when_working_capital_would_borrow_from_the_fee_pool` (`fee_balance = 1_000_000` written into the header and funded; tree at `rent + fee_balance + 2 * nullifier_pda_rent - 1` rejects a 2-input spend with exact 7044 and leaves no PDA), `program-tests/shielded-pool/tests/nullifier/nullifier_pdas_proof.rs` `transact_tops_up_prefunded_nullifier_pdas` (underfunded PDA topped up to exactly its rent, overfunded PDA keeps its surplus, tree debited only the missing rent), `transact_creates_one_nullifier_pda_per_input` (`assert_tree_lamports_after_spend`: tree delta is exactly `fee_per_tree - n * nullifier_pda_rent`)
   - Kind: postcondition + precondition

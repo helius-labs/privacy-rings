@@ -200,6 +200,46 @@ mod tests {
         );
     }
 
+    /// Nullifiers a payer-funded transact never queued carry the
+    /// `NOT_QUEUED_INPUT_QUEUE_SEQ` sentinel. Several of them share it within
+    /// one tree (the partial unique index allows it), and none is served as a
+    /// queue element.
+    #[tokio::test]
+    async fn skips_nullifiers_that_were_never_queued() {
+        let tree = pubkey(5);
+        let db = setup(tree, 2).await;
+        for input_index in 2..4 {
+            rings_tx_nullifiers::Entity::insert(rings_tx_nullifiers::ActiveModel {
+                nullifier_id: Default::default(),
+                rings_tx_id: Set(1),
+                slot: Set(7),
+                input_index: Set(input_index),
+                nullifier_tree: Set(tree.to_bytes_vec()),
+                input_queue_seq: Set(crate::ingester::persist::NOT_QUEUED_INPUT_QUEUE_SEQ),
+                nullifier: Set(nullifier(0x80 + u8::try_from(input_index).unwrap()).to_vec()),
+            })
+            .exec(&db)
+            .await
+            .unwrap();
+        }
+
+        let response = get_nullifier_queue_elements(
+            &db,
+            GetNullifierQueueElementsRequest {
+                tree_account: tree,
+                start_seq: 0,
+                limit: limit(10),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            response.elements.iter().map(|e| e.seq).collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+    }
+
     #[tokio::test]
     async fn filters_by_tree() {
         let tree = pubkey(3);

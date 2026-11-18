@@ -10,7 +10,7 @@ use spr_interface::{
         },
         tag,
     },
-    verifying_keys::{CacheAccess, CacheWrite, MAX_CACHE_WRITES},
+    verifying_keys::{CacheAccess, CacheWrite, EddsaProofData, MAX_CACHE_WRITES},
     MAX_INPUT_TREES, MAX_INTERFACE_TRANSFERS, MAX_OUTPUTS,
 };
 
@@ -79,6 +79,86 @@ fn circuit_id_wire_layout_and_unknown_rejection() {
     assert!(wincode::deserialize_exact::<CircuitId>(&noncanonical_none).is_err());
 
     let unknown = 4u16.to_le_bytes();
+    assert!(wincode::deserialize_exact::<CircuitId>(&unknown).is_err());
+}
+
+/// The payer-funded twins take tags 9 to 17, after every existing tag, in the
+/// order of the selectors they mirror, and carry the same payload: only the tag
+/// differs. Tag 18 is unknown and rejected even with a complete payload.
+#[test]
+fn payer_funded_circuit_ids_follow_every_existing_tag() {
+    let proof_data = AnonymousRingEddsaProofData {
+        bsb22_commitment: Bsb22Commitment {
+            commitment: [4u8; 32],
+            commitment_pok: [5u8; 32],
+        },
+        default_owner_tag: None,
+    };
+    let eddsa = EddsaProofData {
+        bsb22_commitment: proof_data.bsb22_commitment,
+        owner_pk: [6u8; 32],
+    };
+    let cache = CacheAccess {
+        read_bitmap: 1,
+        write_slots: CacheAccess::NO_WRITES,
+    };
+    let pairs = [
+        (
+            CircuitId::ConfidentialSigner(2, 3, 3),
+            CircuitId::ConfidentialSignerPayerFunded(2, 3, 3),
+        ),
+        (
+            CircuitId::ConfidentialRingEddsa(2, 3, 3),
+            CircuitId::ConfidentialRingEddsaPayerFunded(2, 3, 3),
+        ),
+        (
+            CircuitId::RingAuthority(2, 2, 3),
+            CircuitId::RingAuthorityPayerFunded(2, 2, 3),
+        ),
+        (
+            CircuitId::AnonymousRingEddsa(2, 3, 3, proof_data),
+            CircuitId::AnonymousRingEddsaPayerFunded(2, 3, 3, proof_data),
+        ),
+        (
+            CircuitId::ConfidentialSignerCached(2, 3, 3, cache),
+            CircuitId::ConfidentialSignerCachedPayerFunded(2, 3, 3, cache),
+        ),
+        (
+            CircuitId::ConfidentialRingEddsaCached(2, 3, 3, cache),
+            CircuitId::ConfidentialRingEddsaCachedPayerFunded(2, 3, 3, cache),
+        ),
+        (
+            CircuitId::AnonymousRingEddsaCached(2, 3, 3, proof_data, cache),
+            CircuitId::AnonymousRingEddsaCachedPayerFunded(2, 3, 3, proof_data, cache),
+        ),
+        (
+            CircuitId::ConfidentialEddsa(2, 3, 3, eddsa),
+            CircuitId::ConfidentialEddsaPayerFunded(2, 3, 3, eddsa),
+        ),
+        (
+            CircuitId::ConfidentialEddsaCached(2, 3, 3, eddsa, cache),
+            CircuitId::ConfidentialEddsaCachedPayerFunded(2, 3, 3, eddsa, cache),
+        ),
+    ];
+    for (tag, (rail, twin)) in (0u16..).zip(pairs) {
+        let rail_bytes = wincode::serialize(&rail).unwrap();
+        let twin_bytes = wincode::serialize(&twin).unwrap();
+        let (rail_tag, rail_payload) = rail_bytes.split_at(2);
+        let (twin_tag, twin_payload) = twin_bytes.split_at(2);
+        assert_eq!(rail_tag, tag.to_le_bytes(), "{rail:?}");
+        assert_eq!(twin_tag, (tag + 9).to_le_bytes(), "{twin:?}");
+        assert_eq!(twin_payload, rail_payload, "{twin:?}");
+        assert_eq!(
+            wincode::deserialize_exact::<CircuitId>(&twin_bytes).unwrap(),
+            twin
+        );
+    }
+
+    let mut unknown = wincode::serialize(&CircuitId::ConfidentialSigner(2, 3, 3)).unwrap();
+    unknown
+        .get_mut(..2)
+        .expect("tag")
+        .copy_from_slice(&18u16.to_le_bytes());
     assert!(wincode::deserialize_exact::<CircuitId>(&unknown).is_err());
 }
 

@@ -524,3 +524,58 @@ fn a_cached_selector_must_fit_the_inputs_the_outputs_and_the_cache() {
         );
     }
 }
+
+/// A payer-funded selector rides the same instruction as the selector it
+/// mirrors, with the same shape rules: who funds the nullifier PDAs picks no
+/// circuit, so it cannot move a spend between instruction tags.
+#[test]
+fn a_payer_funded_selector_is_accepted_exactly_where_its_twin_is() {
+    use spr_interface::verifying_keys::CacheAccess;
+    use spr_test_utils::nullifier_pda::payer_funded;
+    const CACHE: CacheAccess = CacheAccess {
+        read_bitmap: 3,
+        write_slots: CacheAccess::NO_WRITES,
+    };
+    let proof_data = AnonymousRingEddsaProofData {
+        bsb22_commitment: Bsb22Commitment {
+            commitment: [1u8; 32],
+            commitment_pok: [2u8; 32],
+        },
+        default_owner_tag: None,
+    };
+    let selectors = [
+        CircuitId::ConfidentialSigner(2, 2, 3),
+        CircuitId::ConfidentialRingEddsa(2, 2, 3),
+        CircuitId::RingAuthority(2, 2, 3),
+        CircuitId::AnonymousRingEddsa(2, 2, 3, proof_data),
+        CircuitId::ConfidentialSignerCached(2, 2, 3, CACHE),
+        CircuitId::ConfidentialRingEddsaCached(2, 2, 3, CACHE),
+        CircuitId::AnonymousRingEddsaCached(2, 2, 3, proof_data, CACHE),
+        CircuitId::ConfidentialEddsa(2, 8, 3, EDDSA_PROOF_DATA),
+        CircuitId::ConfidentialEddsaCached(2, 8, 3, EDDSA_PROOF_DATA, CACHE),
+    ];
+    for selector in selectors {
+        let twin = payer_funded(selector);
+        assert!(twin.payer_funds_nullifiers(), "{selector:?}");
+        let outputs = usize::from(selector.num_outputs());
+        let mut accepted_by = 0;
+        for instruction in [
+            InstructionTag::Transact,
+            InstructionTag::RingTransact,
+            InstructionTag::RingAuthorityTransact,
+        ] {
+            let mut accepted = false;
+            for (inputs, outputs) in [(2, outputs), (1, outputs), (3, outputs)] {
+                let expected = validate(selector, instruction, inputs, outputs);
+                assert_eq!(
+                    validate(twin, instruction, inputs, outputs),
+                    expected,
+                    "{twin:?} on {instruction:?} with {inputs}x{outputs}"
+                );
+                accepted |= expected.is_ok();
+            }
+            accepted_by += usize::from(accepted);
+        }
+        assert_eq!(accepted_by, 1, "{selector:?} fits exactly one instruction");
+    }
+}

@@ -11,8 +11,9 @@ use spr_interface::{
     instruction::instruction_data::transact::{CircuitId, TransactIxData, TransactProof},
     pda,
     state::{
-        tree_account_size, TreeFeeSchedule, AT_COST_CLOSE_REIMBURSEMENT_LAMPORTS,
-        NULLIFIER_TREE_INPUT_QUEUE_BATCH_SIZE, NULLIFIER_TREE_INPUT_QUEUE_ZKP_BATCH_SIZE,
+        discriminator::PAYER_FUNDED_NULLIFIER_PDA, tree_account_size, TreeFeeSchedule,
+        AT_COST_CLOSE_REIMBURSEMENT_LAMPORTS, NULLIFIER_TREE_INPUT_QUEUE_BATCH_SIZE,
+        NULLIFIER_TREE_INPUT_QUEUE_ZKP_BATCH_SIZE,
     },
     NullifierPda, NULLIFIER_PDA_SIZE, N_PUBLIC_SLOTS,
 };
@@ -22,7 +23,8 @@ use spr_protocol_instructions::CloseNullifierPdas;
 use spr_test_utils::{
     nullifier_pda::{
         assert_nullifier_pda, assert_nullifier_pdas, assert_nullifier_pdas_absent,
-        nullifier_pda_addresses, nullifier_pda_rent, tree_close_before_index, tree_fees,
+        assert_payer_funded_nullifier_pdas, nullifier_pda_addresses, nullifier_pda_rent,
+        payer_funded, payer_funded_nullifier_pda_rent, tree_close_before_index, tree_fees,
         tree_fees_from,
     },
     transact::{fe, inline_output, input_utxo, single_tree_context},
@@ -1089,4 +1091,194 @@ fn close_rejects_a_non_tree_account() {
         ix,
         Rejection::pool(ShieldedPoolError::InvalidTreeAccounts),
     );
+}
+
+fn payer_funded_ix_data(n_in: u64, n_out: u64) -> TransactIxData {
+    let mut data = transfer_ix_data(n_in, n_out);
+    data.circuit = payer_funded(data.circuit);
+    data
+}
+
+/// A permanent nullifier PDA as a payer-funded transact leaves it.
+fn write_payer_funded_nullifier_pda(env: &mut Pool, nullifier: &[u8; 32]) -> Pubkey {
+    let (address, _) = pda::nullifier_pda(&env.tree, nullifier);
+    let lamports = payer_funded_nullifier_pda_rent(&env.rpc).expect("payer-funded PDA rent");
+    env.rpc
+        .svm
+        .set_account(
+            address,
+            Account {
+                lamports,
+                data: vec![PAYER_FUNDED_NULLIFIER_PDA],
+                owner: pda::shielded_pool_program_id(),
+                executable: false,
+                rent_epoch: 0,
+            },
+        )
+        .expect("write payer-funded nullifier PDA fixture");
+    address
+}
+
+/// A nullifier still pending in the queue holds its tree-funded PDA, which the
+/// payer-funded path cannot create over.
+#[test]
+fn payer_funded_transact_rejects_a_pending_nullifier() {
+    let mut env = Pool::initialized();
+    let data = payer_funded_ix_data(2, 4);
+    let nullifiers = nullifiers_of(&data);
+    let pending = *nullifiers.first().expect("first nullifier");
+    queue_nullifier_pda(&mut env, &pending, 1);
+
+    let ix = transact_instruction(&env, data);
+    expect_transact_rejection(
+        &mut env,
+        ix,
+        Rejection::pool(ShieldedPoolError::NullifierAlreadyQueued),
+    );
+    assert_nullifier_pda(&env.rpc, &env.tree, &pending, 1).expect("pending nullifier PDA");
+    assert_nullifier_pdas_absent(
+        &env.rpc,
+        &env.tree,
+        nullifiers.get(1..).expect("second nullifier"),
+    )
+    .expect("no nullifier PDA for the rejected input");
+}
+
+/// A permanent PDA blocks a second spend in either mode: both paths load the
+/// same address and require it unused.
+#[test]
+fn a_permanent_nullifier_pda_rejects_every_later_spend() {
+    for data in [transfer_ix_data(2, 4), payer_funded_ix_data(2, 4)] {
+        let mut env = Pool::initialized();
+        let nullifiers = nullifiers_of(&data);
+        let spent = *nullifiers.first().expect("first nullifier");
+        write_payer_funded_nullifier_pda(&mut env, &spent);
+
+        let ix = transact_instruction(&env, data.clone());
+        expect_transact_rejection(
+            &mut env,
+            ix,
+            Rejection::pool(ShieldedPoolError::NullifierAlreadyQueued),
+        );
+        assert_payer_funded_nullifier_pdas(&env.rpc, &env.tree, &[spent])
+            .expect("permanent nullifier PDA kept");
+        assert_nullifier_pdas_absent(
+            &env.rpc,
+            &env.tree,
+            nullifiers.get(1..).expect("second nullifier"),
+        )
+        .expect("no nullifier PDA for the rejected input");
+    }
+}
+
+#[test]
+fn payer_funded_transact_rejects_the_same_nullifier_twice_in_one_instruction() {
+    let mut env = Pool::initialized();
+    let mut data = payer_funded_ix_data(2, 4);
+    let first = data.inputs.first().expect("first input").nullifier_hash;
+    data.inputs.get_mut(1).expect("second input").nullifier_hash = first;
+
+    let ix = transact_instruction(&env, data);
+    expect_transact_rejection(
+        &mut env,
+        ix,
+        Rejection::pool(ShieldedPoolError::NullifierAlreadyQueued),
+    );
+    assert_nullifier_pdas_absent(&env.rpc, &env.tree, &[first])
+        .expect("duplicate nullifier PDA rolled back");
+}
+
+#[test]
+fn payer_funded_transact_rejects_swapped_nullifier_pdas() {
+    let mut env = Pool::initialized();
+    let data = payer_funded_ix_data(2, 4);
+    let nullifiers = nullifiers_of(&data);
+    let mut ix = transact_instruction(&env, data);
+    ix.accounts.swap(
+        TRANSACT_NULLIFIER_PDA_OFFSET,
+        TRANSACT_NULLIFIER_PDA_OFFSET + 1,
+    );
+
+    expect_transact_rejection(
+        &mut env,
+        ix,
+        Rejection::pool(ShieldedPoolError::InvalidNullifierPda),
+    );
+    assert_nullifier_pdas_absent(&env.rpc, &env.tree, &nullifiers)
+        .expect("no nullifier PDA created");
+}
+
+#[test]
+fn payer_funded_transact_rejects_a_foreign_account_in_a_nullifier_pda_slot() {
+    let mut env = Pool::initialized();
+    let impostor = funded_system_account(&mut env);
+    let mut ix = transact_instruction(&env, payer_funded_ix_data(2, 4));
+    ix.accounts
+        .get_mut(TRANSACT_NULLIFIER_PDA_OFFSET)
+        .expect("first nullifier PDA meta")
+        .pubkey = impostor;
+
+    expect_transact_rejection(
+        &mut env,
+        ix,
+        Rejection::pool(ShieldedPoolError::InvalidNullifierPda),
+    );
+}
+
+#[test]
+fn payer_funded_transact_rejects_a_read_only_nullifier_pda() {
+    let mut env = Pool::initialized();
+    let mut ix = transact_instruction(&env, payer_funded_ix_data(2, 4));
+    ix.accounts
+        .get_mut(TRANSACT_NULLIFIER_PDA_OFFSET + 1)
+        .expect("second nullifier PDA meta")
+        .is_writable = false;
+
+    expect_transact_rejection(
+        &mut env,
+        ix,
+        Rejection::custom(u32::from(AccountError::AccountNotMutable)),
+    );
+}
+
+/// A permanent PDA is never closable, whatever the watermark: the close loader
+/// requires the queued PDA's size and discriminator.
+#[test]
+fn close_rejects_a_permanent_nullifier_pda() {
+    let mut env = Pool::initialized();
+    let permanent = fe(1);
+    write_payer_funded_nullifier_pda(&mut env, &permanent);
+    set_close_before_index(&mut env, u64::MAX);
+
+    let ix = close_instruction(&env, vec![permanent]);
+    expect_close_rejection(
+        &mut env,
+        ix,
+        Rejection::pool(ShieldedPoolError::InvalidNullifierPda),
+    );
+    assert_payer_funded_nullifier_pdas(&env.rpc, &env.tree, &[permanent])
+        .expect("permanent nullifier PDA kept");
+}
+
+/// A close batch that slips one permanent PDA among closable ones fails as a
+/// whole and closes nothing.
+#[test]
+fn close_rejects_a_batch_that_includes_a_permanent_nullifier_pda() {
+    let mut env = Pool::initialized();
+    let closable = [fe(1), fe(2)];
+    queue_nullifier_pdas(&mut env, &closable, 1);
+    set_live_nullifier_pdas(&mut env, 2);
+    let permanent = fe(3);
+    write_payer_funded_nullifier_pda(&mut env, &permanent);
+    set_close_before_index(&mut env, 3);
+
+    let ix = close_instruction(&env, vec![fe(1), permanent, fe(2)]);
+    expect_close_rejection(
+        &mut env,
+        ix,
+        Rejection::pool(ShieldedPoolError::InvalidNullifierPda),
+    );
+    assert_nullifier_pdas(&env.rpc, &env.tree, &closable).expect("closable PDAs kept");
+    assert_payer_funded_nullifier_pdas(&env.rpc, &env.tree, &[permanent])
+        .expect("permanent nullifier PDA kept");
 }
