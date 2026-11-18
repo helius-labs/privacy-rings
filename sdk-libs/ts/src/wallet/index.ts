@@ -33,11 +33,13 @@ export {
 export { fetchTransactionSlots, type TransactionSlots } from "./transaction-slots.js";
 export {
   buildMultiTransferTransaction,
+  buildRingPaymentTransaction,
   buildSplitTransaction,
   buildTransferTransaction,
   buildWithdrawalTransaction,
   type MultiTransferTransactionParams,
   type PrivateTransactionParams,
+  type RingPaymentTransactionParams,
   type SplitTransactionParams,
   type TransferDestination,
   type TransferPayment,

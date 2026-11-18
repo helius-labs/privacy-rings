@@ -32,7 +32,8 @@ import type { Wallet, WalletUtxo } from "../transaction/wallet/state.js";
 import { UnsignedPrivateTransaction } from "./actions.js";
 import { WalletError } from "./error.js";
 
-function intentMismatch(field: string): WalletError {
+/** @internal */
+export function intentMismatch(field: string): WalletError {
   return new WalletError("WALLET_INTENT_MISMATCH", { details: { field } });
 }
 

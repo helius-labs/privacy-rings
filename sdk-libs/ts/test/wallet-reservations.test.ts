@@ -1,4 +1,4 @@
-import { address, type Address } from "@solana/kit";
+import { AccountRole, address, type Address } from "@solana/kit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AuthorizedPrivateTransaction } from "../src/client/client.js";
@@ -20,8 +20,20 @@ import { AssetRegistry } from "../src/transaction/asset.js";
 import { extendReservation } from "../src/flows/reserve.js";
 import { createSplit, createTransfer } from "../src/wallet/actions.js";
 import { createMerge } from "../src/wallet/merge.js";
-import { buildTransferTransaction } from "../src/wallet/transactions.js";
-import { privateTransactionClient } from "./helpers/clients.js";
+import {
+  buildRingPaymentTransaction,
+  buildTransferTransaction,
+} from "../src/wallet/transactions.js";
+import type { RingTransfers } from "../src/client/ports.js";
+import {
+  ConfidentialTransfer,
+  WithdrawalTarget,
+  type SppProofInputs,
+} from "../src/transaction/instructions/transact.js";
+import { proofInputFromEntry } from "../src/wallet/private-transaction.js";
+import type { ApprovalRequest } from "../src/transaction/wallet/intent.js";
+import { approveUnattended } from "../src/transaction/wallet/intent.js";
+import { BLOCKHASH, privateTransactionClient } from "./helpers/clients.js";
 import { emptyTransaction } from "./helpers/transactions.js";
 
 const TREE = treeAddress(0);
@@ -253,5 +265,184 @@ describe("UTXO reservations", () => {
     await expect(createMerge({ wallet, keys, asset: SOL_MINT })).rejects.toMatchObject({
       code: "WALLET_NOTHING_TO_MERGE",
     });
+  });
+});
+
+describe("ring payments", () => {
+  const RING = address("So11111111111111111111111111111111111111112");
+  const RING_OTHER = address("Stake11111111111111111111111111111111111111");
+  type Request = Parameters<RingTransfers["proveRingTransfer"]>[0];
+
+  type Tamper = (request: Request) => Promise<Fault | void>;
+  type Fault = Readonly<{
+    proofInputs?: SppProofInputs;
+    skip?: true;
+    programAddress?: Address;
+    signer?: Address;
+  }>;
+
+  function ring(keypair: ShieldedKeypair, tamper: Tamper = async () => {}): RingTransfers {
+    return {
+      ringProgramId: RING,
+      proveRingTransfer: async (request) => {
+        const { transfer, payment } = request;
+        transfer.send(payment.recipient, payment.asset, payment.amount);
+        const fault = (await tamper(request)) ?? {};
+        if (fault.skip !== true)
+          await request.authorize(fault.proofInputs ?? transfer.sign(keypair, new AssetRegistry()));
+        return {
+          instruction: {
+            programAddress: fault.programAddress ?? RING,
+            accounts: [{ address: fault.signer ?? PAYER, role: AccountRole.WRITABLE_SIGNER }],
+          },
+          computeUnitLimit: 1_400_000,
+        };
+      },
+    };
+  }
+
+  /** Pays the request from a note core did not reserve. */
+  function anotherNote({ payment, keys }: Request): SppProofInputs {
+    const other = new ConfidentialTransfer(
+      keys.address(),
+      [proofInputFromEntry(walletUtxo(spendingKeypair(), 50n, 1), keys.address())],
+      PAYER,
+    ).withRingProgramId(RING);
+    other.send(payment.recipient, payment.asset, payment.amount);
+    return other.sign(spendingKeypair(), new AssetRegistry());
+  }
+
+  function ringPayment(
+    wallet: Wallet,
+    keypair: ShieldedKeypair,
+    transfers: RingTransfers,
+    inProof = true,
+  ) {
+    const approvals: ApprovalRequest[] = [];
+    const build = buildRingPaymentTransaction({
+      client: { getLatestBlockhash: async () => BLOCKHASH },
+      ring: transfers,
+      wallet,
+      keys: localKeys(keypair),
+      feePayer: PAYER,
+      ...(inProof ? { owner: keypair } : {}),
+      recipient: ShieldedKeypair.generate().shieldedAddress(),
+      amount: 30n,
+      approve: (request) => {
+        approvals.push(request);
+        return approveUnattended(request);
+      },
+    });
+    return { build, approvals };
+  }
+
+  it("signs the checked payment for its in-proof owner and compiles the ring instruction", async () => {
+    const keypair = spendingKeypair();
+    const sign = vi.spyOn(keypair, "sign");
+    const { build, approvals } = ringPayment(fundedWallet(keypair, [100n]), keypair, ring(keypair));
+
+    await expect(build).resolves.toBeDefined();
+    expect(sign).toHaveBeenCalledOnce();
+    expect(approvals.map((request) => request.intent)).toMatchObject([
+      {
+        kind: "ringTransfer",
+        ringProgramId: RING,
+        amount: 30n,
+        boundary: "entry",
+        defaultFunding: 100n,
+      },
+    ]);
+  });
+
+  it.each<readonly [string, Readonly<{ field: string; signed: number }>, Tamper]>([
+    [
+      "an output to a third party",
+      { field: "recipient", signed: 0 },
+      async ({ transfer }: Request) => {
+        transfer.send(ShieldedKeypair.generate().shieldedAddress(), SOL_MINT, 10n);
+      },
+    ],
+    [
+      "a settlement leg",
+      { field: "settlements", signed: 0 },
+      async ({ transfer }: Request) => {
+        transfer.withdraw(SOL_MINT, 10n, WithdrawalTarget.sol({ recipient: PAYER }));
+      },
+    ],
+    [
+      "another note than the reserved one",
+      { field: "inputs", signed: 0 },
+      async (request: Request) => ({ proofInputs: anotherNote(request) }),
+    ],
+    [
+      "a retry after a refused authorization",
+      { field: "authorization", signed: 0 },
+      async (request: Request) =>
+        void (await request.authorize(anotherNote(request)).catch(() => undefined)),
+    ],
+    [
+      "a concurrent authorization",
+      { field: "authorization", signed: 1 },
+      async ({ transfer, authorize }: Request) =>
+        void authorize(transfer.sign(spendingKeypair(), new AssetRegistry())),
+    ],
+    ["no authorization", { field: "authorization", signed: 0 }, async () => ({ skip: true })],
+    [
+      "a second authorization",
+      { field: "authorization", signed: 1 },
+      async ({ transfer, authorize }: Request) => {
+        await authorize(transfer.sign(spendingKeypair(), new AssetRegistry()));
+      },
+    ],
+    [
+      "another program",
+      { field: "program", signed: 1 },
+      async () => ({ programAddress: RING_OTHER }),
+    ],
+    ["another signer", { field: "signers", signed: 1 }, async () => ({ signer: RING_OTHER })],
+  ] as const)(
+    "refuses %s, the notes stay reserved only once the owner signed",
+    async (_, refusal, tamper) => {
+      const keypair = spendingKeypair();
+      const sign = vi.spyOn(keypair, "sign");
+      const wallet = fundedWallet(keypair, [100n]);
+      await expect(ringPayment(wallet, keypair, ring(keypair, tamper)).build).rejects.toMatchObject(
+        {
+          code: "WALLET_BUILD_RING_PAYMENT",
+          cause: { code: "WALLET_INTENT_MISMATCH", details: { field: refusal.field } },
+        },
+      );
+      expect(sign).toHaveBeenCalledTimes(refusal.signed);
+      const spend = createTransfer(transferParams(wallet, 100n));
+      await (refusal.signed === 0
+        ? expect(spend).resolves.toBeDefined()
+        : expect(spend).rejects.toMatchObject({ causeCode: "WALLET_INSUFFICIENT_BALANCE" }));
+    },
+  );
+
+  it("releases the notes when a public-owner payment fails after authorization", async () => {
+    const keypair = spendingKeypair();
+    const wallet = fundedWallet(keypair, [100n]);
+    const foreign = ring(keypair, async () => ({ programAddress: RING_OTHER }));
+    await expect(ringPayment(wallet, keypair, foreign, false).build).rejects.toMatchObject({
+      cause: { details: { field: "program" } },
+    });
+    await expect(createTransfer(transferParams(wallet, 100n))).resolves.toBeDefined();
+  });
+
+  it.each<readonly [string, Tamper]>([
+    ["a decryption", async ({ keys }) => void (await keys.decrypt([]))],
+    [
+      "a proof of another note",
+      async ({ keys }) =>
+        void (await Reflect.apply(keys.prove, keys, [
+          { circuit: "transfer", payload: { inputs: [{ isDummy: 0n, nullifier: 1n }] } },
+        ])),
+    ],
+  ])("withholds %s from the ring", async (_, tamper) => {
+    const keypair = spendingKeypair();
+    await expect(
+      ringPayment(fundedWallet(keypair, [100n]), keypair, ring(keypair, tamper)).build,
+    ).rejects.toMatchObject({ cause: { code: "WALLET_RING_KEY_WITHHELD" } });
   });
 });

@@ -8,9 +8,11 @@ import type { ViewingKey } from "../../keypair/viewing-key.js";
 
 import { initializePoseidon } from "../../hasher/index.js";
 import { treeAddress } from "../../interface/pda/index.js";
+import { ZERO_NULLIFIER_PK } from "../../interface/program.js";
+import { zeroKeyNullifier } from "../../keypair/nullifier-key.js";
 import { TransactionError } from "../error.js";
 import { copy, decodeAddress } from "../internal.js";
-import { SENDER_SLOT_COUNT } from "../instructions/transact.js";
+import { SENDER_SLOT_COUNT, assetField } from "../instructions/transact.js";
 import type { IndexedShieldedTransaction, OutputContext } from "../instructions/transact.js";
 import {
   EncryptedScheme,
@@ -31,6 +33,7 @@ import {
 import { decryptMergeOutput, readMergeOutputBody } from "../serialization/merge.js";
 import { Utxo } from "../utxo.js";
 import { KeyMemo } from "./key-memo.js";
+import type { RingCodec, RingOpening } from "./ring.js";
 import {
   LocalShieldedKeys,
   checkKeysIdentity,
@@ -261,6 +264,7 @@ class SyncPass {
     string,
     Readonly<{ ids: Set<bigint>; fields: Map<string, Bytes32> }>
   >();
+  readonly #unregisteredRingNotes: WalletUtxo[] = [];
   storedUtxos = 0;
   undecryptableCandidates = 0;
 
@@ -300,6 +304,10 @@ class SyncPass {
     return this.#rows;
   }
 
+  unregisteredRingNotes(): readonly WalletUtxo[] {
+    return this.#unregisteredRingNotes;
+  }
+
   unknownAssetIds(): readonly bigint[] {
     const ids = new Set<bigint>();
     for (const candidate of this.#unknownAssetsBySite.values()) {
@@ -333,35 +341,49 @@ class SyncPass {
     outputContext: OutputContext,
     dataHash: Bytes32 | undefined,
     ringDataHash: Bytes32 | undefined,
+    knownNullifier?: Bytes32,
   ): "stored" | "skipped" | "pending" {
     if (!equalBytes(utxo.owner.toBytes(), this.#owner.toBytes())) return "skipped";
     const outputId = bytesKey(outputContext.hash);
     if (this.#outputHashes.has(outputId)) return "skipped";
-    const nullifier = this.#keys.derive({
-      kind: "nullifier",
-      utxoHash: outputContext.hash,
-      blinding: utxo.blinding,
-    });
-    if (nullifier === undefined) return "pending";
-    this.#utxos.push(
-      Object.freeze({
-        utxo,
-        outputContext: Object.freeze({
-          hash: copy(outputContext.hash),
-          // The hash check proved the id; the account follows from it.
-          tree: treeAddress(outputContext.treeId),
-          treeId: outputContext.treeId,
-          leafIndex: outputContext.leafIndex,
-        }),
-        nullifier,
-        ...(dataHash === undefined ? {} : { dataHash }),
-        ...(ringDataHash === undefined ? {} : { ringDataHash }),
-        spent: false,
-      }),
-    );
+    const entry = this.#entry(utxo, outputContext, dataHash, ringDataHash, knownNullifier);
+    if (entry === undefined) return "pending";
+    this.#utxos.push(entry);
     this.#outputHashes.add(outputId);
     this.storedUtxos++;
     return "stored";
+  }
+
+  /** `undefined` while the nullifier is pending. */
+  #entry(
+    utxo: Utxo,
+    outputContext: OutputContext,
+    dataHash: Bytes32 | undefined,
+    ringDataHash: Bytes32 | undefined,
+    knownNullifier: Bytes32 | undefined,
+  ): WalletUtxo | undefined {
+    const nullifier =
+      knownNullifier ??
+      this.#keys.derive({
+        kind: "nullifier",
+        utxoHash: outputContext.hash,
+        blinding: utxo.blinding,
+      });
+    if (nullifier === undefined) return undefined;
+    return Object.freeze({
+      utxo,
+      outputContext: Object.freeze({
+        hash: copy(outputContext.hash),
+        // The hash check proved the id; the account follows from it.
+        tree: treeAddress(outputContext.treeId),
+        treeId: outputContext.treeId,
+        leafIndex: outputContext.leafIndex,
+      }),
+      nullifier,
+      ...(dataHash === undefined ? {} : { dataHash }),
+      ...(ringDataHash === undefined ? {} : { ringDataHash }),
+      spent: false,
+    });
   }
 
   /**
@@ -974,6 +996,47 @@ class SyncPass {
     return this.#keys.decrypt(request);
   }
 
+  storeRingOpenings(openings: readonly (readonly RingOpening[])[]): void {
+    openings.forEach((found, position) => {
+      const tx = this.#transactions[position];
+      for (const opening of found) {
+        const outputContext = tx?.outputSlots[opening.slotIndex]?.outputContext;
+        const zeroKey = equalBytes(opening.nullifierPublicKey, ZERO_NULLIFIER_PK);
+        const heldKey = zeroKey || equalBytes(opening.nullifierPublicKey, this.#nullifierPublicKey);
+        if (tx?.ringProgramId === undefined || outputContext === undefined || !heldKey) {
+          this.undecryptableCandidates++;
+          continue;
+        }
+        const utxo = new Utxo({
+          owner: this.#owner,
+          asset: opening.mint,
+          amount: opening.amount,
+          blinding: opening.blinding,
+          data: opening.data,
+          ringProgramId: tx.ringProgramId,
+        });
+        const { dataHash, ringDataHash, nullifierPublicKey } = opening;
+        const hash = utxo.hash(nullifierPublicKey, outputContext.treeId, dataHash, ringDataHash);
+        if (!equalBytes(hash, outputContext.hash)) {
+          this.undecryptableCandidates++;
+          continue;
+        }
+        const nullifier = zeroKey ? zeroKeyNullifier(hash, utxo.blinding) : undefined;
+        const field = assetField(opening.mint);
+        if (this.#assets.addressForField(field) === undefined) {
+          this.#recordUndecryptable(
+            new TransactionError("TRANSACTION_UNKNOWN_ASSET_FIELD", { assetField: [...field] }),
+            `${String(position)}:${String(opening.slotIndex)}`,
+          );
+          const entry = this.#entry(utxo, outputContext, dataHash, ringDataHash, nullifier);
+          if (entry !== undefined) this.#unregisteredRingNotes.push(entry);
+          continue;
+        }
+        this.#store(utxo, outputContext, dataHash, ringDataHash, nullifier);
+      }
+    });
+  }
+
   /**
    * Open only the two stable discovery families: this viewing key's bootstrap
    * tag and the shielded identity's signing tag.
@@ -1004,12 +1067,22 @@ export async function decryptTransactions(
     keys: ShieldedKeys;
     transactions: readonly IndexedShieldedTransaction[];
     config?: DecryptTransactionsConfig;
+    /** Asked to open every event of its own ring program. */
+    ring?: RingCodec;
     /** Forwarded to every batch the key holder answers. */
     context?: RequestContext | undefined;
   }>,
 ): Promise<SyncReport> {
   await initializePoseidon();
   checkKeysIdentity(input.keys, input.wallet.identity);
+  const { ring } = input;
+  const ringOpenings = await Promise.all(
+    input.transactions.map((tx) =>
+      ring === undefined || tx.ringProgramId !== ring.ringProgramId
+        ? []
+        : ring.open(tx, input.context),
+    ),
+  );
   const identity = input.keys.address();
   const viewingPublicKeys = checkViewingPublicKeys(input.keys, identity);
   const current = input.wallet._state();
@@ -1034,6 +1107,7 @@ export async function decryptTransactions(
         selfViewingPublicKeys: viewingKeyHistory.map((entry) => entry.viewingPublicKey),
       });
       pass.processStableTags({ identityTag, index });
+      pass.storeRingOpenings(ringOpenings);
       pass.resolveMergeSites(mergeSites);
       if (memo.pending()) {
         await memo.resolve(input.context);
@@ -1063,13 +1137,11 @@ function commitPass(
   for (const tx of input.transactions) {
     for (const nullifier of tx.nullifiers) nullifiers.add(bytesKey(nullifier));
   }
-  const utxos = pass
-    .utxos()
-    .map((entry) =>
-      entry.spent || !nullifiers.has(bytesKey(entry.nullifier))
-        ? entry
-        : Object.freeze({ ...entry, spent: true }),
-    );
+  const withSpent = (entry: WalletUtxo): WalletUtxo =>
+    entry.spent || !nullifiers.has(bytesKey(entry.nullifier))
+      ? entry
+      : Object.freeze({ ...entry, spent: true });
+  const utxos = pass.utxos().map(withSpent);
   const transactions = [...pass.rows()].sort(
     (left, right) =>
       compareBigints(left.id.slot, right.id.slot) ||
@@ -1090,6 +1162,7 @@ function commitPass(
     undecryptableCandidates: pass.undecryptableCandidates,
     unknownAssetIds: pass.unknownAssetIds(),
     unknownAssetFields: pass.unknownAssetFields(),
+    unregisteredRingNotes: pass.unregisteredRingNotes().map(withSpent),
   });
 }
 

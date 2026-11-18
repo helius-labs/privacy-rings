@@ -5,6 +5,7 @@ import {
   getBase64Decoder,
   SolanaError,
   SOLANA_ERROR__JSON_RPC__METHOD_NOT_FOUND,
+  type Address,
   type Signature,
 } from "@solana/kit";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -28,6 +29,7 @@ import {
   ConfidentialTransfer,
   Data,
   LocalShieldedKeys,
+  assetField,
   ProofInputUtxo,
   SOL_MINT,
   Utxo,
@@ -40,6 +42,8 @@ import {
   serializeWallet,
   splitBundleFromUtxos,
   transactOutputBlinding,
+  type RingCodec,
+  type RingOpening,
   type ShieldedKeys,
 } from "../src/transaction/index.js";
 import {
@@ -58,6 +62,8 @@ import {
 import { SOL_ASSET_ID } from "../src/transaction/asset.js";
 import { KeyMemo } from "../src/transaction/wallet/key-memo.js";
 import { SprClient } from "../src/client/client.js";
+import { ZERO_NULLIFIER_PK } from "../src/interface/program.js";
+import { zeroKeyNullifier } from "../src/keypair/nullifier-key.js";
 import { backfillAssetRegistry, syncWallet } from "../src/wallet/sync.js";
 import { syncPersistedWallet } from "../src/wallet/persisted.js";
 import { kitReads, solanaRpcReads, syncReads, plainCipher } from "./helpers/clients.js";
@@ -3086,5 +3092,193 @@ describe("wallet sync", () => {
     });
 
     expect(report.unparsedTransactions).toBe(2);
+  });
+});
+
+describe("ring codec openings", () => {
+  const TREE_ID = 5;
+  const MINT = address("So11111111111111111111111111111111111111112");
+
+  function ringEvent(nullifierPublicKey: Bytes32, note: Utxo, ringDataHash?: Bytes32) {
+    return {
+      slot: 2n,
+      txSignature: SIGNATURE,
+      outputSlots: [
+        {
+          viewTag: bytes(9),
+          outputContext: {
+            hash: note.hash(nullifierPublicKey, TREE_ID, undefined, ringDataHash),
+            tree: TREE,
+            treeId: TREE_ID,
+            leafIndex: 4n,
+          },
+          payload: new Uint8Array(),
+        },
+      ],
+      messages: [],
+      nullifiers: [bytes(32)],
+      proofless: false,
+      ringProgramId: OWNER,
+    };
+  }
+
+  function opening(nullifierPublicKey: Bytes32, note: Utxo, ringDataHash?: Bytes32): RingOpening {
+    return {
+      slotIndex: 0,
+      nullifierPublicKey,
+      mint: note.asset,
+      amount: note.amount,
+      blinding: note.blinding,
+      data: note.data,
+      ...(ringDataHash === undefined ? {} : { ringDataHash }),
+    };
+  }
+
+  function codec(openings: readonly RingOpening[], ringProgramId: Address = OWNER): RingCodec {
+    return { ringProgramId, open: async () => openings };
+  }
+
+  it("stores only the opening that rebuilds the leaf of its indexed tree", async () => {
+    const owner = ShieldedKeypair.generate();
+    const wallet = new Wallet({ identity: owner.shieldedAddress() });
+    const note = new Utxo({
+      owner: owner.signingPublicKey(),
+      asset: SOL_MINT,
+      amount: 42n,
+      blinding: bytes(31),
+      ringProgramId: OWNER,
+    });
+    const report = await decryptWithKeys(LocalShieldedKeys.fromKeypair(owner), {
+      wallet,
+      transactions: [ringEvent(owner.nullifierPublicKey(), note)],
+      ring: codec([
+        { ...opening(owner.nullifierPublicKey(), note), amount: 43n },
+        opening(owner.nullifierPublicKey(), note),
+      ]),
+    });
+
+    expect(report.storedUtxos).toBe(1);
+    expect(wallet.balances()).toEqual([]);
+    const foreign = new Wallet({ identity: owner.shieldedAddress() });
+    await decryptWithKeys(LocalShieldedKeys.fromKeypair(owner), {
+      wallet: foreign,
+      transactions: [ringEvent(owner.nullifierPublicKey(), note)],
+      ring: codec([opening(owner.nullifierPublicKey(), note)], TREE),
+    });
+    expect(foreign.utxos()).toEqual([]);
+    expect(wallet.ringBalances(true)).toEqual([
+      { ringProgramId: OWNER, assets: [{ assetId: 1n, mint: SOL_MINT, amount: 42n, utxos: [] }] },
+    ]);
+  });
+
+  it("credits a ring confidential note whose ring data hash only the codec knows", async () => {
+    const owner = ShieldedKeypair.generate();
+    const sender = ShieldedKeypair.generate();
+    const wallet = new Wallet({ identity: owner.shieldedAddress() });
+    const salt = new Uint8Array(16).fill(3) as Bytes16;
+    const ringDataHash = bytes(7);
+    const note = new Utxo({
+      owner: owner.signingPublicKey(),
+      asset: SOL_MINT,
+      amount: 42n,
+      blinding: bytes(31),
+      data: new Data([{ kind: "ringData", bytes: Uint8Array.of(1) }]),
+      ringProgramId: OWNER,
+    });
+    const event = {
+      ...ringEvent(owner.nullifierPublicKey(), note, ringDataHash),
+      txViewingPublicKey: sender.viewingPublicKey(),
+      salt,
+    };
+    const [slot] = event.outputSlots;
+    const payload = encodeOutputData(
+      EncryptedScheme.ringConfidential,
+      encryptConfidential(
+        sender,
+        owner.viewingPublicKey(),
+        {
+          assetId: 1n,
+          amount: note.amount,
+          blinding: note.blinding,
+          ringProgramId: OWNER,
+          data: note.data,
+        },
+        salt,
+        0,
+      ),
+      "encrypted",
+    );
+    const transactions = [{ ...event, outputSlots: [{ ...slot!, payload }] }];
+    const keys = LocalShieldedKeys.fromKeypair(owner);
+
+    await decryptWithKeys(keys, { wallet, transactions });
+    expect(wallet.utxos()).toEqual([]);
+    await decryptWithKeys(keys, {
+      wallet,
+      transactions,
+      ring: codec([opening(owner.nullifierPublicKey(), note, ringDataHash)]),
+    });
+    expect(wallet.utxos()[0]?.ringDataHash).toEqual(ringDataHash);
+  });
+
+  it("credits a zero-key note under the public nullifier and refuses any other key", async () => {
+    const owner = ShieldedKeypair.generate();
+    const wallet = new Wallet({ identity: owner.shieldedAddress() });
+    const note = new Utxo({
+      owner: owner.signingPublicKey(),
+      asset: SOL_MINT,
+      amount: 9n,
+      blinding: bytes(31),
+      ringProgramId: OWNER,
+    });
+    const event = ringEvent(ZERO_NULLIFIER_PK, note);
+    await decryptWithKeys(LocalShieldedKeys.fromKeypair(owner), {
+      wallet,
+      transactions: [event],
+      ring: codec([opening(bytes(7), note), opening(ZERO_NULLIFIER_PK, note)]),
+    });
+
+    const hash = event.outputSlots[0]!.outputContext.hash;
+    expect(wallet.utxos().map((entry) => entry.nullifier)).toEqual([
+      zeroKeyNullifier(hash, note.blinding),
+    ]);
+  });
+
+  it("reports a verified opening under an unregistered mint and stores it once registered", async () => {
+    const owner = ShieldedKeypair.generate();
+    const keys = LocalShieldedKeys.fromKeypair(owner);
+    const wallet = new Wallet({ identity: owner.shieldedAddress() });
+    const note = new Utxo({
+      owner: owner.signingPublicKey(),
+      asset: MINT,
+      amount: 11n,
+      blinding: bytes(31),
+      ringProgramId: OWNER,
+    });
+    const forged = { ...opening(owner.nullifierPublicKey(), note), mint: address(TREE) };
+    const event = ringEvent(owner.nullifierPublicKey(), note);
+    const input = {
+      wallet,
+      transactions: [event],
+      ring: codec([forged, opening(owner.nullifierPublicKey(), note)]),
+    };
+
+    const report = await decryptWithKeys(keys, input);
+    expect(report.unknownAssetFields).toEqual([assetField(MINT)]);
+    const { hash } = event.outputSlots[0]!.outputContext;
+    expect(report.unregisteredRingNotes).toEqual([
+      {
+        utxo: note,
+        outputContext: { hash, tree: treeAddress(TREE_ID), treeId: TREE_ID, leafIndex: 4n },
+        nullifier: owner.nullifier(hash, note.blinding),
+        spent: false,
+      },
+    ]);
+    expect(wallet.utxos()).toEqual([]);
+    wallet.registerAsset(12n, MINT);
+    expect((await decryptWithKeys(keys, input)).unregisteredRingNotes).toEqual([]);
+    expect(wallet.ringBalances(true)).toEqual([
+      { ringProgramId: OWNER, assets: [{ assetId: 12n, mint: MINT, amount: 11n, utxos: [] }] },
+    ]);
   });
 });

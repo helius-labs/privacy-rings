@@ -25,6 +25,7 @@ export {
   type TransactionIntent,
 } from "./intent.js";
 export { AssetRegistry, SOL_ASSET_ID, SOL_MINT } from "../asset.js";
+export type { RingCodec, RingOpening } from "./ring.js";
 export {
   deserializeWallet,
   serializeWallet,
