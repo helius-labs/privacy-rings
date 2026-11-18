@@ -4,7 +4,6 @@
 //! [`SprClient`](crate::SprClient) all build their requests here, so each
 //! circuit is described once.
 
-use std::borrow::Cow;
 use zeroize::Zeroizing;
 
 use crate::{
@@ -23,8 +22,8 @@ use crate::{
 
 /// The assembled native inputs, or an encoded request for a server-only circuit.
 enum Source<'a> {
-    Transfer(TransferKind, Cow<'a, TransferInputs>),
-    Merge(MergeKind, Cow<'a, MergeInputs>),
+    Transfer(TransferKind, &'a TransferInputs),
+    Merge(MergeKind, &'a MergeInputs),
     Wire(Zeroizing<String>),
 }
 
@@ -48,20 +47,15 @@ pub(crate) struct CircuitRequest<'a> {
 }
 
 impl CircuitRequest<'_> {
-    /// Send a borrowed request to a background blocking task.
-    pub(crate) fn into_owned(self) -> CircuitRequest<'static> {
-        let source = match self.source {
-            Source::Transfer(kind, inputs) => {
-                Source::Transfer(kind, Cow::Owned(inputs.into_owned()))
-            }
-            Source::Merge(kind, inputs) => Source::Merge(kind, Cow::Owned(inputs.into_owned())),
-            Source::Wire(body) => Source::Wire(body),
-        };
-        CircuitRequest {
-            source,
+    /// A request borrowed from a caller can cross a blocking task as a
+    /// zeroizing wire payload. Owned callers can move the typed witness.
+    pub(crate) fn into_wire(self) -> Result<CircuitRequest<'static>, ClientError> {
+        let body = self.body()?;
+        Ok(CircuitRequest {
+            source: Source::Wire(body),
             proving_key: self.proving_key,
             delivery: self.delivery,
-        }
+        })
     }
 }
 
@@ -127,10 +121,7 @@ fn transfer_request(
     {
         return Err(ClientError::MissingNullifierSecret { index });
     }
-    Ok(in_response(
-        Source::Transfer(kind, Cow::Borrowed(inputs)),
-        key,
-    ))
+    Ok(in_response(Source::Transfer(kind, inputs), key))
 }
 
 pub(crate) fn transfer(inputs: &TransferInputs) -> Result<CircuitRequest<'_>, ClientError> {
@@ -162,17 +153,14 @@ pub(crate) fn ring_authority(inputs: &TransferInputs) -> Result<CircuitRequest<'
 pub(crate) fn merge(inputs: &MergeInputs) -> Result<CircuitRequest<'_>, ClientError> {
     let key = ExpectedProvingKey::merge(inputs.inputs.len())?;
     Ok(in_response(
-        Source::Merge(MergeKind::Confidential, Cow::Borrowed(inputs)),
+        Source::Merge(MergeKind::Confidential, inputs),
         key,
     ))
 }
 
 pub(crate) fn merge_ring(inputs: &MergeInputs) -> Result<CircuitRequest<'_>, ClientError> {
     let key = ExpectedProvingKey::merge_ring(inputs.inputs.len())?;
-    Ok(in_response(
-        Source::Merge(MergeKind::Ring, Cow::Borrowed(inputs)),
-        key,
-    ))
+    Ok(in_response(Source::Merge(MergeKind::Ring, inputs), key))
 }
 
 /// A batch proof runs far longer than a connection should be held open, so it

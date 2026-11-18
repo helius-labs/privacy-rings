@@ -169,3 +169,38 @@ async fn transfer_result_uses_the_selected_verifier_and_rejects_another_statemen
         Err(ClientError::ProofVerification(_))
     ));
 }
+
+#[tokio::test]
+async fn passes_the_same_input_allocation_to_the_native_worker() {
+    use crate::prover::{requests, LocalProvingInputs};
+
+    struct NativeOnly(usize);
+
+    impl Prover for NativeOnly {
+        fn prove(&self, request: &dyn ProveRequest) -> Result<Proof, ClientError> {
+            let Some(LocalProvingInputs::Transfer(inputs)) = request.local_inputs() else {
+                panic!("missing native transfer inputs");
+            };
+            assert_eq!(inputs.inputs.as_ptr() as usize, self.0);
+            Ok(Proof {
+                a: [0; 64],
+                b: [0; 128],
+                c: [0; 64],
+                commitment: None,
+            })
+        }
+    }
+
+    let inputs = transfer_result([0; 32]).inputs;
+    let original = inputs.inputs.as_ptr() as usize;
+    let client = AsyncSprClient::with_prover(
+        NoRpc,
+        AsyncSprIndexer::new("http://127.0.0.1:1"),
+        NativeOnly(original),
+    );
+    let (returned, _) = client
+        .prove_owned(inputs, requests::transfer)
+        .await
+        .unwrap();
+    assert_eq!(returned.inputs.as_ptr() as usize, original);
+}

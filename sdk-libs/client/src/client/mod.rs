@@ -30,7 +30,7 @@ use crate::{
         indexed::{PreparedIndexedTransfer, ProofDataSource},
         requests::CircuitRequest,
         witness::{AsyncWitnessReader, WitnessReader},
-        AsyncProverClient, MergeInputs, Proof, Prover, ProverClient, TransferInputs,
+        AsyncProverClient, Proof, Prover, ProverClient,
     },
     rpc::{AsyncRpc, Blocking, ComputeBudgetConfig, IndexerPollConfig, IndexerRpcConfig, Rpc},
 };
@@ -208,29 +208,32 @@ impl<R, I> AsyncSprClient<R, I> {
         }
     }
 
-    /// The transfer proof of a transfer off the indexed route.
-    async fn prove_transfer(&self, inputs: &TransferInputs) -> Result<Proof, ClientError> {
-        self.prove_request(crate::prover::requests::transfer(inputs)?)
-            .await
-    }
-
-    /// A proof from the client's prover, server or custom.
-    async fn prove_request(&self, request: CircuitRequest<'_>) -> Result<Proof, ClientError> {
+    /// Prove a caller-borrowed result through the wire-compatible API.
+    async fn prove_borrowed(&self, request: CircuitRequest<'_>) -> Result<Proof, ClientError> {
         match &self.prover {
             ProverBackend::Server(prover) => prover.prove(&request).await,
             ProverBackend::Custom(prover) => {
-                prove_on_blocking_pool(Arc::clone(prover), request).await
+                let prover = Arc::clone(prover);
+                let request = request.into_wire()?;
+                on_blocking_pool(move || prover.prove(&request)).await
             }
         }
     }
 
-    /// The merge proof, from the client's prover.
-    async fn prove_merge(&self, inputs: &MergeInputs) -> Result<Proof, ClientError> {
+    /// Move an owned witness to a custom prover's worker, and return it for
+    /// proof verification and instruction construction.
+    async fn prove_owned<T: Send + 'static>(
+        &self,
+        witness: T,
+        request: fn(&T) -> Result<CircuitRequest<'_>, ClientError>,
+    ) -> Result<(T, Proof), ClientError> {
         match &self.prover {
-            ProverBackend::Server(prover) => prover.prove_merge(inputs).await,
+            ProverBackend::Server(prover) => {
+                let proof = prover.prove(&request(&witness)?).await?;
+                Ok((witness, proof))
+            }
             ProverBackend::Custom(prover) => {
-                prove_on_blocking_pool(Arc::clone(prover), crate::prover::requests::merge(inputs)?)
-                    .await
+                prove_on_blocking_pool(Arc::clone(prover), witness, request).await
             }
         }
     }
@@ -407,14 +410,24 @@ impl<R> SprClient<R, SprIndexer> {
     }
 }
 
+async fn prove_on_blocking_pool<T: Send + 'static>(
+    prover: Arc<dyn Prover>,
+    witness: T,
+    request: fn(&T) -> Result<CircuitRequest<'_>, ClientError>,
+) -> Result<(T, Proof), ClientError> {
+    on_blocking_pool(move || {
+        let proof = prover.prove(&request(&witness)?)?;
+        Ok((witness, proof))
+    })
+    .await
+}
+
 /// A custom prover is synchronous and may run for seconds, so it proves on
 /// Tokio's blocking pool rather than on the worker that awaits it.
-async fn prove_on_blocking_pool(
-    prover: Arc<dyn Prover>,
-    request: CircuitRequest<'_>,
-) -> Result<Proof, ClientError> {
-    let request = request.into_owned();
-    tokio::task::spawn_blocking(move || prover.prove(&request))
+async fn on_blocking_pool<T: Send + 'static>(
+    prove: impl FnOnce() -> Result<T, ClientError> + Send + 'static,
+) -> Result<T, ClientError> {
+    tokio::task::spawn_blocking(prove)
         .await
         .map_err(|error| ClientError::Prover(format!("prover task failed: {error}")))?
 }
