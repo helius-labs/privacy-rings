@@ -229,7 +229,8 @@ function defaultSpendPolicy(): SpendPolicy {
   };
 }
 
-function selectSpendInputs(
+/** @internal */
+export function selectSpendInputs(
   wallet: Wallet,
   asset: Address,
   amount: bigint,

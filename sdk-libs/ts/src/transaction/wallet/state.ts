@@ -132,6 +132,8 @@ export interface SyncReport {
    * `unknownAssetIds` is non-empty.
    */
   readonly unknownAssetFields: readonly Bytes32[];
+  /** Ring openings that rebuild their commitment under a mint the registry lacks, never stored. */
+  readonly unregisteredRingNotes: readonly WalletUtxo[];
 }
 
 /**

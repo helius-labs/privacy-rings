@@ -61,6 +61,7 @@ export {
   SPL_TOKEN_PROGRAM_ID,
   USER_REGISTRY_PROGRAM_ID,
   UTXO_DOMAIN,
+  ZERO_NULLIFIER_PK,
   nullifierTreeParams,
 } from "./program.js";
 export type { CreateTreeData, NullifierTreeParams } from "./program.js";

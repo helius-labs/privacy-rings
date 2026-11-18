@@ -13,9 +13,14 @@ import type {
   Bytes32,
 } from "../interface/types.js";
 import type { MergeEncryptionScheme } from "../interface/state.js";
+import type { ShieldedPublicKey } from "../keypair/public-key.js";
 import type { ShieldedAddress, ShieldedKeypairLike } from "../keypair/shielded.js";
 import type { PreparedMerge } from "../transaction/instructions/builders.js";
-import type { InputUtxoContext, SppProofInputs } from "../transaction/instructions/transact.js";
+import type {
+  ConfidentialTransfer,
+  InputUtxoContext,
+  SppProofInputs,
+} from "../transaction/instructions/transact.js";
 import type { TransactionIntent } from "../transaction/wallet/intent.js";
 import { intentHash } from "../transaction/wallet/intent.js";
 import type { ShieldedKeys } from "../transaction/wallet/keys.js";
@@ -25,6 +30,7 @@ import type { ProverHealth, ProvingKeyReport } from "./prover/client.js";
 import type {
   EddsaOwnerAuthorization,
   MergeInputs,
+  PreparedOwnerSignature,
   Proof,
   ProverInputs,
   RingTransactRoots,
@@ -331,6 +337,24 @@ export interface Prover {
   proverHealth(context?: RequestContext): Promise<ProverHealth>;
   /** The prover's proving keys, checked against the SDK's verifying keys. */
   checkProverProvingKeys(context?: RequestContext): Promise<ProvingKeyReport>;
+}
+
+/** Trusted for its instruction bytes when `owner` is unset, core decodes no ring instruction. */
+export interface RingTransfers {
+  readonly ringProgramId: Address;
+  proveRingTransfer(
+    input: Readonly<{
+      transfer: ConfidentialTransfer;
+      payment: Readonly<{ recipient: ShieldedAddress; asset: Address; amount: bigint }>;
+      keys: WalletKeys;
+      feePayer: Address;
+      /** Set for an in-proof owner, whose signature comes only from `authorize`. */
+      owner?: ShieldedPublicKey;
+      /** Once, on the final proof inputs, before any proof. */
+      authorize(proofInputs: SppProofInputs): Promise<PreparedOwnerSignature | undefined>;
+    }>,
+    context?: RequestContext,
+  ): Promise<Readonly<{ instruction: Instruction; computeUnitLimit: number }>>;
 }
 
 export interface TransactionConfirmer {

@@ -109,6 +109,8 @@ export type {
   PrivateTransactionKind,
   PrivateTransactionStatus,
   RingBalance,
+  RingCodec,
+  RingOpening,
   ShieldedKeys,
   SplitBundlePlaintext,
   SyncReport,
