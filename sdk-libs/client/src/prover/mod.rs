@@ -23,8 +23,9 @@ pub use backend::{Prover, ProverExt};
 #[cfg(feature = "reqwest")]
 pub use client::{spawn_prover, ProverLaunch};
 pub use client::{
-    AsyncPollConfig, AsyncProverClient, Delivery, IndexerRequirement, ProveRequest, ProverClient,
-    PROVER_INDEXER_URL_ENV, PROVE_PATH, PROVING_KEYS_PATH, SERVER_ADDRESS,
+    AsyncPollConfig, AsyncProverClient, Delivery, IndexerRequirement, LocalProvingInputs,
+    ProveRequest, ProverClient, PROVER_INDEXER_URL_ENV, PROVE_PATH, PROVING_KEYS_PATH,
+    SERVER_ADDRESS,
 };
 pub use endpoint::redact_api_key;
 pub use inputs::{
