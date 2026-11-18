@@ -3,6 +3,7 @@ use spr_interface::state::cache::empty_cached_input_fields;
 
 use num_bigint::BigUint;
 use solana_account::Account;
+use solana_clock::Clock;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
 use spr_client::{
@@ -541,10 +542,21 @@ fn nullifier_root_at(env: &Pool, index: u16) -> Option<[u8; 32]> {
     account.get_nullifier_tree_root(index).ok()
 }
 
-fn nullifier_root_history(env: &Pool) -> Vec<[u8; 32]> {
+fn utxo_root_at(env: &Pool, index: u16) -> Option<[u8; 32]> {
+    let mut data = env.rpc.account_data(&env.tree)?;
+    let account = TreeAccount::from_bytes(&mut data, env.tree.to_bytes()).ok()?;
+    account.get_utxo_tree_root(index).ok()
+}
+
+/// Run `read` on a copy of the tree account's nullifier tree.
+fn read_nullifier_tree<T>(env: &Pool, read: impl FnOnce(&mut NullifierTreeAccount) -> T) -> T {
     let mut data = env.rpc.account_data(&env.tree).expect("tree account");
     let mut account = TreeAccount::from_bytes(&mut data, env.tree.to_bytes()).expect("load tree");
-    account.nullifier_tree().root_history.roots.to_vec()
+    read(account.nullifier_tree())
+}
+
+fn nullifier_root_history(env: &Pool) -> Vec<[u8; 32]> {
+    read_nullifier_tree(env, |tree| tree.root_history.roots.to_vec())
 }
 
 /// Run `update` on the tree account's nullifier tree and write it back.
@@ -622,7 +634,7 @@ fn seed_zkp_batch_update(env: &mut Pool, reference: &mut NullifierTree, values: 
 /// a batch address-append proof from the prover, verified on chain.
 fn send_batch_update(env: &mut Pool, reference: &mut NullifierTree, values: &[[u8; 32]]) {
     let (old_root, zkp_batch_index, leaves_hash_chain, start_index) =
-        update_nullifier_tree(env, |tree| {
+        read_nullifier_tree(env, |tree| {
             let pending = tree.pending_batch_index as usize;
             let zkp_batch_index = tree
                 .batches
@@ -755,6 +767,28 @@ fn assert_replay_rejected(env: &mut Pool, data: TransactIxData, expected: Shield
     Rejection::pool(expected).assert_litesvm(error);
 }
 
+/// The replay as it would run had its nullifier PDAs been closed: sent with
+/// the PDAs deleted, after which the whole SVM state is restored.
+fn replay_without_nullifier_pdas(
+    env: &mut Pool,
+    data: TransactIxData,
+) -> Result<(), ProgramTestError> {
+    let snapshot = env.rpc.svm.clone();
+    for nullifier_pda in nullifier_pda_addresses(&env.tree, &nullifiers_of(&data)) {
+        env.rpc
+            .svm
+            .set_account(nullifier_pda, Account::default())
+            .expect("delete the nullifier PDA");
+    }
+    let ix = transact_instruction(env, data);
+    let result = env
+        .rpc
+        .create_and_send_default_payer_transaction(&[ix], &[])
+        .map(|_| ());
+    env.rpc.svm = snapshot;
+    result
+}
+
 #[test]
 fn nullifier_pda_closes_only_after_its_pre_insertion_roots_are_overwritten() {
     let mut env = boundary_env();
@@ -783,12 +817,30 @@ fn nullifier_pda_closes_only_after_its_pre_insertion_roots_are_overwritten() {
     // nullifiers as the last two values of batch 0.
     let spend = build_transact_ix(&mut env, &reference, pre_insertion_root_index);
     let nullifiers = nullifiers_of(&spend);
+
+    // The harness stays in one slot, and a UTXO append overwrites the root of
+    // an earlier append in its slot. The spend runs one slot after the deposit
+    // so the UTXO root its proof names stays accepted: a replay can then be
+    // rejected only for its nullifiers.
+    let utxo_root_index = spend
+        .tree_contexts
+        .first()
+        .expect("input tree context")
+        .utxo_tree_root_index;
+    let utxo_root = utxo_root_at(&env, utxo_root_index).expect("utxo root");
+    let slot = env.rpc.svm.get_sysvar::<Clock>().slot;
+    env.rpc.warp_to_slot(slot + 1).expect("next slot");
     env.rpc
         .create_and_send_default_payer_transaction(
             &[transact_instruction(&env, spend.clone())],
             &[],
         )
         .expect("the first spend");
+    assert_eq!(
+        utxo_root_at(&env, utxo_root_index),
+        Some(utxo_root),
+        "the spend's outputs leave the UTXO root of its proof accepted"
+    );
     let first_queue_index = BOUNDARY_BATCH_SIZE - 1;
     for (nullifier, offset) in nullifiers.iter().zip(0..) {
         assert_nullifier_pda(&env.rpc, &env.tree, nullifier, first_queue_index + offset)
@@ -796,7 +848,8 @@ fn nullifier_pda_closes_only_after_its_pre_insertion_roots_are_overwritten() {
     }
 
     // Update 100 inserts the spent nullifiers. Batch 0 is fully inserted,
-    // which moves the watermark only to batch 0's start: older batches' PDAs.
+    // which moves the watermark only to batch 0's start, so it releases the
+    // PDAs of earlier batches and none of batch 0's.
     let last_zkp_batch_0: Vec<[u8; 32]> = batch_0
         .chunks(zkp)
         .nth(zkp_batches - 1)
@@ -813,15 +866,19 @@ fn nullifier_pda_closes_only_after_its_pre_insertion_roots_are_overwritten() {
     assert_close_rejected(&mut env, &nullifiers);
 
     // Batch 1: other users fill it and the forester applies updates 101..=198.
+    // Every root from update 101 on contains the spent nullifiers.
     let batch_1 = seeded(2_000_000, zkp * zkp_batches);
     seed_queue(&mut env, &batch_1);
     let mut batch_1_updates = batch_1.chunks(zkp);
+    let mut post_insertion_roots = Vec::with_capacity(zkp_batches);
     for values in batch_1_updates.by_ref().take(zkp_batches - 2) {
         seed_zkp_batch_update(&mut env, &mut reference, values);
+        post_insertion_roots.push(reference.root());
     }
 
     // The pre-insertion root is still accepted: a replay proven against it
     // is stopped only by the nullifier PDAs, which therefore must not close.
+    // Without them the same transaction is a second spend.
     assert_eq!(
         nullifier_root_at(&env, pre_insertion_root_index),
         Some(pre_insertion_root),
@@ -832,16 +889,23 @@ fn nullifier_pda_closes_only_after_its_pre_insertion_roots_are_overwritten() {
         spend.clone(),
         ShieldedPoolError::NullifierAlreadyQueued,
     );
+    replay_without_nullifier_pdas(&mut env, spend.clone())
+        .expect("with its nullifier PDAs closed at update 198 the replay is a double spend");
     assert_close_rejected(&mut env, &nullifiers);
 
-    // Update 199 overwrites the pre-insertion root. The PDAs stay: the
-    // watermark waits for the whole batch.
+    // Update 199 overwrites the pre-insertion root, and from here the root
+    // history alone rejects the replay. The PDAs stay: the watermark waits
+    // for the whole batch.
     let update_199 = batch_1_updates.next().expect("zkp batch 98 of batch 1");
     seed_zkp_batch_update(&mut env, &mut reference, update_199);
+    post_insertion_roots.push(reference.root());
     assert!(
         !nullifier_root_history(&env).contains(&pre_insertion_root),
         "update 199 overwrote the last pre-insertion root"
     );
+    let error = replay_without_nullifier_pdas(&mut env, spend.clone())
+        .expect_err("no accepted root lets the replay through after update 199");
+    Rejection::pool(ShieldedPoolError::TransactProofVerificationFailed).assert_litesvm(error);
     assert_eq!(
         tree_close_before_index(&env.rpc, &env.tree).expect("watermark"),
         1
@@ -852,6 +916,7 @@ fn nullifier_pda_closes_only_after_its_pre_insertion_roots_are_overwritten() {
     // moves the watermark to its start, past the spent nullifiers.
     let update_200 = batch_1_updates.next().expect("zkp batch 99 of batch 1");
     send_batch_update(&mut env, &mut reference, update_200);
+    post_insertion_roots.push(reference.root());
     assert_eq!(
         tree_close_before_index(&env.rpc, &env.tree).expect("watermark"),
         BOUNDARY_BATCH_SIZE + 1,
@@ -860,14 +925,20 @@ fn nullifier_pda_closes_only_after_its_pre_insertion_roots_are_overwritten() {
     send_close(&mut env, &nullifiers).expect("close the spent nullifiers' PDAs");
     assert_nullifier_pdas_absent(&env.rpc, &env.tree, &nullifiers).expect("nullifier PDAs closed");
 
-    // The replay from the report: every accepted root contains the spent
-    // nullifier, so no non-inclusion proof exists against any of them, and
+    // The replay from the report: the accepted roots are exactly the roots of
+    // updates 101..=200, update `n` in slot `n % 100`. Each contains the spent
+    // nullifiers, so no non-inclusion proof exists against any of them, and
     // the original proof verifies at no root index.
     let history = nullifier_root_history(&env);
-    assert!(!history.contains(&pre_insertion_root));
-    assert!(
-        history.iter().all(|root| *root != [0u8; 32]),
-        "every slot holds a root"
+    let mut expected_history = vec![[0u8; 32]; zkp_batches];
+    for (root, update) in post_insertion_roots.iter().zip(zkp_batches + 1..) {
+        *expected_history
+            .get_mut(update % zkp_batches)
+            .expect("root history slot") = *root;
+    }
+    assert_eq!(
+        history, expected_history,
+        "every accepted root was written after the spent nullifiers were inserted"
     );
     for nullifier in &nullifiers {
         assert!(
