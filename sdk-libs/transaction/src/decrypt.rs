@@ -1,15 +1,20 @@
-use std::collections::{hash_map::Entry, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use solana_address::Address;
 use spr_event::{split_merge_output_body, OutputDataEncoding};
-use spr_keypair::{shielded::ShieldedAddress, x25519::X25519_PUBKEY_LEN, KeypairError};
+use spr_interface::ZERO_NULLIFIER_PUBKEY;
+use spr_keypair::{
+    constants::BLINDING_LEN, shielded::ShieldedAddress, x25519::X25519_PUBKEY_LEN, KeypairError,
+    NullifierKey,
+};
 
 use crate::{
-    asset::{AssetBalance, AssetRegistry, Balances, Mint},
+    asset::{AssetRegistry, Balances, Mint},
     error::TransactionError,
     indexer_types::{OutputSlot, ShieldedTransaction},
     instructions::merge::MergeOutputPlaintext,
     keys::{DecryptLabel, DecryptRequest, DeriveRequest, ShieldedKeys, TransactionKeyRequest},
+    ring::{RingCodec, RingOpening},
     serialization::{
         confidential::Confidential, plaintext::PlaintextTransfer, proofless::Proofless,
         scheme::EncryptedScheme, OwnerCx, UtxoSerialization,
@@ -52,6 +57,28 @@ impl SpendableDecryptionResult {
             .chain(&self.utxos_with_data)
     }
 
+    /// The ring notes of `utxos_with_data` by ring program.
+    pub fn ring_balances(&self) -> BTreeMap<Address, Balances> {
+        let mut rings: BTreeMap<Address, Vec<WalletUtxo>> = BTreeMap::new();
+        for utxo in &self.utxos_with_data {
+            if let Some(ring) = utxo.utxo.ring_program_id {
+                rings.entry(ring).or_default().push(utxo.clone());
+            }
+        }
+        rings
+            .into_iter()
+            .map(|(ring, utxos)| (ring, utxos.into_iter().collect()))
+            .collect()
+    }
+
+    fn utxos_mut(&mut self) -> impl Iterator<Item = &mut WalletUtxo> {
+        self.balances
+            .assets
+            .iter_mut()
+            .flat_map(|balance| &mut balance.utxos)
+            .chain(&mut self.utxos_with_data)
+    }
+
     /// Attach to every spendable UTXO the transaction viewing key of a
     /// transaction that spends it first, derived for the holder's viewing key
     /// in one [`ShieldedKeys::transaction_keys`] request, so encrypting that
@@ -61,13 +88,7 @@ impl SpendableDecryptionResult {
         shielded_keys: &K,
     ) -> Result<Self, TransactionError> {
         let viewing_pubkey = shielded_keys.address()?.viewing_pubkey;
-        let mut utxos: Vec<&mut WalletUtxo> = self
-            .balances
-            .assets
-            .iter_mut()
-            .flat_map(|balance| balance.utxos.iter_mut())
-            .chain(self.utxos_with_data.iter_mut())
-            .collect();
+        let mut utxos: Vec<&mut WalletUtxo> = self.utxos_mut().collect();
         let requests: Vec<TransactionKeyRequest> = utxos
             .iter()
             .map(|utxo| TransactionKeyRequest {
@@ -97,13 +118,7 @@ impl SpendableDecryptionResult {
     /// means the indexer named no unpaused tree.
     #[must_use]
     pub fn with_latest_tree_id(mut self, latest_tree_id: Option<u16>) -> Self {
-        for utxo in self
-            .balances
-            .assets
-            .iter_mut()
-            .flat_map(|balance| &mut balance.utxos)
-            .chain(&mut self.utxos_with_data)
-        {
+        for utxo in self.utxos_mut() {
             utxo.latest_tree_id = latest_tree_id;
         }
         self
@@ -142,14 +157,99 @@ impl DecryptionResult {
         transactions: &[ShieldedTransaction],
         assets: &AssetRegistry,
     ) -> Result<(), TransactionError> {
+        self.extend_opened(shielded_keys, transactions, assets, &[])?;
+        Ok(())
+    }
+
+    /// [`Self::extend`] plus what `ring` opens in its own events, returning the
+    /// openings under an unregistered mint at asset id 0.
+    pub fn extend_with_ring<K: ShieldedKeys + ?Sized, R: RingCodec + ?Sized>(
+        &mut self,
+        shielded_keys: &K,
+        events: &[ShieldedTransaction],
+        assets: &AssetRegistry,
+        ring: &R,
+    ) -> Result<Vec<WalletUtxo>, R::Error> {
+        let openings = events
+            .iter()
+            .map(|event| {
+                if event.ring_program_id == Some(ring.ring_program_id()) {
+                    ring.open(event)
+                } else {
+                    Ok(Vec::new())
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(self.extend_opened(shielded_keys, events, assets, &openings)?)
+    }
+
+    /// `openings` pairs with `transactions` by position, a missing entry opens nothing.
+    fn extend_opened<K: ShieldedKeys + ?Sized>(
+        &mut self,
+        shielded_keys: &K,
+        transactions: &[ShieldedTransaction],
+        assets: &AssetRegistry,
+        openings: &[Vec<RingOpening>],
+    ) -> Result<Vec<WalletUtxo>, TransactionError> {
         let address = shielded_keys.address()?;
         let mut found = Vec::new();
+        let mut unregistered = Vec::new();
         let mut unknown_asset_ids = BTreeSet::new();
         let mut unknown_mints = BTreeSet::new();
-        for tx in transactions {
+        for (index, tx) in transactions.iter().enumerate() {
+            let openings = openings.get(index).map_or(&[][..], Vec::as_slice);
             for (position, slot) in tx.output_slots.iter().enumerate() {
                 let slot_index =
                     u32::try_from(position).map_err(|_| TransactionError::TooManyOutputs)?;
+                let published = |utxo, data_hash, ring_data_hash| WalletUtxo {
+                    utxo,
+                    nullifier_pubkey: address.nullifier_pubkey,
+                    utxo_hash: slot.output_context.hash,
+                    nullifier: [0; 32],
+                    tx_viewing_key: None,
+                    data_hash,
+                    ring_data_hash,
+                    tree_id: slot.output_context.tree_id,
+                    leaf_index: slot.output_context.leaf_index,
+                    latest_tree_id: None,
+                    slot: tx.slot,
+                    tx_signature: tx.tx_signature,
+                    slot_index,
+                };
+                for opening in openings
+                    .iter()
+                    .filter(|opening| opening.slot_index == slot_index)
+                {
+                    let mut note = WalletUtxo {
+                        nullifier_pubkey: opening.nullifier_pubkey,
+                        ..published(
+                            Utxo {
+                                owner: address.signing_pubkey,
+                                asset: Mint::new(opening.mint, 0),
+                                amount: opening.amount,
+                                blinding: opening.blinding,
+                                ring_program_id: tx.ring_program_id,
+                                data: opening.data.clone(),
+                            },
+                            opening.data_hash,
+                            opening.ring_data_hash,
+                        )
+                    };
+                    if !opens(&address, &note)? {
+                        continue;
+                    }
+                    // The commitment binds the mint address, never its registry id.
+                    match assets.asset_id(&opening.mint) {
+                        Ok(asset_id) => {
+                            note.utxo.asset.asset_id = asset_id;
+                            found.push(note);
+                        }
+                        Err(_) => {
+                            unknown_mints.insert(opening.mint);
+                            unregistered.push(note);
+                        }
+                    }
+                }
                 let decoded =
                     match decode_slot(shielded_keys, &address, tx, slot, slot_index, assets) {
                         Ok(Some(decoded)) => decoded,
@@ -168,36 +268,18 @@ impl DecryptionResult {
                         }
                         Err(error) => return Err(error),
                     };
-                for utxo in decoded.utxos {
-                    let hash = slot.output_context.hash;
-                    found.push(WalletUtxo {
-                        utxo,
-                        nullifier_pubkey: address.nullifier_pubkey,
-                        utxo_hash: hash,
-                        nullifier: [0; 32],
-                        tx_viewing_key: None,
-                        data_hash: decoded.data_hash,
-                        ring_data_hash: decoded.ring_data_hash,
-                        tree_id: slot.output_context.tree_id,
-                        leaf_index: slot.output_context.leaf_index,
-                        latest_tree_id: None,
-                        slot: tx.slot,
-                        tx_signature: tx.tx_signature,
-                        slot_index,
-                    });
-                }
+                found.extend(
+                    decoded
+                        .utxos
+                        .into_iter()
+                        .map(|utxo| published(utxo, decoded.data_hash, decoded.ring_data_hash)),
+                );
             }
         }
-        assign_nullifiers(shielded_keys, &mut found)?;
+        assign_nullifiers(shielded_keys, found.iter_mut().chain(&mut unregistered))?;
         let mut utxos = self.utxos.clone();
         utxos.extend(found);
-        utxos.sort_by_key(|utxo| {
-            (
-                utxo.slot,
-                utxo.tx_signature.as_ref().to_vec(),
-                utxo.slot_index,
-            )
-        });
+        utxos.sort_by(WalletUtxo::chain_order);
         self.utxos = utxos;
         self.spent_nullifiers.extend(
             transactions
@@ -206,7 +288,7 @@ impl DecryptionResult {
         );
         self.unknown_asset_ids.extend(unknown_asset_ids);
         self.unknown_mints.extend(unknown_mints);
-        Ok(())
+        Ok(unregistered)
     }
 }
 
@@ -236,52 +318,21 @@ impl OwnedUtxos {
     /// The unspent ones, as [`verify_spendable`] returns them, for a caller
     /// that keeps the spent ones too: it asks the key holder nothing more.
     pub fn spendable(&self) -> SpendableDecryptionResult {
-        let mut by_mint: HashMap<Address, AssetBalance> = HashMap::new();
-        let mut utxos_with_data = Vec::new();
-        for wallet_utxo in &self.utxos {
-            if self.spent.contains(&wallet_utxo.nullifier) {
-                continue;
-            }
-            let wallet_utxo = wallet_utxo.clone();
-            if wallet_utxo.utxo.data.utxo_data().is_some()
-                || wallet_utxo.utxo.data.ring_data().is_some()
-                || wallet_utxo.data_hash.is_some()
-                || wallet_utxo.ring_data_hash.is_some()
-                || wallet_utxo.utxo.ring_program_id.is_some()
-            {
-                utxos_with_data.push(wallet_utxo);
-                continue;
-            }
-            let asset = wallet_utxo.utxo.asset;
-            let balance = match by_mint.entry(asset.asset) {
-                Entry::Occupied(occupied) => occupied.into_mut(),
-                Entry::Vacant(vacant) => vacant.insert(AssetBalance {
-                    asset_id: asset.asset_id,
-                    mint: asset.asset,
-                    amount: 0,
-                    utxos: Vec::new(),
-                }),
-            };
-            balance.amount = balance.amount.saturating_add(wallet_utxo.utxo.amount);
-            balance.utxos.push(wallet_utxo);
-        }
-        let mut balances: Vec<AssetBalance> = by_mint.into_values().collect();
-        balances.sort_by_key(|balance| balance.asset_id);
-        for utxos in balances
-            .iter_mut()
-            .map(|balance| &mut balance.utxos)
-            .chain(std::iter::once(&mut utxos_with_data))
-        {
-            utxos.sort_by_key(|utxo| {
-                (
-                    utxo.slot,
-                    utxo.tx_signature.as_ref().to_vec(),
-                    utxo.slot_index,
-                )
+        let (mut utxos_with_data, default_ring): (Vec<_>, Vec<_>) = self
+            .utxos
+            .iter()
+            .filter(|utxo| !self.spent.contains(&utxo.nullifier))
+            .cloned()
+            .partition(|utxo| {
+                utxo.utxo.data.utxo_data().is_some()
+                    || utxo.utxo.data.ring_data().is_some()
+                    || utxo.data_hash.is_some()
+                    || utxo.ring_data_hash.is_some()
+                    || utxo.utxo.ring_program_id.is_some()
             });
-        }
+        utxos_with_data.sort_by(WalletUtxo::chain_order);
         SpendableDecryptionResult {
-            balances: Balances { assets: balances },
+            balances: default_ring.into_iter().collect(),
             utxos_with_data,
             unknown_asset_ids: self.unknown_asset_ids.clone(),
             unknown_mints: self.unknown_mints.clone(),
@@ -301,23 +352,7 @@ pub fn verify_owned<K: ShieldedKeys + ?Sized>(
     let mut claimed = HashSet::new();
     let mut verified = Vec::new();
     for input in &decrypted.utxos {
-        if input.utxo.owner != address.signing_pubkey
-            || input.nullifier_pubkey != address.nullifier_pubkey
-            || (input.utxo.data.utxo_data().is_some() && input.data_hash.is_none())
-            || (input.utxo.data.ring_data().is_some() && input.ring_data_hash.is_none())
-        {
-            continue;
-        }
-        let hash = input.utxo.hash(
-            &address.nullifier_pubkey,
-            &input.data_hash.unwrap_or_default(),
-            &input.ring_data_hash.unwrap_or_default(),
-            input.tree_id,
-        )?;
-        if hash != input.utxo_hash {
-            continue;
-        }
-        if claimed.insert(hash) {
+        if opens(&address, input)? && claimed.insert(input.utxo_hash) {
             verified.push(input.clone());
         }
     }
@@ -333,6 +368,26 @@ pub fn verify_owned<K: ShieldedKeys + ?Sized>(
         unknown_asset_ids: decrypted.unknown_asset_ids.clone(),
         unknown_mints: decrypted.unknown_mints.clone(),
     })
+}
+
+fn opens(address: &ShieldedAddress, input: &WalletUtxo) -> Result<bool, TransactionError> {
+    let nullifier_pubkey = input.nullifier_pubkey;
+    let held = nullifier_pubkey == address.nullifier_pubkey
+        || (nullifier_pubkey == ZERO_NULLIFIER_PUBKEY && input.utxo.ring_program_id.is_some());
+    if input.utxo.owner != address.signing_pubkey
+        || !held
+        || (input.utxo.data.utxo_data().is_some() && input.data_hash.is_none())
+        || (input.utxo.data.ring_data().is_some() && input.ring_data_hash.is_none())
+    {
+        return Ok(false);
+    }
+    let hash = input.utxo.hash(
+        &input.nullifier_pubkey,
+        &input.data_hash.unwrap_or_default(),
+        &input.ring_data_hash.unwrap_or_default(),
+        input.tree_id,
+    )?;
+    Ok(hash == input.utxo_hash)
 }
 
 /// One slot's decoded contents. `data_hash` and `ring_data_hash` are the ones
@@ -590,10 +645,18 @@ fn trial_decrypt<K: ShieldedKeys + ?Sized>(
     Ok(Some(plaintexts))
 }
 
-fn assign_nullifiers<K: ShieldedKeys + ?Sized>(
+fn assign_nullifiers<'a, K: ShieldedKeys + ?Sized>(
     shielded_keys: &K,
-    utxos: &mut [WalletUtxo],
+    utxos: impl IntoIterator<Item = &'a mut WalletUtxo>,
 ) -> Result<(), TransactionError> {
+    let (zero_keyed, mut utxos): (Vec<_>, Vec<_>) = utxos
+        .into_iter()
+        .partition(|input| input.nullifier_pubkey == ZERO_NULLIFIER_PUBKEY);
+    // The zero secret is public, its nullifier needs no holder.
+    let zero_key = NullifierKey::from_secret([0; BLINDING_LEN]);
+    for input in zero_keyed {
+        input.nullifier = zero_key.nullifier(&input.utxo_hash, &input.utxo.blinding)?;
+    }
     if utxos.is_empty() {
         return Ok(());
     }

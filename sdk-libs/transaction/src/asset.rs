@@ -66,11 +66,33 @@ impl From<&AssetBalance> for AssetAmount {
     }
 }
 
-/// Spendable default-ring balances. Ring-bound notes are never in here; a
-/// wallet reports those separately.
+/// One entry per mint, ordered by asset id.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Balances {
     pub assets: Vec<AssetBalance>,
+}
+
+impl FromIterator<WalletUtxo> for Balances {
+    fn from_iter<I: IntoIterator<Item = WalletUtxo>>(utxos: I) -> Self {
+        let mut by_mint: HashMap<Address, AssetBalance> = HashMap::new();
+        for wallet_utxo in utxos {
+            let Mint { asset, asset_id } = wallet_utxo.utxo.asset;
+            let balance = by_mint.entry(asset).or_insert_with(|| AssetBalance {
+                asset_id,
+                mint: asset,
+                amount: 0,
+                utxos: Vec::new(),
+            });
+            balance.amount = balance.amount.saturating_add(wallet_utxo.utxo.amount);
+            balance.utxos.push(wallet_utxo);
+        }
+        let mut assets: Vec<AssetBalance> = by_mint.into_values().collect();
+        assets.sort_by_key(|balance| balance.asset_id);
+        for balance in &mut assets {
+            balance.utxos.sort_by(WalletUtxo::chain_order);
+        }
+        Self { assets }
+    }
 }
 
 impl Balances {

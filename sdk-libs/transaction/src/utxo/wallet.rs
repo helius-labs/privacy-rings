@@ -1,5 +1,7 @@
 //! The indexer-side twin of [`SppProofInputUtxo`].
 
+use std::cmp::Ordering;
+
 use solana_signature::Signature;
 
 use super::{SppProofInputUtxo, Utxo};
@@ -166,6 +168,14 @@ impl WalletUtxo {
 
     pub fn tree_id(&self) -> u16 {
         self.tree_id
+    }
+
+    pub(crate) fn chain_order(&self, other: &Self) -> Ordering {
+        (self.slot, self.tx_signature.as_ref(), self.slot_index).cmp(&(
+            other.slot,
+            other.tx_signature.as_ref(),
+            other.slot_index,
+        ))
     }
 
     /// The output tree a transaction spending `inputs` uses unless it is told
