@@ -215,7 +215,7 @@ impl<R, I> AsyncSprClient<R, I> {
     }
 
     /// A proof from the client's prover, server or custom.
-    async fn prove_request(&self, request: CircuitRequest) -> Result<Proof, ClientError> {
+    async fn prove_request(&self, request: CircuitRequest<'_>) -> Result<Proof, ClientError> {
         match &self.prover {
             ProverBackend::Server(prover) => prover.prove(&request).await,
             ProverBackend::Custom(prover) => {
@@ -411,8 +411,9 @@ impl<R> SprClient<R, SprIndexer> {
 /// Tokio's blocking pool rather than on the worker that awaits it.
 async fn prove_on_blocking_pool(
     prover: Arc<dyn Prover>,
-    request: CircuitRequest,
+    request: CircuitRequest<'_>,
 ) -> Result<Proof, ClientError> {
+    let request = request.into_owned();
     tokio::task::spawn_blocking(move || prover.prove(&request))
         .await
         .map_err(|error| ClientError::Prover(format!("prover task failed: {error}")))?

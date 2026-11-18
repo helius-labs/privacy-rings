@@ -171,7 +171,7 @@ impl AssembledTransfer {
     }
 
     /// The request that proves this assembly once its inputs are complete.
-    pub(crate) fn request(&self) -> Result<CircuitRequest, ClientError> {
+    pub(crate) fn request(&self) -> Result<CircuitRequest<'_>, ClientError> {
         match &self.authorization {
             Some(authorization) => crate::prover::requests::transfer_confidential_eddsa(
                 &ConfidentialEddsaTransferInputs {
