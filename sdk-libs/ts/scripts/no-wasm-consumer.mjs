@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 
-// Remove the global before any SDK module is evaluated.
+// Keep Node 22's WASM-backed HTTP parser out of this mocked-network fixture.
+globalThis.fetch = async () => assert.fail("Unexpected global fetch");
+globalThis.WebSocket = class {
+  constructor() {
+    assert.fail("Unexpected WebSocket connection");
+  }
+};
+
+// Remove WebAssembly before any SDK module is evaluated.
 Reflect.deleteProperty(globalThis, "WebAssembly");
 assert.equal(typeof globalThis.WebAssembly, "undefined");
 
@@ -40,7 +48,21 @@ const client = await createSprClient({
       default:
         assert.fail(`Unexpected method: ${method}`);
     }
-    return Response.json({ jsonrpc: "2.0", id, result });
+    const text = JSON.stringify({ jsonrpc: "2.0", id, result });
+    return {
+      ok: true,
+      status: 200,
+      headers: {
+        get: (name) => (name === "content-type" ? "application/json" : null),
+      },
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(text));
+          controller.close();
+        },
+      }),
+      text: async () => text,
+    };
   },
 });
 
