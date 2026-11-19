@@ -7,5 +7,6 @@
   "viewTagLength": 32,
   "inputTrees": 5,
   "maxInputTrees": 2,
-  "maxSpendInputs": 40
+  "maxSpendInputs": 40,
+  "maxInterfaceTransfers": 32
 }
