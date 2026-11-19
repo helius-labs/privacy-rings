@@ -5,7 +5,7 @@ This builds from source, so it pulls the workspace's git dependencies; the CLI i
 not published to crates.io.
 
 ```bash
-cargo install --git https://github.com/helius-labs/zolana --tag v0.4.0-alpha spr-cli
+cargo install --git https://github.com/helius-labs/privacy-rings --tag cli-v0.10.0 spr-cli
 ```
 
 Installing at the release tag keeps the CLI's embedded proving-key/artifact
@@ -38,7 +38,8 @@ Commands:
 ```bash
 zolana config get
 zolana config set --keypair ~/.config/zolana/pid.json --rpc-url http://127.0.0.1:8899 --indexer-url http://127.0.0.1:8784 --prover-url http://127.0.0.1:3001
-zolana wallet init --airdrop-lamports 1000000000
+zolana wallet new --airdrop-lamports 1000000000
+zolana wallet register
 zolana dev pool create-tree --airdrop-lamports 10000000000000
 zolana sync --indexer-url http://127.0.0.1:8784
 zolana balance --indexer-url http://127.0.0.1:8784
@@ -48,9 +49,10 @@ zolana withdraw --to <PUBLIC_SOL_PUBKEY> --amount 200000000 --mint SOL
 ```
 
 Wallet commands use the wallet file's Solana funding key for fees/public SOL
-deposits and its shielded keypair for private ownership. `wallet init` creates
-or loads the wallet file and registers its shielded keys in the on-chain
-user-registry program. `deposit` shields public SOL into the local wallet by
+deposits and its shielded keypair for private ownership. `wallet new` creates
+the wallet file (`--airdrop-lamports` only funds it on localnet), and
+`wallet register` publishes its shielded keys to the on-chain user-registry
+program. `deposit` shields public SOL into the local wallet by
 default and requires that wallet to be registered; `deposit --to <PUBKEY>`
 resolves the recipient from the on-chain user registry and never reads the
 recipient's wallet secrets. `transfer --to <PUBKEY>` resolves registered
