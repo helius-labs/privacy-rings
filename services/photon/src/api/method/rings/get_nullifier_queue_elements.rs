@@ -240,6 +240,47 @@ mod tests {
         );
     }
 
+    /// Rolling back the partial index keeps unqueued rows out of the queue: they
+    /// get distinct negative sequences, so the full unique index recreates.
+    #[tokio::test]
+    async fn rolling_back_the_partial_index_keeps_unqueued_rows() {
+        let tree = pubkey(6);
+        let db = setup(tree, 2).await;
+        for input_index in 2..4 {
+            rings_tx_nullifiers::Entity::insert(rings_tx_nullifiers::ActiveModel {
+                nullifier_id: Default::default(),
+                rings_tx_id: Set(1),
+                slot: Set(7),
+                input_index: Set(input_index),
+                nullifier_tree: Set(tree.to_bytes_vec()),
+                input_queue_seq: Set(crate::ingester::persist::NOT_QUEUED_INPUT_QUEUE_SEQ),
+                nullifier: Set(nullifier(0x80 + u8::try_from(input_index).unwrap()).to_vec()),
+            })
+            .exec(&db)
+            .await
+            .unwrap();
+        }
+
+        RingsMigrator::down(&db, Some(1)).await.unwrap();
+
+        let rows = rings_tx_nullifiers::Entity::find().all(&db).await.unwrap();
+        assert_eq!(rows.len(), 4);
+        let response = get_nullifier_queue_elements(
+            &db,
+            GetNullifierQueueElementsRequest {
+                tree_account: tree,
+                start_seq: 0,
+                limit: limit(10),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            response.elements.iter().map(|e| e.seq).collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+    }
+
     #[tokio::test]
     async fn filters_by_tree() {
         let tree = pubkey(3);

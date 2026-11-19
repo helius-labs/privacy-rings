@@ -77,17 +77,17 @@ apply to every row. INV-XC-12 tracks the anonymous commitment proof boundary.
 
 ## Summary
 
-- Total invariants: 305
+- Total invariants: 306
   - transact.md: 60 (Transact 45, RingTransact 8, RingAuthorityTransact 7)
   - deposit.md: 35 (Deposit 25, RingDeposit 10)
   - merge.md: 46 (MergeTransact 22, RingMergeTransact 15, MergeCache 9)
-  - tree.md: 61 (CreateTree 12, BatchUpdateNullifierTree 9, PauseTree 5, nullifier PDAs INV-TRANSACT-46..50, open-PDA accounting 1, CloseNullifierPdas 11, SetTreeFees 10, ClaimTreeLamports 8)
+  - tree.md: 62 (CreateTree 12, BatchUpdateNullifierTree 9, PauseTree 5, nullifier PDAs INV-TRANSACT-46..51, open-PDA accounting 1, CloseNullifierPdas 11, SetTreeFees 10, ClaimTreeLamports 8)
   - protocol-config.md: 18 (Create 10, Update 8)
   - ring-config.md: 26 (Create 9, UpdateOwner 5, Update 6, SetRingActivation 6)
   - spl.md: 22 (CreateAssetCounter 8, CreateSplInterface 14)
   - event.md: 4
   - cross-cutting.md: 33
-- Critical (funds/double-spend/authority takeover): 106
+- Critical (funds/double-spend/authority takeover): 107
 - High: 115
 - Medium: 78
 - Not applicable post-PR164: 6 (the both-amounts gate (INV-TRANSACT-12), the merge ciphertext/`merge_view_tag` entries, of which the merge ciphertext entries returned on 2026-10-15 as INV-MERGE-29..31, and the merge owner scheme (INV-MERGE-05); the P256 entries returned with PR172 and are re-scoped, not N/A; IDs retained, never renumbered)
@@ -168,7 +168,7 @@ restated; no IDs added or removed.
 
 Current coverage (2026-10-20):
 
-- Covered: 276 / 305
+- Covered: 277 / 306
 - Covered on companion security branches (#175, #176): 2 (the `- [~]` entries:
   INV-CREATE-AC-07, INV-BATCH-NULL-07 — behavior and tests land with those
   branches)
@@ -176,11 +176,11 @@ Current coverage (2026-10-20):
 - Pointer: 1 (INV-XC-30, by design: it documents reachability and defers to INV-XC-31 / INV-TRANSACT-44 for coverage; it is counted in cross-cutting's 6 partial+untested below)
 - Not covered: 0
 
-(277 + 2 + 20 + 1 + 5 = 305. The per-file partial+untested column sums to 21
+(278 + 2 + 20 + 1 + 5 = 306. The per-file partial+untested column sums to 21
 because it includes the pointer.)
 
 Per file (covered / partial+untested / companion / not-applicable):
-transact 57/2/0/1, deposit 35/0/0/0, merge 34/7/0/5, tree 56/4/1/0,
+transact 57/2/0/1, deposit 35/0/0/0, merge 34/7/0/5, tree 57/4/1/0,
 protocol-config 18/0/0/0, ring-config 24/2/0/0, spl 21/0/1/0, event 4/0/0/0,
 cross-cutting 27/6/0/0.
 

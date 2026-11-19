@@ -46,6 +46,15 @@ impl MigrationTrait for Migration {
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        // The full index admits one row per sequence, so give every unqueued
+        // row its own negative sequence first. Queue readers still skip them.
+        manager
+            .get_connection()
+            .execute_unprepared(
+                "UPDATE rings_tx_nullifiers SET input_queue_seq = -nullifier_id \
+                 WHERE input_queue_seq < 0",
+            )
+            .await?;
         manager
             .create_index(
                 Index::create()
