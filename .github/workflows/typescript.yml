@@ -83,7 +83,7 @@ jobs:
           });
           NODE
           )
-          cp sdk-libs/ts/scripts/no-wasm-consumer.mjs "$tmp/"
+          cp sdk-libs/ts/scripts/no-wasm-consumer.mjs sdk-libs/ts/scripts/hermes-consumer.mjs "$tmp/"
           node "$tmp/no-wasm-consumer.mjs"
 
   e2e:

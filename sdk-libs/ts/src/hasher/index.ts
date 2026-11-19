@@ -104,7 +104,8 @@ export function poseidon(inputs: readonly Uint8Array[]): Uint8Array {
     const [digest] = permutation([0n, ...values]);
     if (digest !== undefined) return active.toBytes(digest);
   } catch {
-    throw new HasherFailure("Poseidon", "Poseidon rejected the input");
+    // Inputs are validated above, so only a parameter or library fault reaches here.
+    throw new HasherFailure("Poseidon", "the Poseidon permutation failed on validated inputs");
   }
   throw new HasherFailure("Poseidon", "Poseidon returned no digest");
 }

@@ -27,12 +27,16 @@ export async function checkHermesDeposit() {
         },
       ],
     });
-    const data = Array.from(instruction.data, (byte) => byte.toString(16).padStart(2, "0")).join(
-      "",
-    );
     // The owner hash is pinned by test-vectors/key_derivation.json.
-    const ownerHash = "1095ab4e1b59e42e4be89f49210af7f42ed3d7d9c45065afcce69a9c5a877e36";
-    if (!data.includes(ownerHash)) throw new Error("Deposit instruction has the wrong owner hash");
+    const ownerHash = Uint8Array.from(
+      "1095ab4e1b59e42e4be89f49210af7f42ed3d7d9c45065afcce69a9c5a877e36".match(/../g),
+      (pair) => Number.parseInt(pair, 16),
+    );
+    const { data } = instruction;
+    const found = data.some((_, start) =>
+      ownerHash.every((byte, offset) => data[start + offset] === byte),
+    );
+    if (!found) throw new Error("Deposit instruction has the wrong owner hash");
   } finally {
     keypair.destroy();
   }

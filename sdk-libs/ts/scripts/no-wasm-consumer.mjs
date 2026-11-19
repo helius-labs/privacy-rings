@@ -110,3 +110,12 @@ try {
 } finally {
   keypair.destroy();
 }
+
+// Node without WebAssembly stands in for Hermes, so the in-app check runs in CI.
+const { checkHermesDeposit } = await import("./hermes-consumer.mjs");
+globalThis.HermesInternal = {};
+try {
+  await checkHermesDeposit();
+} finally {
+  Reflect.deleteProperty(globalThis, "HermesInternal");
+}

@@ -5,6 +5,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import fixture from "../vectors/poseidon-parity-v1.json" with { type: "json" };
 import {
   HasherFailure,
+  type HasherFailureCode,
   MAX_POSEIDON_INPUTS,
   initializePoseidon,
   poseidon,
@@ -67,13 +68,22 @@ describe("Poseidon parity with Rust", () => {
     }
   });
 
-  it("rejects empty, over-wide, and over-arity inputs", () => {
-    expect(() => poseidon([])).toThrow(HasherFailure);
-    expect(() => poseidon([new Uint8Array(33)])).toThrow(HasherFailure);
-    expect(() =>
-      poseidon(Array.from({ length: MAX_POSEIDON_INPUTS + 1 }, () => new Uint8Array(32))),
-    ).toThrow(HasherFailure);
-  });
+  const rejectCodes: Record<string, HasherFailureCode> = {
+    arity: "InvalidNumFields",
+    longerThan32: "InvalidInputLength",
+    notCanonical: "Poseidon",
+  };
+  // Rust rejects inputs shorter than 32 bytes; TS left-pads them (see `shortInputs`).
+  it.each(fixture.rejects.filter((reject) => reject.kind !== "shorterThan32"))(
+    "rejects $id like Rust",
+    (reject) => {
+      const code = rejectCodes[reject.kind];
+      expect(code).toBeDefined();
+      expect(() => poseidon(reject.inputsBytes.map(bytes))).toThrow(
+        expect.objectContaining({ name: HasherFailure.name, code }),
+      );
+    },
+  );
 });
 
 describe("shielded key material", () => {
