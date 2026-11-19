@@ -145,6 +145,13 @@ and verifies real proofs and rejected witness/public-input mutations.
     `dynamic-swap-zk-keys-${{ github.sha }}`; lifecycle jobs download them to
     `target/zk/dynamic-swap-program`.
 
+    The `tests / programs` job runs `just test-program-proofs-programs-only`.
+    Besides the proof-backed transact, withdrawal, settlement, merge and cache
+    suites, it runs `transact_functional_vectors`: every default-ring case of
+    `test-vectors/transact_functional.json`, proved and settled on the
+    in-circuit owner rail. The catalog itself is checked by the hermetic
+    `spr-test-utils` run (item 22).
+
     `just test-feature-gate` checks the feature-gate crate and shielded-pool
     admission with `confidential-eddsa` disabled and explicitly enabled, plus
     the protocol CLI's binary inspection. It is part of `test-hermetic`.
