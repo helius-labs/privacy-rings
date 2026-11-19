@@ -247,6 +247,7 @@ export interface ExternalDataInit {
 
 /** Rust's default expiry: `u64::MAX`, meaning no expiry. */
 const NO_EXPIRY = 0xffff_ffff_ffff_ffffn;
+export const MAX_INTERFACE_TRANSFERS = 32;
 function externalDataHash(data: ExternalDataFields): Bytes32 {
   if (data.outputs.length !== data.resolvedOwnerTags.length) {
     throw new TransactionError("TRANSACTION_OUTPUT_TAG_MISMATCH");
@@ -276,10 +277,10 @@ function externalDataHash(data: ExternalDataFields): Bytes32 {
     }
   };
   checkedInteger(data.expiryUnixTs, 8);
-  if (data.interfaceTransfers.length > 0xff) {
+  if (data.interfaceTransfers.length > MAX_INTERFACE_TRANSFERS) {
     throw new TransactionError("TRANSACTION_TOO_MANY_INTERFACE_TRANSFERS", {
       got: data.interfaceTransfers.length,
-      max: 0xff,
+      max: MAX_INTERFACE_TRANSFERS,
     });
   }
   for (const transfer of data.interfaceTransfers) {
@@ -845,14 +846,12 @@ export class SppProofInputs {
 
   /**
    * The published nullifier of input slot 0, which the circuit derives every
-   * output blinding and the private transaction blinding from. Slot 0 must be
-   * a state spend or reserved address.
+   * output blinding and the private transaction blinding from. Slot 0 is a
+   * dummy only when every input is a dummy.
    */
   firstNullifier(): Bytes32 {
     const first = this.inputUtxos[0];
-    if (first === undefined || first.isDummy()) {
-      throw new TransactionError("TRANSACTION_NO_INPUTS");
-    }
+    if (first === undefined) throw new TransactionError("TRANSACTION_NO_INPUTS");
     return first.nullifier();
   }
 
@@ -926,6 +925,10 @@ export type WithdrawalTarget =
       splInterfaceBump: number;
     }>;
 
+export type DepositSource =
+  | Readonly<{ kind: "sol"; funder: Address }>
+  | Readonly<{ kind: "spl"; sourceTokenAccount: Address; splInterfaceBump: number }>;
+
 export const WithdrawalTarget = Object.freeze({
   sol(input: Readonly<{ recipient: Address }>): Extract<WithdrawalTarget, { kind: "sol" }> {
     return Object.freeze({ ...input, kind: "sol" });
@@ -998,6 +1001,9 @@ interface Recipient {
 
 const ZERO_ADDRESS = address("11111111111111111111111111111111");
 
+/** Holds only lists `newDeposit` builds and never exposes. */
+const depositInputs = new WeakSet<readonly ProofInputUtxo[]>();
+
 export class ConfidentialTransfer {
   readonly #owner: ShieldedAddress;
   readonly #inputs: readonly ProofInputUtxo[];
@@ -1007,6 +1013,7 @@ export class ConfidentialTransfer {
   readonly #inputTreeIds: readonly TreeId[];
   #outputTreeId: TreeId = DEFAULT_TREE_ID;
   #withdrawal?: Readonly<{ asset: Address; amount: bigint; target: WithdrawalTarget }>;
+  readonly #deposits: Readonly<{ asset: Address; leg: SettlementTransfer }>[] = [];
   #shape?: Shape;
   #ringProgramId?: Address;
   #compactPadding = false;
@@ -1028,19 +1035,31 @@ export class ConfidentialTransfer {
     return transfer;
   }
 
+  /** SPP refuses the deposit unless `outputTreeId` has dummy-input headroom for each input slot. */
+  static newDeposit(
+    owner: ShieldedAddress,
+    outputTreeId: TreeId,
+    feePayer: Address,
+  ): ConfidentialTransfer {
+    const inputs = [ProofInputUtxo.dummy(undefined, outputTreeId)];
+    depositInputs.add(inputs);
+    return new ConfidentialTransfer(owner, inputs, feePayer).withOutputTreeId(outputTreeId);
+  }
+
   constructor(owner: ShieldedAddress, inputs: readonly ProofInputUtxo[], feePayer: Address) {
     if (inputs.length === 0) throw new TransactionError("TRANSACTION_NO_INPUTS");
-    inputs.forEach((input, index) => {
-      if (input.isDummy()) {
-        throw new TransactionError("TRANSACTION_DUMMY_INPUT_NOT_ALLOWED", { index });
-      }
-      if (
-        !equalBytes(input.utxo.owner.toBytes(), owner.signingPublicKey.toBytes()) ||
-        !equalBytes(input.nullifierPublicKey, owner.nullifierPublicKey)
-      ) {
-        throw new TransactionError("TRANSACTION_INPUT_OWNER_MISMATCH", { index });
-      }
-    });
+    if (!depositInputs.has(inputs))
+      inputs.forEach((input, index) => {
+        if (input.isDummy()) {
+          throw new TransactionError("TRANSACTION_DUMMY_INPUT_NOT_ALLOWED", { index });
+        }
+        if (
+          !equalBytes(input.utxo.owner.toBytes(), owner.signingPublicKey.toBytes()) ||
+          !equalBytes(input.nullifierPublicKey, owner.nullifierPublicKey)
+        ) {
+          throw new TransactionError("TRANSACTION_INPUT_OWNER_MISMATCH", { index });
+        }
+      });
     this.#inputTreeIds = inputTreeIds(inputs);
     this.#owner = owner;
     this.#inputs = [...inputs];
@@ -1117,19 +1136,47 @@ export class ConfidentialTransfer {
     this.#withdrawal = { asset, amount, target };
   }
 
+  deposit(asset: Address, amount: bigint, source: DepositSource): void {
+    checkU64(amount, "deposit amount");
+    if (amount === 0n) throw new TransactionError("TRANSACTION_ZERO_INTERFACE_TRANSFER_AMOUNT");
+    if ((source.kind === "sol") !== (asset === ZERO_ADDRESS)) {
+      throw new TransactionError("TRANSACTION_DEPOSIT_ASSET_MISMATCH");
+    }
+    const leg: SettlementTransfer =
+      source.kind === "sol"
+        ? { kind: "sol", isDeposit: true, amount, userSolAccount: source.funder }
+        : {
+            kind: "spl",
+            mint: asset,
+            isDeposit: true,
+            amount,
+            tokenAccount: source.sourceTokenAccount,
+            splInterfaceBump: source.splInterfaceBump,
+          };
+    this.#deposits.push(Object.freeze({ asset, leg }));
+  }
+
   prepare(): PreparedTransfer {
     const splAssets = new Set(
       [
         ...this.#inputs.map((input) => input.utxo.asset),
         ...this.#recipients.map((recipient) => recipient.asset),
         ...(this.#withdrawal ? [this.#withdrawal.asset] : []),
+        ...this.#deposits.map((deposit) => deposit.asset),
       ].filter((asset) => asset !== ZERO_ADDRESS),
     );
     if (splAssets.size > 1) throw new TransactionError("TRANSACTION_MULTIPLE_PUBLIC_SPL_ASSETS");
     const splAsset = [...splAssets][0];
-    const publicSol = this.#withdrawal?.asset === ZERO_ADDRESS ? -this.#withdrawal.amount : 0n;
+    const deposited = (asset: Address): bigint =>
+      this.#deposits
+        .filter((deposit) => deposit.asset === asset)
+        .reduce((sum, deposit) => sum + deposit.leg.amount, 0n);
+    const publicSol =
+      deposited(ZERO_ADDRESS) -
+      (this.#withdrawal?.asset === ZERO_ADDRESS ? this.#withdrawal.amount : 0n);
     const publicSpl =
-      this.#withdrawal && this.#withdrawal.asset !== ZERO_ADDRESS ? -this.#withdrawal.amount : 0n;
+      (splAsset === undefined ? 0n : deposited(splAsset)) -
+      (this.#withdrawal && this.#withdrawal.asset !== ZERO_ADDRESS ? this.#withdrawal.amount : 0n);
     const change = (asset: Address, publicAmount: bigint): bigint => {
       const inputs = this.#inputs
         .filter((input) => input.utxo.asset === asset)
@@ -1210,7 +1257,7 @@ export class ConfidentialTransfer {
     // authority for encryption are the real outputs only.
     const inputs = [...this.#inputs];
     const target = this.#withdrawal?.target;
-    const interfaceTransfers: SettlementTransfer[] =
+    const withdrawals: SettlementTransfer[] =
       this.#withdrawal === undefined || target === undefined
         ? []
         : target.kind === "sol"
@@ -1243,7 +1290,10 @@ export class ConfidentialTransfer {
       outputTreeId: this.#outputTreeId,
       shape,
       payer: this.#payer,
-      interfaceTransfers: Object.freeze(interfaceTransfers),
+      interfaceTransfers: Object.freeze([
+        ...this.#deposits.map((deposit) => deposit.leg),
+        ...withdrawals,
+      ]),
       senderOutputCount,
       ...ring,
       ...(this.#compactPadding ? { compactPadding: true } : {}),

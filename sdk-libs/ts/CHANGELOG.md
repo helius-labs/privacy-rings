@@ -39,6 +39,7 @@ Added
 - `buildRingPaymentTransaction` pays a shielded address inside a custom ring from default pool notes through the `RingTransfers` a ring's SDK implements, refuses proof inputs that spend other notes, pay anyone but the recipient and the wallet, leave the ring or settle publicly, and fails with `WALLET_BUILD_RING_PAYMENT`.
 - `RingTransfers.proveRingTransfer` gets keys that answer only for the reserved notes and fail otherwise with `WALLET_RING_KEY_WITHHELD`, calls `authorize` once on the final proof inputs to get the in-proof owner's signature, and returns the ring `instruction` with its `computeUnitLimit`.
 - `decryptTransactions` takes a `ring` `RingCodec`, asks it to open only the events of its `ringProgramId`, and stores each `RingOpening` only when it rebuilds the published commitment under its `nullifierPublicKey`, the holder's key or the `ZERO_NULLIFIER_PK` that `@heliuslabs/spr/interface` now exports, so `Wallet.ringBalances()` shows notes that only the ring can decrypt, and leaves out an opening under a mint the registry lacks, naming its asset field in `SyncReport.unknownAssetFields` and returning the note with its nullifier in `SyncReport.unregisteredRingNotes` until the mint registers.
+- `ConfidentialTransfer.newDeposit(owner, outputTreeId, feePayer)` builds a transfer that spends no note and proves only with `proofDataSource: "prover"`, and `ConfidentialTransfer.deposit(asset, amount, source)` funds its outputs from the public SOL or SPL account a `DepositSource` names, failing with `TransactionErrorCode.TRANSACTION_DEPOSIT_ASSET_MISMATCH` when the source kind does not match the asset.
 
 Changed
 
@@ -52,6 +53,7 @@ Fixed
 - `syncWallet` failed with `TRANSACTION_KEYS_UNRESOLVED` when a reserved or unknown output scheme accompanied a confidential note and misclassified authored spends containing one as withdrawals or splits; it now stores the note and omits those history rows.
 - `syncWallet` dropped UTXOs appended to any tree but tree 0, and transfers and withdrawals passed over data-carrying UTXOs that `Wallet.balance()` counted; UTXOs now sync and spend in their own tree, a transfer or withdrawal takes any UTXO outside a ring, which is what `Wallet.balance()` counts, and a merge takes the tree holding the most UTXOs.
 - `ProverClient` requests with a trailing slash remain decryptable when the gateway trims it; update the prover with the SDK.
+- `ExternalData.hash()` accepted up to 255 `interfaceTransfers`, which the shielded pool refuses past 32, and now fails with `TransactionErrorCode.TRANSACTION_TOO_MANY_INTERFACE_TRANSFERS` before proving.
 
 ## 0.8.0-alpha — 2026-11-03
 
