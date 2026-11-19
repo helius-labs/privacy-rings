@@ -83,6 +83,8 @@ jobs:
           });
           NODE
           )
+          cp sdk-libs/ts/scripts/no-wasm-consumer.mjs "$tmp/"
+          node "$tmp/no-wasm-consumer.mjs"
 
   e2e:
     name: typescript / e2e

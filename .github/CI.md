@@ -160,7 +160,8 @@ and verifies real proofs and rejected witness/public-input mutations.
 
     1. `@heliuslabs/spr`: `npm run check:ts`.
     2. API documentation: `npm run docs:ts`.
-    3. Package smoke test: `npm pack`, `tsc`, `node`.
+    3. Package smoke test: `npm pack`, `tsc`, and a Node consumer that builds
+       a deposit and syncs and restores encrypted wallet state with WebAssembly disabled.
     4. SDK e2e: `just test-ts-e2e`.
     5. Escrow e2e: `just test-escrow-ts`.
     6. `spr-program-wasm-test-program`: `cargo test`.
