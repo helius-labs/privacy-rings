@@ -36,6 +36,7 @@ Added
 - `SprClient.proveAnonymousRingTransact(input)` accepts a `TransactOwnerSigner` or an owner signature prepared over `transactMessageDigest(proofInputs)`.
 - `SprClient.fetchProvingKeySet()` reads the prover's key set over the channel `proverTee` attests and encrypts, and returns a `ProvingKeySet` whose `cacheKey` names the release and whose `key(name)` gives each key's zopro download and gnark digest.
 - `SprClientConfig.provingKeys`, with `proofDataSource: "client"`, makes every proof use the set's keys and `checkProverProvingKeys()` check only those keys; a circuit outside the set and the indexed route fail with `CLIENT_PROVING_KEY_SET`, whose `details.check` names the reason.
+- `ConfidentialTransfer.newDeposit(owner, outputTreeId, feePayer)` builds a transfer that spends no note and proves only with `proofDataSource: "prover"`, and `ConfidentialTransfer.deposit(asset, amount, source)` funds its outputs from the public SOL or SPL account a `DepositSource` names, failing with `TransactionErrorCode.TRANSACTION_DEPOSIT_ASSET_MISMATCH` when the source kind does not match the asset.
 
 Changed
 
@@ -49,6 +50,7 @@ Fixed
 - `syncWallet` misclassified authored spends containing unknown output schemes as withdrawals or splits, and now omits their history rows.
 - `syncWallet` failed with `TRANSACTION_KEYS_UNRESOLVED` when a reserved or unknown output scheme accompanied a confidential note, and now stores the note.
 - `ProverClient` requests with a trailing slash remain decryptable when the gateway trims it; update the prover with the SDK.
+- `ExternalData.hash()` accepted up to 255 `interfaceTransfers`, which the shielded pool refuses past 32, and now fails with `TransactionErrorCode.TRANSACTION_TOO_MANY_INTERFACE_TRANSFERS` before proving.
 
 ## 0.8.0-alpha — 2026-11-03
 
