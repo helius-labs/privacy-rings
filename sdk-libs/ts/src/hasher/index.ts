@@ -37,7 +37,7 @@ export function fieldSub(a: bigint, b: bigint): bigint {
   return (((a - b) % BN254_SCALAR_ORDER) + BN254_SCALAR_ORDER) % BN254_SCALAR_ORDER;
 }
 
-// Matches light-poseidon BN254 x^5 in state widths 2 through 13.
+// light-poseidon's BN254 x^5 partial round counts for state widths 2 through 13.
 const PARTIAL_ROUNDS = [56, 57, 56, 60, 60, 63, 64, 63, 60, 66, 60, 65] as const;
 /** The widest digest supported by both the runtime and the Solana verifier. */
 export const MAX_POSEIDON_INPUTS = PARTIAL_ROUNDS.length;
@@ -45,7 +45,7 @@ export const MAX_POSEIDON_INPUTS = PARTIAL_ROUNDS.length;
 const permutations = new Map<number, ReturnType<typeof createPermutation>>();
 let field: IField<bigint> | undefined;
 
-/** Initializes the scalar field. Each width is prepared the first time it is used. */
+/** Initializes the scalar field. Round constants for each width are generated on first use. */
 export function initializePoseidon(): Promise<void> {
   field ??= Field(BN254_SCALAR_ORDER);
   return Promise.resolve();

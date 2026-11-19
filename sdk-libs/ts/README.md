@@ -25,8 +25,7 @@ Requirements:
 
 ### React Native with Hermes
 
-The wallet SDK uses the same Poseidon implementation on Hermes and Node.js.
-For an Expo development build, install `react-native-quick-crypto`,
+The wallet SDK runs on Hermes without WebAssembly. For an Expo development build, install `react-native-quick-crypto`,
 `react-native-nitro-modules`, and `react-native-quick-base64` in the app and
 rebuild the native binary. Call `install()` from `react-native-quick-crypto`
 in a bootstrap module that runs before the first SDK import.

@@ -160,9 +160,9 @@ and verifies real proofs and rejected witness/public-input mutations.
 
     1. `@heliuslabs/spr`: `npm run check:ts`.
     2. API documentation: `npm run docs:ts`.
-    3. Package smoke test: `npm pack`, `tsc`, and a Node consumer that builds
-       a deposit and syncs and restores encrypted wallet state with WebAssembly disabled,
-       then runs the Hermes deposit check from `scripts/hermes-consumer.mjs`.
+    3. Package smoke test: `npm pack`, `tsc`, and `scripts/no-wasm-consumer.mjs`.
+       With WebAssembly removed, the consumer builds a deposit transaction, syncs
+       and restores an encrypted wallet snapshot, then runs `scripts/hermes-consumer.mjs`.
     4. SDK e2e: `just test-ts-e2e`.
     5. Escrow e2e: `just test-escrow-ts`.
     6. `spr-program-wasm-test-program`: `cargo test`.
