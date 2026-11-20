@@ -64,7 +64,9 @@ pub(crate) fn run_transfer(opts: TransferOptions) -> Result<()> {
     maybe_airdrop(&mut rpc, &ctx.material, network.airdrop_lamports)?;
     let client = client(rpc, &network)?;
 
-    let inputs = select_spend(ctx.spendable.utxos(), asset, opts.amount)?;
+    // One private payment, or a withdrawal with none: both fit the same
+    // number of inputs.
+    let inputs = select_spend(ctx.spendable.utxos(), asset, opts.amount, 1)?;
     let mut transaction = ConfidentialTransaction::new(inputs, payer(&ctx))?;
     let (mode, settlement_transfers) = match registered {
         Some(registered) => {
