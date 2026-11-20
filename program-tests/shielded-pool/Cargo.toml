@@ -63,7 +63,8 @@ mollusk-svm = { workspace = true }
 wincode = { workspace = true }
 # vk::setup reads the verifying key setup markers back from the built program.
 groth16-solana = { workspace = true, features = ["gnark-vk"] }
-spr-tree = { workspace = true, features = ["verify"] }
+# test-only: `set_cached_tree_update` seeds forester updates without their batch proofs.
+spr-tree = { workspace = true, features = ["verify", "test-only"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 hex = { workspace = true }
