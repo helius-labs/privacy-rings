@@ -297,6 +297,49 @@ func TestIndexedBatchReorgInvalidatesPendingPrefix(t *testing.T) {
 	}
 }
 
+func TestIndexedBatchReplaysPastOneChunk(t *testing.T) {
+	request, _ := batchFixture(t)
+	values := make([]Hash, 6010)
+	tree, err := newBatchTree(40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range values {
+		value := big.NewInt(int64(100 + i))
+		values[i], _ = HashField(value)
+		if i < 6000 {
+			if err := tree.append(value, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	root := tree.tree.Root.Value()
+	request.AnchorIndex, request.StartIndex, request.AnchorRoot = 6001, 6001, common.FeHex(&root)
+	request.HashchainHash = batchChain(t, values[6000:])
+	resolver := batchIndexer(t, values, "")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	resolved, err := resolver.Resolve(ctx, encoded(t, request))
+	if err != nil {
+		t.Fatalf("replay required another request despite time remaining: %v", err)
+	}
+	if resolved.Resolution.Batch.OldRoot != request.AnchorRoot {
+		t.Fatal("replay did not bind to the requested anchor")
+	}
+	var params nullifiertree.BatchAddressAppendParameters
+	if err := json.Unmarshal(resolved.Payload, &params); err != nil {
+		t.Fatal(err)
+	}
+	assignment, err := params.CreateWitness()
+	if err != nil {
+		t.Fatal(err)
+	}
+	circuit := nullifiertree.InitBatchAddressTreeAppendCircuit(40, 10)
+	if err := test.IsSolved(&circuit, assignment, ecc.BN254.ScalarField()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestIndexedBatchResumesAfterCancelledRequest(t *testing.T) {
 	request, _ := batchFixture(t)
 	values := make([]Hash, 1010)

@@ -185,7 +185,6 @@ func (r *Resolver) resolveBatch(ctx context.Context, data []byte) (result *Resol
 		base = replay.tree
 	}
 	tree := base.fork()
-	replayed := uint64(0)
 	end := request.StartIndex + uint64(request.BatchSize)
 	params := &nullifiertree.BatchAddressAppendParameters{TreeHeight: request.TreeHeight, BatchSize: request.BatchSize, StartIndex: request.StartIndex, HashchainHash: chain}
 	anchored := false
@@ -271,13 +270,10 @@ func (r *Resolver) resolveBatch(ctx context.Context, data []byte) (result *Resol
 			}
 			next++
 		}
+		// Replay until the caller deadline, checkpointing each completed page.
 		if !anchored {
 			r.batchReplay = batchReplay{address: request.Tree, index: request.AnchorIndex, root: request.AnchorRoot, tree: tree.fork()}
 			checkpointed = true
-			replayed += limit
-			if replayed >= 4096 && next < request.AnchorIndex {
-				return nil, ErrIndexerNotReady
-			}
 		}
 	}
 	if !anchored {
