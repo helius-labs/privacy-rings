@@ -1,7 +1,14 @@
 use solana_account::Account;
 use solana_pubkey::Pubkey;
 use spr_client::{ClientError, Rpc};
-use spr_interface::{pda, NullifierPda, NULLIFIER_PDA_SIZE, PROGRAM_ID_PUBKEY};
+use spr_interface::{
+    pda,
+    state::{
+        discriminator::PAYER_FUNDED_NULLIFIER_PDA, nullifier_pda::PAYER_FUNDED_NULLIFIER_PDA_SIZE,
+    },
+    verifying_keys::CircuitId,
+    NullifierPda, NULLIFIER_PDA_SIZE, PROGRAM_ID_PUBKEY,
+};
 use spr_tree::{TreeAccount, TreeFeeSchedule};
 
 use crate::test_validator_asserts::{fetch_account, fetch_optional_account};
@@ -207,6 +214,69 @@ pub fn assert_nullifier_pdas_absent<R: Rpc>(
         assert!(
             account.is_none_or(|account| account.lamports == 0),
             "nullifier PDA {nullifier_pda} must not exist"
+        );
+    }
+    Ok(())
+}
+
+/// The payer-funded twin of `circuit`: same circuit, same key and same proof,
+/// since the tag is not a public input; the payer funds a permanent nullifier
+/// PDA per input and nothing is queued. A payer-funded selector maps to itself.
+pub fn payer_funded(circuit: CircuitId) -> CircuitId {
+    match circuit {
+        CircuitId::ConfidentialSigner(i, o, s) => CircuitId::ConfidentialSignerPayerFunded(i, o, s),
+        CircuitId::ConfidentialRingEddsa(i, o, s) => {
+            CircuitId::ConfidentialRingEddsaPayerFunded(i, o, s)
+        }
+        CircuitId::RingAuthority(i, o, s) => CircuitId::RingAuthorityPayerFunded(i, o, s),
+        CircuitId::AnonymousRingEddsa(i, o, s, p) => {
+            CircuitId::AnonymousRingEddsaPayerFunded(i, o, s, p)
+        }
+        CircuitId::ConfidentialSignerCached(i, o, s, c) => {
+            CircuitId::ConfidentialSignerCachedPayerFunded(i, o, s, c)
+        }
+        CircuitId::ConfidentialRingEddsaCached(i, o, s, c) => {
+            CircuitId::ConfidentialRingEddsaCachedPayerFunded(i, o, s, c)
+        }
+        CircuitId::AnonymousRingEddsaCached(i, o, s, p, c) => {
+            CircuitId::AnonymousRingEddsaCachedPayerFunded(i, o, s, p, c)
+        }
+        CircuitId::ConfidentialEddsa(i, o, s, p) => {
+            CircuitId::ConfidentialEddsaPayerFunded(i, o, s, p)
+        }
+        CircuitId::ConfidentialEddsaCached(i, o, s, p, c) => {
+            CircuitId::ConfidentialEddsaCachedPayerFunded(i, o, s, p, c)
+        }
+        payer_funded => payer_funded,
+    }
+}
+
+pub fn payer_funded_nullifier_pda_rent<R: Rpc>(rpc: &R) -> Result<u64, ClientError> {
+    rpc.get_minimum_balance_for_rent_exemption(PAYER_FUNDED_NULLIFIER_PDA_SIZE)
+}
+
+/// Every nullifier holds a permanent payer-funded PDA at its usual address: a
+/// program-owned account of exactly the payer-funded discriminator, holding
+/// exactly its rent.
+#[track_caller]
+pub fn assert_payer_funded_nullifier_pdas<R: Rpc>(
+    rpc: &R,
+    tree: &Pubkey,
+    nullifiers: &[[u8; 32]],
+) -> Result<(), ClientError> {
+    let rent = payer_funded_nullifier_pda_rent(rpc)?;
+    for nullifier_pda in nullifier_pda_addresses(tree, nullifiers) {
+        let account = fetch_account(rpc, &nullifier_pda)?;
+        assert_eq!(
+            account,
+            Account {
+                lamports: rent,
+                data: vec![PAYER_FUNDED_NULLIFIER_PDA],
+                owner: PROGRAM_ID_PUBKEY,
+                executable: false,
+                rent_epoch: account.rent_epoch,
+            },
+            "payer-funded nullifier PDA {nullifier_pda}"
         );
     }
     Ok(())

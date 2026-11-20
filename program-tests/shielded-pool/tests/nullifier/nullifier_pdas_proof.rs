@@ -8,8 +8,11 @@ use solana_signer::Signer;
 use spr_client::{PublicInputs, PublicTransfers, STATE_TREE_HEIGHT};
 use spr_hasher::{primitives::solana_owner_identity, Poseidon};
 use spr_interface::{
-    error::ShieldedPoolError, instruction::instruction_data::transact::TransactIxData, pda,
-    state::TreeFeeSchedule, NullifierPda,
+    error::ShieldedPoolError,
+    instruction::instruction_data::transact::TransactIxData,
+    pda,
+    state::{read_tree_id, TreeFeeSchedule, NULLIFIER_TREE_HEIGHT},
+    NullifierPda,
 };
 use spr_keypair::{hash::owner_hash, pubkey::PublicKey, NullifierKey};
 use spr_merkle_tree::MerkleTree;
@@ -17,9 +20,10 @@ use spr_program::instruction::Transact;
 use spr_program_test::{Rejection, Rpc, TransactionTrace};
 use spr_test_utils::{
     nullifier_pda::{
-        assert_nullifier_pda, assert_tree_lamports_after_spend, nullifier_pda_addresses,
-        nullifier_pda_rent, nullifier_queue_next_index, tree_fee_for_spend, tree_fees,
-        tree_fees_from, tree_id,
+        assert_nullifier_pda, assert_nullifier_pdas_absent, assert_payer_funded_nullifier_pdas,
+        assert_tree_lamports_after_spend, nullifier_pda_addresses, nullifier_pda_rent,
+        nullifier_queue_next_index, payer_funded, payer_funded_nullifier_pda_rent,
+        tree_fee_for_spend, tree_fees, tree_fees_from, tree_id,
     },
     transact::{
         build_transfer_prover_inputs, change_and_dummy_outputs,
@@ -31,7 +35,10 @@ use spr_test_utils::{
     },
 };
 use spr_transaction::{instructions::transact::PrivateTxHash, SOL_MINT};
-use spr_tree::TreeAccount;
+use spr_tree::{
+    nullifier_tree::{constants::NULLIFIER_TREE_ZKP_BATCHES, layout::NullifierTreeLayout},
+    NullifierTreeInitParams, TreeAccount,
+};
 
 const LAMPORTS_PER_SIGNATURE: u64 = 5_000;
 
@@ -457,4 +464,279 @@ fn assert_tops_up_prefunded_nullifier_pdas(fee_per_tree: u64) {
         .expect("transact trace")
         .clone();
     assert_transact_frame(&env, &trace, &nullifiers);
+}
+
+#[track_caller]
+fn assert_replay_rejected(env: &mut Pool, data: TransactIxData, expected: ShieldedPoolError) {
+    let error = env
+        .rpc
+        .create_and_send_default_payer_transaction(&[transact_instruction(env, data)], &[])
+        .expect_err("a second spend of the nullifier must be rejected");
+    Rejection::pool(expected).assert_litesvm(error);
+}
+
+/// The same proven spend under its payer-funded circuit. The circuit tag is not
+/// a public input, so the proof stays valid.
+fn payer_funded_spend(mut data: TransactIxData) -> TransactIxData {
+    data.circuit = payer_funded(data.circuit);
+    data
+}
+
+#[test]
+fn payer_funded_transact_creates_permanent_nullifier_pdas() {
+    assert_creates_payer_funded_nullifier_pdas(0);
+}
+
+#[test]
+fn payer_funded_transact_still_pays_the_tree_fee() {
+    assert_creates_payer_funded_nullifier_pdas(123);
+}
+
+/// The payer funds one permanent 1-byte PDA per input, the dummy input's
+/// included, and the tree's fee; the tree funds nothing, queues nothing and
+/// counts no open PDA.
+fn assert_creates_payer_funded_nullifier_pdas(fee_per_tree: u64) {
+    let mut env = proof_env_with_fee(fee_per_tree);
+    let tree = env.tree;
+    let data = payer_funded_spend(build_valid_transact_ix(&mut env));
+    let nullifiers = nullifiers_of(&data);
+    let rent = payer_funded_nullifier_pda_rent(&env.rpc).expect("payer-funded PDA rent");
+    let queue_next_before = nullifier_queue_next_index(&env.rpc, &tree).expect("queue index");
+    let tree_before = tree_account(&env);
+    let payer_before = payer_lamports(&env);
+    let tree_fee = tree_fee_for_spend(&tree_before, &tree).expect("tree fee");
+
+    env.rpc
+        .create_and_send_default_payer_transaction(&[transact_instruction(&env, data)], &[])
+        .expect("payer-funded transact with a valid proof");
+
+    assert_payer_funded_nullifier_pdas(&env.rpc, &tree, &nullifiers)
+        .expect("one permanent nullifier PDA per input");
+    assert_eq!(
+        payer_before,
+        payer_lamports(&env) + LAMPORTS_PER_SIGNATURE + tree_fee + rent * nullifiers.len() as u64,
+        "payer pays the transaction fee, the tree fee and every nullifier PDA's rent"
+    );
+    let tree_after = tree_account(&env);
+    assert_eq!(
+        tree_after.lamports,
+        tree_before.lamports + tree_fee,
+        "the tree collects its fee and funds no nullifier PDA"
+    );
+    let (fees_before, fee_balance_before) =
+        tree_fees_from(&tree_before, &tree).expect("tree fees before");
+    assert_eq!(
+        tree_fees(&env.rpc, &tree).expect("tree fees after"),
+        (fees_before, fee_balance_before + tree_fee),
+        "transact credits exactly the collected fee to the fee balance"
+    );
+    assert_eq!(
+        nullifier_queue_next_index(&env.rpc, &tree).expect("queue index"),
+        queue_next_before,
+        "no nullifier is queued"
+    );
+    assert_eq!(
+        nullifier_tree_of(&tree_after),
+        nullifier_tree_of(&tree_before),
+        "the nullifier tree, its queue batches, hash chains and roots are untouched"
+    );
+    assert_eq!(
+        live_nullifier_pdas(&tree_after),
+        live_nullifier_pdas(&tree_before),
+        "permanent nullifier PDAs are not counted as open"
+    );
+    let trace = env
+        .rpc
+        .last_transaction_trace()
+        .expect("transact trace")
+        .clone();
+    assert_transact_frame(&env, &trace, &nullifiers);
+}
+
+/// A pre-funded address keeps its donation: the payer adds only the missing
+/// rent.
+#[test]
+fn payer_funded_transact_pays_only_the_missing_rent_of_a_prefunded_pda() {
+    let mut env = proof_env();
+    let tree = env.tree;
+    let payer = env.rpc.payer.pubkey();
+    let data = payer_funded_spend(build_valid_transact_ix(&mut env));
+    let nullifiers = nullifiers_of(&data);
+    let rent = payer_funded_nullifier_pda_rent(&env.rpc).expect("payer-funded PDA rent");
+    let prefund = env
+        .rpc
+        .get_minimum_balance_for_rent_exemption(0)
+        .expect("empty account rent");
+    assert!(prefund < rent);
+    let prefunded = *nullifier_pda_addresses(&tree, &nullifiers)
+        .first()
+        .expect("first nullifier PDA");
+    env.rpc
+        .create_and_send_default_payer_transaction(
+            &[solana_system_interface::instruction::transfer(
+                &payer, &prefunded, prefund,
+            )],
+            &[],
+        )
+        .expect("prefund nullifier PDA");
+    let payer_before = payer_lamports(&env);
+    let tree_fee = tree_fee_for_spend(&tree_account(&env), &tree).expect("tree fee");
+
+    env.rpc
+        .create_and_send_default_payer_transaction(&[transact_instruction(&env, data)], &[])
+        .expect("payer-funded transact over a prefunded PDA");
+
+    assert_payer_funded_nullifier_pdas(&env.rpc, &tree, &nullifiers)
+        .expect("both PDAs hold exactly their rent");
+    assert_eq!(
+        payer_before,
+        payer_lamports(&env) + LAMPORTS_PER_SIGNATURE + tree_fee + 2 * rent - prefund,
+        "the payer tops the prefunded PDA up and funds the other in full"
+    );
+}
+
+/// A nullifier holds at most one PDA of either kind, so a spend is final in
+/// both orders: a permanent PDA blocks any replay, and a pending tree-funded
+/// PDA blocks a payer-funded replay.
+#[test]
+fn a_nullifier_spent_in_either_mode_cannot_be_spent_again() {
+    for (first, second) in [(true, true), (true, false), (false, true)] {
+        let mut env = proof_env();
+        let tree = env.tree;
+        let spend = build_valid_transact_ix(&mut env);
+        let nullifiers = nullifiers_of(&spend);
+        let mode = |payer_funded: bool| {
+            if payer_funded {
+                payer_funded_spend(spend.clone())
+            } else {
+                spend.clone()
+            }
+        };
+        let queue_next_before = nullifier_queue_next_index(&env.rpc, &tree).expect("queue index");
+
+        env.rpc
+            .create_and_send_default_payer_transaction(
+                &[transact_instruction(&env, mode(first))],
+                &[],
+            )
+            .expect("the first spend");
+        let tree_after_first = tree_account(&env);
+
+        assert_replay_rejected(
+            &mut env,
+            mode(second),
+            ShieldedPoolError::NullifierAlreadyQueued,
+        );
+        env.rpc
+            .last_transaction_trace()
+            .expect("replay trace")
+            .assert_rolled_back_except(&[env.rpc.payer.pubkey()]);
+        assert_eq!(
+            tree_account(&env),
+            tree_after_first,
+            "a rejected replay leaves the tree untouched"
+        );
+        if first {
+            assert_payer_funded_nullifier_pdas(&env.rpc, &tree, &nullifiers)
+                .expect("permanent nullifier PDAs kept");
+        } else {
+            for (nullifier, offset) in nullifiers.iter().zip(0..) {
+                assert_nullifier_pda(&env.rpc, &tree, nullifier, queue_next_before + offset)
+                    .expect("tree-funded nullifier PDAs kept");
+            }
+        }
+    }
+}
+
+type NullifierTree = NullifierTreeLayout<NULLIFIER_TREE_ZKP_BATCHES>;
+
+/// The nullifier tree section of a tree account: the queue batches, their hash
+/// chains, the root history and the watermark.
+fn nullifier_tree_of(tree: &Account) -> NullifierTree {
+    let mut data = tree.data.clone();
+    let mut account = TreeAccount::from_bytes(&mut data, [0u8; 32]).expect("tree layout");
+    *account.nullifier_tree()
+}
+
+/// A payer-funded spend needs no queue space: with both queue batches full and
+/// the forester behind, a tree-funded spend cannot queue its nullifiers, while
+/// the payer-funded spend of the same proof lands and leaves the nullifier tree
+/// untouched.
+#[test]
+fn payer_funded_transact_lands_while_the_nullifier_queue_is_full() {
+    let mut env = proof_env();
+    let authority = env.authority.insecure_clone();
+    let zkp_batch_size = 10;
+    let batch_size = zkp_batch_size * NULLIFIER_TREE_ZKP_BATCHES as u64;
+    let tree = env
+        .rpc
+        .create_tree_with_nullifier_params(
+            &authority,
+            NullifierTreeInitParams {
+                input_queue_batch_size: batch_size,
+                input_queue_zkp_batch_size: zkp_batch_size,
+                height: NULLIFIER_TREE_HEIGHT,
+            },
+        )
+        .expect("create a tree with zkp batches of 10");
+    env.tree_id = env
+        .rpc
+        .account_data(&tree)
+        .as_deref()
+        .and_then(read_tree_id)
+        .expect("tree id");
+    env.tree = tree;
+
+    // Other users' spends fill both queue batches through the program's queue
+    // code; no forester applies them.
+    let mut account = env.rpc.svm.get_account(&tree).expect("tree account");
+    {
+        let mut on_chain =
+            TreeAccount::from_bytes(&mut account.data, tree.to_bytes()).expect("load tree");
+        for value in (1_000_000..).take(2 * batch_size as usize).map(fe) {
+            on_chain
+                .nullifier_tree()
+                .insert_nullifier_into_queue(&value)
+                .expect("queue a seeded nullifier");
+        }
+    }
+    let mut probe = account.data.clone();
+    assert!(
+        TreeAccount::from_bytes(&mut probe, tree.to_bytes())
+            .expect("load tree")
+            .nullifier_tree()
+            .insert_nullifier_into_queue(&fe(2_000_000))
+            .is_err(),
+        "both queue batches are full"
+    );
+    env.rpc
+        .svm
+        .set_account(tree, account)
+        .expect("write the full queue");
+
+    let spend = build_valid_transact_ix(&mut env);
+    let nullifiers = nullifiers_of(&spend);
+
+    assert_replay_rejected(
+        &mut env,
+        spend.clone(),
+        ShieldedPoolError::NullifierTreeUpdateFailed,
+    );
+    assert_nullifier_pdas_absent(&env.rpc, &tree, &nullifiers)
+        .expect("the rejected tree-funded spend creates no PDA");
+
+    let tree_before = tree_account(&env);
+    env.rpc
+        .create_and_send_default_payer_transaction(
+            &[transact_instruction(&env, payer_funded_spend(spend))],
+            &[],
+        )
+        .expect("the payer-funded spend lands on a full queue");
+    assert_payer_funded_nullifier_pdas(&env.rpc, &tree, &nullifiers)
+        .expect("one permanent nullifier PDA per input");
+    assert_eq!(
+        nullifier_tree_of(&tree_account(&env)),
+        nullifier_tree_of(&tree_before),
+        "the full queue and the nullifier tree are untouched"
+    );
 }

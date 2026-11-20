@@ -8,12 +8,17 @@ use pinocchio::{
 };
 use pinocchio_system::instructions::{Assign, Transfer};
 use spr_interface::{
-    error::ShieldedPoolError, event::InputTreeSequence, NullifierPda, NULLIFIER_PDA_SEED,
-    NULLIFIER_PDA_SIZE,
+    error::ShieldedPoolError,
+    event::InputTreeSequence,
+    state::{
+        discriminator::PAYER_FUNDED_NULLIFIER_PDA, nullifier_pda::PAYER_FUNDED_NULLIFIER_PDA_SIZE,
+    },
+    NullifierPda, NULLIFIER_PDA_SEED, NULLIFIER_PDA_SIZE,
 };
 use spr_tree::TreeAccount;
 
 use super::loader::load_unused_nullifier_pda;
+use crate::instructions::shared::CreatePdaAccount;
 
 struct NullifierPdaRent {
     nullifier_pda_minimum: u64,
@@ -52,6 +57,8 @@ pub(crate) struct InputTreeResult {
     pub tree_fee: u64,
     pub fee_balance: u64,
     pub tree_id: u16,
+    /// The payer funds a permanent PDA per nullifier and none was queued.
+    pub payer_funded: bool,
 }
 
 /// Create one nullifier PDA per queued nullifier and collect the tree's fee
@@ -73,6 +80,18 @@ pub(crate) fn create_nullifier_pdas<'p, 'n>(
     nullifier_pdas: impl Iterator<Item = (&'p mut AccountView, &'n [u8; 32])>,
     input_tree: &InputTreeResult,
 ) -> ProgramResult {
+    if input_tree.payer_funded {
+        let tree_address = tree.address().to_bytes();
+        collect_tree_fee(payer, tree, input_tree.tree_fee)?;
+        for (nullifier_pda, nullifier) in nullifier_pdas {
+            PayerFundedNullifierPdaCreate {
+                tree_address: &tree_address,
+                nullifier,
+            }
+            .init(payer, nullifier_pda)?;
+        }
+        return Ok(());
+    }
     let rent_sysvar = Rent::get()?;
     let rent = NullifierPdaRent {
         nullifier_pda_minimum: rent_sysvar.try_minimum_balance(NULLIFIER_PDA_SIZE)?,
@@ -169,5 +188,35 @@ impl NullifierPdaCreate<'_> {
         self.record
             .write_to(&mut data)
             .ok_or(ShieldedPoolError::InvalidNullifierPda.into())
+    }
+}
+
+/// See [`PAYER_FUNDED_NULLIFIER_PDA_SIZE`]. The payer funds the rent by CPI.
+struct PayerFundedNullifierPdaCreate<'a> {
+    tree_address: &'a [u8; 32],
+    nullifier: &'a [u8; 32],
+}
+
+impl PayerFundedNullifierPdaCreate<'_> {
+    #[inline(never)]
+    fn init(self, payer: &AccountView, nullifier_pda: &mut AccountView) -> ProgramResult {
+        let bump = load_unused_nullifier_pda(nullifier_pda, self.tree_address, self.nullifier)?;
+        CreatePdaAccount {
+            fee_payer: payer,
+            new_account: nullifier_pda,
+            space: PAYER_FUNDED_NULLIFIER_PDA_SIZE,
+            owner: &crate::ID,
+            signer_seeds: [NULLIFIER_PDA_SEED, self.tree_address, self.nullifier],
+            bump,
+        }
+        .execute()?;
+        let mut data = nullifier_pda
+            .try_borrow_mut()
+            .map_err(caused_by(ShieldedPoolError::InvalidNullifierPda))?;
+        let discriminator = data
+            .first_mut()
+            .ok_or(ShieldedPoolError::InvalidNullifierPda)?;
+        *discriminator = PAYER_FUNDED_NULLIFIER_PDA;
+        Ok(())
     }
 }

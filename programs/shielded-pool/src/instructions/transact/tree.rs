@@ -56,6 +56,8 @@ pub(crate) fn apply_input_trees(
     let mut sequences: ArrayVec<InputTreeSequence, INPUT_TREES> = ArrayVec::new();
     let mut tree_slots: ArrayVec<TreeSlot, INPUT_TREES> = ArrayVec::new();
     let mut allow_dummy_inputs = true;
+    // Payer-funded nullifiers get a permanent PDA and are never queued.
+    let payer_funded = ix.circuit.payer_funds_nullifiers();
     if nullifier_pdas.len() != ix.inputs.len() {
         return Err(ShieldedPoolError::InvalidNullifierPda.into());
     }
@@ -94,14 +96,16 @@ pub(crate) fn apply_input_trees(
 
             // 3. Queue its nullifiers and credit its tree fee.
             let first_input_queue_seq = input_tree.nullifier_tree().queue_next_index;
-            for input in tree_inputs() {
+            for input in tree_inputs().filter(|_| !payer_funded) {
                 input_tree
                     .nullifier_tree()
                     .insert_nullifier_into_queue(&input.nullifier_hash)
                     .map_err(caused_by(ShieldedPoolError::NullifierTreeUpdateFailed))?;
             }
             let tree_fee = input_tree.credit_tree_fee().map_err(tree_error)?;
-            input_tree.record_nullifier_pdas_created(tree_input_count as u64);
+            if !payer_funded {
+                input_tree.record_nullifier_pdas_created(tree_input_count as u64);
+            }
             InputTreeResult {
                 input_tree: InputTreeSequence {
                     tree: input_tree_address,
@@ -110,6 +114,7 @@ pub(crate) fn apply_input_trees(
                 tree_fee,
                 fee_balance: input_tree.fee_balance(),
                 tree_id: input_tree.tree_id(),
+                payer_funded,
             }
         };
         // 4. Release the tree-data borrow before the CPIs. The helper collects
