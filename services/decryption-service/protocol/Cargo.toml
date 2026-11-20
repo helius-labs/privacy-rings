@@ -1,0 +1,30 @@
+[package]
+name = "spr-tvc-protocol"
+version = "0.1.0"
+description = "TVC wire protocol for attested Solana Privacy Rings decryption"
+edition.workspace = true
+workspace = "../../.."
+license.workspace = true
+rust-version = "1.98"
+
+[dependencies]
+# Security-sensitive dependencies are pinned to exact versions.
+hex.workspace = true
+p256 = { version = "=0.14.0", default-features = false, features = ["arithmetic", "ecdsa", "std"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+strum = { version = "=0.28.0", features = ["derive"] }
+zeroize = { workspace = true, features = ["zeroize_derive"] }
+
+[dev-dependencies]
+# Test-only interop pin. AGPL-3.0-only; not a runtime dependency of this crate.
+qos_p256.workspace = true
+
+[[test]]
+name = "conformance"
+path = "tests/conformance.rs"
+
+[[test]]
+name = "qos_crate_interop"
+path = "tests/qos_crate_interop.rs"

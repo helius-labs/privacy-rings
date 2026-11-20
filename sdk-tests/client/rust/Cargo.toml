@@ -5,10 +5,23 @@ edition.workspace = true
 publish = false
 autoexamples = false
 
+[features]
+devnet-decryption = ["dep:base64", "dep:getrandom", "dep:hex", "dep:qos_nsm", "dep:qos_p256", "dep:reqwest", "dep:serde", "dep:serde_json", "dep:solana-system-interface", "dep:spr-tvc-protocol"]
+
 [lib]
 path = "src/lib.rs"
 
 [dependencies]
+base64 = { workspace = true, optional = true }
+getrandom = { version = "0.4", optional = true }
+hex = { workspace = true, optional = true }
+qos_nsm = { version = "=0.16.3", default-features = false, optional = true }
+qos_p256 = { workspace = true, optional = true }
+reqwest = { workspace = true, features = ["blocking"], optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
+serde_json = { workspace = true, optional = true }
+solana-system-interface = { workspace = true, optional = true }
+spr-tvc-protocol = { path = "../../../services/decryption-service/protocol", optional = true }
 spr-protocol-instructions = { workspace = true }
 anyhow = { workspace = true }
 bytemuck = { workspace = true }
@@ -38,3 +51,8 @@ path = "merge_transfer.rs"
 [[example]]
 name = "optimized_merge_transfer"
 path = "optimized_merge_transfer.rs"
+
+[[test]]
+name = "devnet-decryption"
+path = "tests/decryption/main.rs"
+required-features = ["devnet-decryption"]

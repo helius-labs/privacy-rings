@@ -1,0 +1,50 @@
+set dotenv-load
+set positional-arguments
+
+pnpm := "npx --yes pnpm@9.15.0"
+root := "../.."
+
+default:
+    @just --list
+
+fmt:
+    cargo fmt --all
+    cargo fmt --manifest-path {{root}}/Cargo.toml -p spr-tvc-protocol
+
+fmt-check:
+    cargo fmt --all -- --check
+    cargo fmt --manifest-path {{root}}/Cargo.toml -p spr-tvc-protocol -- --check
+
+check:
+    cargo check --workspace --all-targets --all-features --locked
+    cargo check --manifest-path {{root}}/Cargo.toml -p spr-tvc-protocol --all-targets --locked
+
+lint:
+    cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+    cargo clippy --manifest-path {{root}}/Cargo.toml -p spr-tvc-protocol --all-targets --locked -- -D warnings
+
+test:
+    cargo test --workspace --all-targets --all-features --locked
+    cargo test --manifest-path {{root}}/Cargo.toml -p spr-tvc-protocol --all-targets --locked
+
+regenerate-protocol-fixtures:
+    cargo test --manifest-path {{root}}/Cargo.toml --locked -p spr-tvc-protocol --test conformance regenerate_content_addressed_fixtures -- --ignored --exact
+
+setup:
+    {{pnpm}} install --frozen-lockfile
+
+build-ts:
+    {{pnpm}} build:ts
+
+# Send, claim and sweep on a fresh localnet. See tests/README.md.
+headless-e2e port_offset="200": setup build-ts
+    bash tests/localnet.sh "$1" bash tests/with-local-decryption.sh {{pnpm}} --filter spr-tvc-typescript-client-example example
+
+ci: fmt-check lint test setup
+    bash tests/with-local-decryption.sh {{pnpm}} ci:ts
+
+image network="devnet":
+    docker build --platform linux/amd64 --provenance=false --build-arg SPR_NETWORK="$1" -f enclave/Dockerfile {{root}}
+
+decryption-e2e: setup build-ts
+    bash tests/with-local-decryption.sh {{pnpm}} --filter spr-tvc-typescript-client-example test

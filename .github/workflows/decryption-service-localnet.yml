@@ -1,0 +1,57 @@
+name: decryption service localnet
+
+on:
+  pull_request:
+    paths:
+      - services/decryption-service/**
+      - sdk-libs/keypair/**
+      - .github/workflows/decryption-service-localnet.yml
+  push:
+    branches: [main]
+    paths:
+      - services/decryption-service/**
+      - sdk-libs/keypair/**
+      - .github/workflows/decryption-service-localnet.yml
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: decryption-service-localnet-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lifecycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      AGAVE_VERSION: v4.2.2
+      SBF_TOOLS_VERSION: v1.54
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          shared-key: decryption-service-localnet
+          private-libs-token: ${{ secrets.PRIVATE_LIBS_TOKEN }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+      - run: rustup target add wasm32-unknown-unknown
+      - uses: ./.github/actions/install-anza
+        with:
+          version: ${{ env.AGAVE_VERSION }}
+      - uses: ./.github/actions/install-sbf-tools
+        with:
+          version: ${{ env.SBF_TOOLS_VERSION }}
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: prover/server/proving-keys
+          key: proving-keys-${{ hashFiles('prover/server/prover/provingkeys/proving-keys.lock') }}
+      - name: Send, claim and sweep on localnet
+        run: just headless-e2e
+        working-directory: services/decryption-service
