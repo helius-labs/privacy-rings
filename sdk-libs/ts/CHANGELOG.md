@@ -19,7 +19,7 @@ Breaking
 - The package is published as `@heliuslabs/spr`, with the same subpaths → replace the `@heliuslabs/zolana` dependency and every `@heliuslabs/zolana` import specifier with `@heliuslabs/spr`.
 - `ZolanaClient`, `ZolanaClientConfig`, `createZolanaClient`, `ZolanaIndexer`, `ZolanaApi`, `ZolanaApiConfig` and `ZOLANA_GATEWAY_PATH` become `SprClient`, `SprClientConfig`, `createSprClient`, `SprIndexer`, `SprApi`, `SprApiConfig` and `SPR_GATEWAY_PATH` → rename them in imports and code.
 - `SprIndexer.getShieldedTransactionsByTags`, `getShieldedTransactionsByNullifiers` and `getEncryptedUtxosByTags` take `PageOptions` (`paginationToken`, `limit`, `filters.slot`, `minContextSlot`) and return a `Page` of `{context, data, paginationToken}` with the events or outputs of each Solana transaction grouped in `data` → upgrade Photon with the SDK, pass `paginationToken` back until it is `null`, and resume a later scan that has no `lt` or `lte` bound with `filters: { slot: { gt } }` set to the final page's `context.slot`.
-- `serializeWallet` writes snapshot version 5 with slot checkpoints, and `SerializedCursor` and `SerializedSyncCursors` become `SerializedSyncCheckpoint` and `SerializedSyncCheckpoints` → restore earlier snapshots with `deserializeWallet`, which keeps the wallet state and rescans history once.
+- `serializeWallet` writes snapshot version 5 with slot checkpoints and each UTXO's tree id, which `WalletUtxo.outputContext.treeId` and `OutputContext.treeId` now require, and `SerializedCursor` and `SerializedSyncCursors` become `SerializedSyncCheckpoint` and `SerializedSyncCheckpoints` → set `treeId` on every output context you build, and restore earlier snapshots with `deserializeWallet`, which keeps the wallet state, places their UTXOs in tree 0 and rescans history once.
 - `Prover` requires `proveAnonymousRingTransact` → implement the method on custom provers.
 - `ProverInputs`, `IndexedProofInputs` and `CircuitId` add anonymous ring variants → forward them in custom `ProofService` and `ProofAuthority` implementations.
 - `ShieldedPda`, `ProgramOwner`, `bindProgramTransaction`, `decodeProgramTransaction`, `toProgramWalletUtxo`, `transactCpiAccounts` and the `Program*` types move to the experimental `@heliuslabs/spr/program` subpath and may change in any release → import them from `@heliuslabs/spr/program` instead of `/keypair`, `/transaction` and `/interface`.
@@ -36,6 +36,10 @@ Added
 - `SprClient.proveAnonymousRingTransact(input)` accepts a `TransactOwnerSigner` or an owner signature prepared over `transactMessageDigest(proofInputs)`.
 - `SprClient.fetchProvingKeySet()` reads the prover's key set over the channel `proverTee` attests and encrypts, and returns a `ProvingKeySet` whose `cacheKey` names the release and whose `key(name)` gives each key's zopro download and gnark digest.
 - `SprClientConfig.provingKeys`, with `proofDataSource: "client"`, makes every proof use the set's keys and `checkProverProvingKeys()` check only those keys; a circuit outside the set and the indexed route fail with `CLIENT_PROVING_KEY_SET`, whose `details.check` names the reason.
+- `buildRingPaymentTransaction` pays a shielded address inside a custom ring from default pool notes through the `RingTransfers` a ring's SDK implements, refuses proof inputs that spend other notes, pay anyone but the recipient and the wallet, leave the ring or settle publicly, and fails with `WALLET_BUILD_RING_PAYMENT`.
+- `RingTransfers.proveRingTransfer` gets keys that answer only for the reserved notes and fail otherwise with `WALLET_RING_KEY_WITHHELD`, calls `authorize` once on the final proof inputs to get the in-proof owner's signature, and returns the ring `instruction` with its `computeUnitLimit`.
+- `decryptTransactions` takes a `ring` `RingCodec`, asks it to open only the events of its `ringProgramId`, and stores each `RingOpening` only when it rebuilds the published commitment under its `nullifierPublicKey`, the holder's key or the `ZERO_NULLIFIER_PK` that `@heliuslabs/spr/interface` now exports, so `Wallet.ringBalances()` shows notes that only the ring can decrypt, and leaves out an opening under a mint the registry lacks, naming its asset field in `SyncReport.unknownAssetFields` and returning the note with its nullifier in `SyncReport.unregisteredRingNotes` until the mint registers.
+- `ConfidentialTransfer.newDeposit(owner, outputTreeId, feePayer)` builds a transfer that spends no note and proves only with `proofDataSource: "prover"`, and `ConfidentialTransfer.deposit(asset, amount, source)` funds its outputs from the public SOL or SPL account a `DepositSource` names, failing with `TransactionErrorCode.TRANSACTION_DEPOSIT_ASSET_MISMATCH` when the source kind does not match the asset.
 
 Changed
 
@@ -47,9 +51,10 @@ Changed
 Fixed
 
 - `syncWallet` failed on an indexer page of dense private transactions; it now halves `pageLimit` for the rest of the sync until the page fits, keeping the `requireSlot` check.
-- `syncWallet` misclassified authored spends containing unknown output schemes as withdrawals or splits, and now omits their history rows.
-- `syncWallet` failed with `TRANSACTION_KEYS_UNRESOLVED` when a reserved or unknown output scheme accompanied a confidential note, and now stores the note.
+- `syncWallet` failed with `TRANSACTION_KEYS_UNRESOLVED` when a reserved or unknown output scheme accompanied a confidential note and misclassified authored spends containing one as withdrawals or splits; it now stores the note and omits those history rows.
+- `syncWallet` dropped UTXOs appended to any tree but tree 0, and transfers and withdrawals passed over data-carrying UTXOs that `Wallet.balance()` counted; UTXOs now sync and spend in their own tree, a transfer or withdrawal takes any UTXO outside a ring, which is what `Wallet.balance()` counts, and a merge takes the tree holding the most UTXOs.
 - `ProverClient` requests with a trailing slash remain decryptable when the gateway trims it; update the prover with the SDK.
+- `ExternalData.hash()` accepted up to 255 `interfaceTransfers`, which the shielded pool refuses past 32, and now fails with `TransactionErrorCode.TRANSACTION_TOO_MANY_INTERFACE_TRANSFERS` before proving.
 
 ## 0.8.0-alpha — 2026-11-03
 

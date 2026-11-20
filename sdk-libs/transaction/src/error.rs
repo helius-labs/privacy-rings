@@ -35,10 +35,30 @@ pub enum AddressInputError {
     NullifierMismatch,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum RingPaymentRefusal {
+    #[error("input {index} spends a note the payment did not reserve")]
+    UnreservedInput { index: usize },
+    #[error("a note the payment reserved stays unspent")]
+    UnspentReservation,
+    #[error("output {index} leaves the ring")]
+    OutputOutsideRing { index: usize },
+    #[error("output {index} pays neither the recipient nor the wallet")]
+    ForeignOutputOwner { index: usize },
+    #[error("output {index} pays the recipient another asset")]
+    RecipientAsset { index: usize },
+    #[error("the recipient outputs do not total the payment amount")]
+    RecipientAmount,
+    #[error("the payment settles an interface transfer")]
+    InterfaceTransfer,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum TransactionError {
     #[error("invalid address input: {0}")]
     InvalidAddressInput(AddressInputError),
+    #[error("ring payment refused, {0}")]
+    RingPaymentRefused(RingPaymentRefusal),
     #[error(
         "no owner signer or real output owner can name the padding outputs, and the outputs are fixed"
     )]
@@ -345,6 +365,9 @@ pub enum TransactionError {
     #[error("key holder returned {got} plaintext(s), expected {want}")]
     IncompleteDecryption { got: usize, want: usize },
 
+    #[error("the ring asked for a key use the payment does not grant")]
+    RingKeyWithheld,
+
     #[error("wallet authority error: {0}")]
     Authority(String),
 }
@@ -352,6 +375,12 @@ pub enum TransactionError {
 impl From<AddressInputError> for TransactionError {
     fn from(e: AddressInputError) -> Self {
         Self::InvalidAddressInput(e)
+    }
+}
+
+impl From<RingPaymentRefusal> for TransactionError {
+    fn from(refusal: RingPaymentRefusal) -> Self {
+        Self::RingPaymentRefused(refusal)
     }
 }
 

@@ -36,6 +36,7 @@ export {
 } from "./instructions/index.js";
 export type {
   CacheAccounts,
+  DepositSource,
   EncryptedTransaction,
   ExternalData,
   ExternalDataInit,
@@ -108,6 +109,8 @@ export type {
   PrivateTransactionKind,
   PrivateTransactionStatus,
   RingBalance,
+  RingCodec,
+  RingOpening,
   ShieldedKeys,
   SplitBundlePlaintext,
   SyncReport,

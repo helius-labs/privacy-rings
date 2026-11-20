@@ -5,11 +5,13 @@ import {
   getBase64Decoder,
   SolanaError,
   SOLANA_ERROR__JSON_RPC__METHOD_NOT_FOUND,
+  type Address,
   type Signature,
 } from "@solana/kit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ShieldedKeypair, SigningKey, ViewingKey, X25519PublicKey } from "../src/keypair/index.js";
+import { treeAddress } from "../src/interface/pda/index.js";
 import {
   mergeDummyNullifier,
   mergeOutputBlinding,
@@ -27,6 +29,7 @@ import {
   ConfidentialTransfer,
   Data,
   LocalShieldedKeys,
+  assetField,
   ProofInputUtxo,
   SOL_MINT,
   Utxo,
@@ -39,6 +42,8 @@ import {
   serializeWallet,
   splitBundleFromUtxos,
   transactOutputBlinding,
+  type RingCodec,
+  type RingOpening,
   type ShieldedKeys,
 } from "../src/transaction/index.js";
 import {
@@ -57,12 +62,14 @@ import {
 import { SOL_ASSET_ID } from "../src/transaction/asset.js";
 import { KeyMemo } from "../src/transaction/wallet/key-memo.js";
 import { SprClient } from "../src/client/client.js";
+import { ZERO_NULLIFIER_PK } from "../src/interface/program.js";
+import { zeroKeyNullifier } from "../src/keypair/nullifier-key.js";
 import { backfillAssetRegistry, syncWallet } from "../src/wallet/sync.js";
 import { syncPersistedWallet } from "../src/wallet/persisted.js";
 import { kitReads, solanaRpcReads, syncReads, plainCipher } from "./helpers/clients.js";
 
 const OWNER = address("4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi");
-const TREE = address("3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3");
+const TREE = treeAddress(0);
 const SIGNATURE = "1".repeat(64) as Signature;
 const SPL_MINT = address("So11111111111111111111111111111111111111112");
 
@@ -132,6 +139,7 @@ function mergeAfterSplit() {
   const contexts = outputs.map((utxo, index) => ({
     hash: utxo.hash(keypair.nullifierPublicKey(), DEFAULT_TREE_ID),
     tree: TREE,
+    treeId: DEFAULT_TREE_ID,
     leafIndex: BigInt(index),
   }));
   const salt = new Uint8Array(16).fill(5) as Bytes16;
@@ -184,6 +192,7 @@ function mergeAfterSplit() {
         outputContext: {
           hash: merged.hash(keypair.nullifierPublicKey(), DEFAULT_TREE_ID),
           tree: TREE,
+          treeId: 0,
           leafIndex: 2n,
         },
         payload: mergePayload(keypair, firstNullifier, 42n),
@@ -215,6 +224,7 @@ function mergeAfterSplit() {
         outputContext: {
           hash: chained.hash(keypair.nullifierPublicKey(), DEFAULT_TREE_ID),
           tree: TREE,
+          treeId: 0,
           leafIndex: 3n,
         },
         payload: mergePayload(keypair, chainedNullifier, 42n),
@@ -839,7 +849,7 @@ describe("wallet sync", () => {
       utxos: [
         {
           utxo,
-          outputContext: { hash, tree: TREE, leafIndex: 0n },
+          outputContext: { hash, tree: TREE, treeId: 0, leafIndex: 0n },
           nullifier: keypair.nullifier(hash, blinding),
           spent: false,
         },
@@ -1023,7 +1033,7 @@ describe("wallet sync", () => {
       const hash = utxo.hash(keypair.nullifierPublicKey(), DEFAULT_TREE_ID);
       return {
         utxo,
-        outputContext: { hash, tree: TREE, leafIndex: BigInt(index) },
+        outputContext: { hash, tree: TREE, treeId: 0, leafIndex: BigInt(index) },
         nullifier: keypair.nullifier(hash, blinding),
         spent: false,
       };
@@ -1057,6 +1067,7 @@ describe("wallet sync", () => {
               outputContext: {
                 hash: merged.hash(keypair.nullifierPublicKey(), DEFAULT_TREE_ID),
                 tree: TREE,
+                treeId: 0,
                 leafIndex: BigInt(real),
               },
               payload: mergePayload(keypair, firstNullifier, total),
@@ -1217,6 +1228,7 @@ describe("wallet sync", () => {
       const context = {
         hash: utxo.hash(keypair.nullifierPublicKey(), DEFAULT_TREE_ID),
         tree: TREE,
+        treeId: DEFAULT_TREE_ID,
         leafIndex: BigInt(index + 2),
       };
       merges.push({
@@ -1397,7 +1409,7 @@ describe("wallet sync", () => {
         utxos: [
           {
             utxo: held,
-            outputContext: { hash, tree: TREE, leafIndex: 0n },
+            outputContext: { hash, tree: TREE, treeId: 0, leafIndex: 0n },
             nullifier,
             spent: false,
           },
@@ -1443,6 +1455,7 @@ describe("wallet sync", () => {
                     ringDataHash,
                   ),
                   tree: TREE,
+                  treeId: 0,
                   leafIndex: 1n,
                 },
                 payload: outputPayload,
@@ -1595,7 +1608,7 @@ describe("wallet sync", () => {
       const hash = utxo.hash(keypair.nullifierPublicKey(), DEFAULT_TREE_ID);
       return {
         utxo,
-        outputContext: { hash, tree: TREE, leafIndex: BigInt(leafIndex) },
+        outputContext: { hash, tree: TREE, treeId: 0, leafIndex: BigInt(leafIndex) },
         nullifier: keypair.nullifier(hash, blinding),
         spent: false,
       };
@@ -1621,6 +1634,7 @@ describe("wallet sync", () => {
           outputContext: {
             hash: output.utxoHash,
             tree: TREE,
+            treeId: 0,
             leafIndex: BigInt(index + held.length),
           },
           payload: output.data ?? new Uint8Array(),
@@ -1742,7 +1756,7 @@ describe("wallet sync", () => {
       utxos: [
         {
           utxo,
-          outputContext: { hash, tree: TREE, leafIndex: 0n },
+          outputContext: { hash, tree: TREE, treeId: 0, leafIndex: 0n },
           nullifier: current.nullifier(hash, blinding),
           spent: false,
         },
@@ -1780,6 +1794,7 @@ describe("wallet sync", () => {
             outputContext: {
               hash: output.utxoHash,
               tree: TREE,
+              treeId: 0,
               leafIndex: BigInt(index + 1),
             },
             payload: output.data ?? new Uint8Array(),
@@ -1851,6 +1866,7 @@ describe("wallet sync", () => {
               outputContext: {
                 hash: output.hash(recipient.nullifierPublicKey(), DEFAULT_TREE_ID),
                 tree: TREE,
+                treeId: 0,
                 leafIndex: 4n,
               },
               payload,
@@ -1865,6 +1881,72 @@ describe("wallet sync", () => {
 
     expect(report).toMatchObject({ storedUtxos: 1, undecryptableCandidates: 0 });
     expect(wallet.utxos()[0]?.utxo.ringProgramId).toBe(OWNER);
+  });
+
+  it("stores an output under the tree it was appended to and refuses one hashed for another", async () => {
+    const recipient = ShieldedKeypair.generate();
+    const sender = ShieldedKeypair.generate();
+    const salt = new Uint8Array(16).fill(3) as Bytes16;
+    const output = new Utxo({
+      owner: recipient.signingPublicKey(),
+      asset: SOL_MINT,
+      amount: 42n,
+      blinding: bytes(31),
+    });
+    const payload = encodeOutputData(
+      EncryptedScheme.confidential,
+      encryptConfidential(
+        sender,
+        recipient.viewingPublicKey(),
+        { assetId: 1n, amount: output.amount, blinding: output.blinding, data: output.data },
+        salt,
+        0,
+      ),
+      "encrypted",
+    );
+    const sync = async (hashTreeId: number) => {
+      const wallet = new Wallet({ identity: recipient.shieldedAddress() });
+      const hash = output.hash(recipient.nullifierPublicKey(), hashTreeId);
+      const report = await decryptWithKeys(LocalShieldedKeys.fromKeypair(recipient), {
+        wallet,
+        transactions: [
+          {
+            slot: 2n,
+            txSignature: SIGNATURE,
+            txViewingPublicKey: sender.viewingPublicKey(),
+            salt,
+            outputSlots: [
+              {
+                viewTag: recipient.signingPublicKey().confidentialViewTag(),
+                outputContext: { hash, tree: treeAddress(1), treeId: 1, leafIndex: 4n },
+                payload,
+              },
+            ],
+            messages: [],
+            nullifiers: [bytes(32)],
+            proofless: false,
+          },
+        ],
+      });
+      return { wallet, hash, report };
+    };
+
+    const stored = await sync(1);
+    expect(stored.report).toMatchObject({ storedUtxos: 1, undecryptableCandidates: 0 });
+    const [entry] = stored.wallet.utxos();
+    expect(entry?.outputContext).toEqual({
+      hash: stored.hash,
+      tree: treeAddress(1),
+      treeId: 1,
+      leafIndex: 4n,
+    });
+    expect(entry?.nullifier).toEqual(output.nullifier(stored.hash, recipient.nullifierKey()));
+    const restored = deserializeWallet(serializeWallet(stored.wallet)).utxos()[0];
+    expect(restored?.outputContext).toEqual(entry?.outputContext);
+
+    const foreign = await sync(DEFAULT_TREE_ID);
+    expect(foreign.report).toMatchObject({ storedUtxos: 0, undecryptableCandidates: 1 });
+    expect(foreign.wallet.utxos()).toEqual([]);
   });
 
   it("counts a tagged output under a small-order transaction key as not ours", async () => {
@@ -1882,7 +1964,7 @@ describe("wallet sync", () => {
           outputSlots: [
             {
               viewTag: recipient.viewingPublicKey().x(),
-              outputContext: { hash: bytes(56), tree: TREE, leafIndex: 4n },
+              outputContext: { hash: bytes(56), tree: TREE, treeId: 0, leafIndex: 4n },
               payload: encodeOutputData(
                 EncryptedScheme.confidential,
                 Uint8Array.from([...recipient.viewingPublicKey().toBytes(), ...new Uint8Array(80)]),
@@ -1960,6 +2042,7 @@ describe("wallet sync", () => {
             outputContext: {
               hash: output.hash(recipient.nullifierPublicKey(), DEFAULT_TREE_ID),
               tree: TREE,
+              treeId: 0,
               leafIndex: BigInt(index),
             },
             payload,
@@ -2019,7 +2102,7 @@ describe("wallet sync", () => {
       utxos: [
         {
           utxo: input,
-          outputContext: { hash: inputHash, tree: TREE, leafIndex: 0n },
+          outputContext: { hash: inputHash, tree: TREE, treeId: 0, leafIndex: 0n },
           nullifier,
           spent: false,
         },
@@ -2090,6 +2173,7 @@ describe("wallet sync", () => {
               outputContext: {
                 hash: change.hash(sender.nullifierPublicKey(), DEFAULT_TREE_ID),
                 tree: TREE,
+                treeId: 0,
                 leafIndex: 1n,
               },
               payload: changePayload,
@@ -2099,6 +2183,7 @@ describe("wallet sync", () => {
               outputContext: {
                 hash: payment.hash(recipient.nullifierPublicKey(), DEFAULT_TREE_ID),
                 tree: TREE,
+                treeId: 0,
                 leafIndex: 2n,
               },
               payload: paymentPayload,
@@ -2134,7 +2219,7 @@ describe("wallet sync", () => {
       utxos: [
         {
           utxo: input,
-          outputContext: { hash: inputHash, tree: TREE, leafIndex: 0n },
+          outputContext: { hash: inputHash, tree: TREE, treeId: 0, leafIndex: 0n },
           nullifier,
           spent: false,
         },
@@ -2144,7 +2229,12 @@ describe("wallet sync", () => {
     const outputSlots = [EncryptedScheme.anonymousSender, EncryptedScheme.anonymousRecipient].map(
       (scheme, index) => ({
         viewTag: sender.viewingPublicKey().x(),
-        outputContext: { hash: bytes(60 + index), tree: TREE, leafIndex: BigInt(index + 1) },
+        outputContext: {
+          hash: bytes(60 + index),
+          tree: TREE,
+          treeId: 0,
+          leafIndex: BigInt(index + 1),
+        },
         payload: encodeOutputData(scheme, bytes(70 + index), "encrypted"),
       }),
     );
@@ -2189,7 +2279,7 @@ describe("wallet sync", () => {
         utxos: [
           {
             utxo: input,
-            outputContext: { hash, tree: TREE, leafIndex: 0n },
+            outputContext: { hash, tree: TREE, treeId: 0, leafIndex: 0n },
             nullifier,
             spent: false,
           },
@@ -2211,7 +2301,12 @@ describe("wallet sync", () => {
             salt: new Uint8Array(16).fill(5) as Bytes16,
             outputSlots: payloads.map((payload, index) => ({
               viewTag: sender.viewingPublicKey().x(),
-              outputContext: { hash: bytes(60 + index), tree: TREE, leafIndex: BigInt(index + 1) },
+              outputContext: {
+                hash: bytes(60 + index),
+                tree: TREE,
+                treeId: 0,
+                leafIndex: BigInt(index + 1),
+              },
               payload,
             })),
             messages: [],
@@ -2279,13 +2374,14 @@ describe("wallet sync", () => {
                 outputContext: {
                   hash: note.hash(owner.nullifierPublicKey(), DEFAULT_TREE_ID),
                   tree: TREE,
+                  treeId: 0,
                   leafIndex: 1n,
                 },
                 payload,
               },
               {
                 viewTag: bytes(77),
-                outputContext: { hash: bytes(60), tree: TREE, leafIndex: 2n },
+                outputContext: { hash: bytes(60), tree: TREE, treeId: 0, leafIndex: 2n },
                 payload: encryptedFrame(11),
               },
             ],
@@ -2358,7 +2454,7 @@ describe("wallet sync", () => {
       const hash = utxo.hash(keypair.nullifierPublicKey(), DEFAULT_TREE_ID);
       return {
         utxo,
-        outputContext: { hash, tree: TREE, leafIndex: BigInt(index) },
+        outputContext: { hash, tree: TREE, treeId: 0, leafIndex: BigInt(index) },
         nullifier: utxo.nullifier(hash, keypair.nullifierKey()),
         spent: false,
       };
@@ -2384,6 +2480,7 @@ describe("wallet sync", () => {
               outputContext: {
                 hash: output.hash(keypair.nullifierPublicKey(), DEFAULT_TREE_ID),
                 tree: TREE,
+                treeId: 0,
                 leafIndex: 2n,
               },
               payload: mergePayload(keypair, firstNullifier, 42n, new Uint8Array(32) as Bytes32),
@@ -2450,7 +2547,7 @@ describe("wallet sync", () => {
         utxos: [
           {
             utxo: input,
-            outputContext: { hash: inputHash, tree: TREE, leafIndex: 0n },
+            outputContext: { hash: inputHash, tree: TREE, treeId: 0, leafIndex: 0n },
             nullifier: firstNullifier,
             spent: false,
           },
@@ -2477,6 +2574,7 @@ describe("wallet sync", () => {
                   outputContext: {
                     hash: output.hash(keypair.nullifierPublicKey(), DEFAULT_TREE_ID),
                     tree: TREE,
+                    treeId: 0,
                     leafIndex: 1n,
                   },
                   payload: payloadFor(keypair, firstNullifier),
@@ -2522,7 +2620,7 @@ describe("wallet sync", () => {
       utxos: [
         {
           utxo: existing,
-          outputContext: { hash, tree: TREE, leafIndex: 0n },
+          outputContext: { hash, tree: TREE, treeId: 0, leafIndex: 0n },
           nullifier: keypair.nullifier(hash, blinding),
           spent: false,
         },
@@ -2537,6 +2635,7 @@ describe("wallet sync", () => {
           outputContext: {
             hash: bytes(78),
             tree: TREE,
+            treeId: 0,
             leafIndex: 1n,
           },
           // Another wallet's well-formed merge: under this wallet's key it
@@ -2594,7 +2693,7 @@ describe("wallet sync", () => {
       const hash = utxo.hash(keypair.nullifierPublicKey(), DEFAULT_TREE_ID);
       return {
         utxo,
-        outputContext: { hash, tree: TREE, leafIndex: BigInt(index) },
+        outputContext: { hash, tree: TREE, treeId: 0, leafIndex: BigInt(index) },
         nullifier: keypair.nullifier(hash, blinding),
         spent: index === 1,
       };
@@ -2679,7 +2778,7 @@ describe("wallet sync", () => {
       const hash = utxo.hash(keypair.nullifierPublicKey(), DEFAULT_TREE_ID);
       return {
         utxo,
-        outputContext: { hash, tree: TREE, leafIndex: BigInt(index) },
+        outputContext: { hash, tree: TREE, treeId: 0, leafIndex: BigInt(index) },
         nullifier: keypair.nullifier(hash, blinding),
         // Only the last UTXO is still unspent.
         spent: index < 2,
@@ -2742,7 +2841,12 @@ describe("wallet sync", () => {
     wallet._replace({
       ...wallet._state(),
       utxos: [
-        { utxo, outputContext: { hash, tree: TREE, leafIndex: 0n }, nullifier, spent: false },
+        {
+          utxo,
+          outputContext: { hash, tree: TREE, treeId: 0, leafIndex: 0n },
+          nullifier,
+          spent: false,
+        },
       ],
     });
 
@@ -2793,7 +2897,7 @@ describe("wallet sync", () => {
       utxos: [
         {
           utxo,
-          outputContext: { hash, tree: TREE, leafIndex: 0n },
+          outputContext: { hash, tree: TREE, treeId: 0, leafIndex: 0n },
           nullifier: keypair.nullifier(hash, blinding),
           spent: false,
         },
@@ -2854,7 +2958,7 @@ describe("wallet sync", () => {
     const nullifier = keypair.nullifier(hash, blinding);
     const outputSlot = {
       viewTag: keypair.viewingKey().recipientBootstrapViewTag(),
-      outputContext: { hash, tree: TREE, leafIndex: 4n },
+      outputContext: { hash, tree: TREE, treeId: 0, leafIndex: 4n },
       payload: encodeOutputData(
         EncryptedScheme.proofless,
         encodeProofless({
@@ -2958,6 +3062,7 @@ describe("wallet sync", () => {
           outputContext: {
             hash: bytes(value + 10),
             tree: TREE,
+            treeId: 0,
             leafIndex: BigInt(value),
           },
           payload: Uint8Array.of(255),
@@ -2987,5 +3092,193 @@ describe("wallet sync", () => {
     });
 
     expect(report.unparsedTransactions).toBe(2);
+  });
+});
+
+describe("ring codec openings", () => {
+  const TREE_ID = 5;
+  const MINT = address("So11111111111111111111111111111111111111112");
+
+  function ringEvent(nullifierPublicKey: Bytes32, note: Utxo, ringDataHash?: Bytes32) {
+    return {
+      slot: 2n,
+      txSignature: SIGNATURE,
+      outputSlots: [
+        {
+          viewTag: bytes(9),
+          outputContext: {
+            hash: note.hash(nullifierPublicKey, TREE_ID, undefined, ringDataHash),
+            tree: TREE,
+            treeId: TREE_ID,
+            leafIndex: 4n,
+          },
+          payload: new Uint8Array(),
+        },
+      ],
+      messages: [],
+      nullifiers: [bytes(32)],
+      proofless: false,
+      ringProgramId: OWNER,
+    };
+  }
+
+  function opening(nullifierPublicKey: Bytes32, note: Utxo, ringDataHash?: Bytes32): RingOpening {
+    return {
+      slotIndex: 0,
+      nullifierPublicKey,
+      mint: note.asset,
+      amount: note.amount,
+      blinding: note.blinding,
+      data: note.data,
+      ...(ringDataHash === undefined ? {} : { ringDataHash }),
+    };
+  }
+
+  function codec(openings: readonly RingOpening[], ringProgramId: Address = OWNER): RingCodec {
+    return { ringProgramId, open: async () => openings };
+  }
+
+  it("stores only the opening that rebuilds the leaf of its indexed tree", async () => {
+    const owner = ShieldedKeypair.generate();
+    const wallet = new Wallet({ identity: owner.shieldedAddress() });
+    const note = new Utxo({
+      owner: owner.signingPublicKey(),
+      asset: SOL_MINT,
+      amount: 42n,
+      blinding: bytes(31),
+      ringProgramId: OWNER,
+    });
+    const report = await decryptWithKeys(LocalShieldedKeys.fromKeypair(owner), {
+      wallet,
+      transactions: [ringEvent(owner.nullifierPublicKey(), note)],
+      ring: codec([
+        { ...opening(owner.nullifierPublicKey(), note), amount: 43n },
+        opening(owner.nullifierPublicKey(), note),
+      ]),
+    });
+
+    expect(report.storedUtxos).toBe(1);
+    expect(wallet.balances()).toEqual([]);
+    const foreign = new Wallet({ identity: owner.shieldedAddress() });
+    await decryptWithKeys(LocalShieldedKeys.fromKeypair(owner), {
+      wallet: foreign,
+      transactions: [ringEvent(owner.nullifierPublicKey(), note)],
+      ring: codec([opening(owner.nullifierPublicKey(), note)], TREE),
+    });
+    expect(foreign.utxos()).toEqual([]);
+    expect(wallet.ringBalances(true)).toEqual([
+      { ringProgramId: OWNER, assets: [{ assetId: 1n, mint: SOL_MINT, amount: 42n, utxos: [] }] },
+    ]);
+  });
+
+  it("credits a ring confidential note whose ring data hash only the codec knows", async () => {
+    const owner = ShieldedKeypair.generate();
+    const sender = ShieldedKeypair.generate();
+    const wallet = new Wallet({ identity: owner.shieldedAddress() });
+    const salt = new Uint8Array(16).fill(3) as Bytes16;
+    const ringDataHash = bytes(7);
+    const note = new Utxo({
+      owner: owner.signingPublicKey(),
+      asset: SOL_MINT,
+      amount: 42n,
+      blinding: bytes(31),
+      data: new Data([{ kind: "ringData", bytes: Uint8Array.of(1) }]),
+      ringProgramId: OWNER,
+    });
+    const event = {
+      ...ringEvent(owner.nullifierPublicKey(), note, ringDataHash),
+      txViewingPublicKey: sender.viewingPublicKey(),
+      salt,
+    };
+    const [slot] = event.outputSlots;
+    const payload = encodeOutputData(
+      EncryptedScheme.ringConfidential,
+      encryptConfidential(
+        sender,
+        owner.viewingPublicKey(),
+        {
+          assetId: 1n,
+          amount: note.amount,
+          blinding: note.blinding,
+          ringProgramId: OWNER,
+          data: note.data,
+        },
+        salt,
+        0,
+      ),
+      "encrypted",
+    );
+    const transactions = [{ ...event, outputSlots: [{ ...slot!, payload }] }];
+    const keys = LocalShieldedKeys.fromKeypair(owner);
+
+    await decryptWithKeys(keys, { wallet, transactions });
+    expect(wallet.utxos()).toEqual([]);
+    await decryptWithKeys(keys, {
+      wallet,
+      transactions,
+      ring: codec([opening(owner.nullifierPublicKey(), note, ringDataHash)]),
+    });
+    expect(wallet.utxos()[0]?.ringDataHash).toEqual(ringDataHash);
+  });
+
+  it("credits a zero-key note under the public nullifier and refuses any other key", async () => {
+    const owner = ShieldedKeypair.generate();
+    const wallet = new Wallet({ identity: owner.shieldedAddress() });
+    const note = new Utxo({
+      owner: owner.signingPublicKey(),
+      asset: SOL_MINT,
+      amount: 9n,
+      blinding: bytes(31),
+      ringProgramId: OWNER,
+    });
+    const event = ringEvent(ZERO_NULLIFIER_PK, note);
+    await decryptWithKeys(LocalShieldedKeys.fromKeypair(owner), {
+      wallet,
+      transactions: [event],
+      ring: codec([opening(bytes(7), note), opening(ZERO_NULLIFIER_PK, note)]),
+    });
+
+    const hash = event.outputSlots[0]!.outputContext.hash;
+    expect(wallet.utxos().map((entry) => entry.nullifier)).toEqual([
+      zeroKeyNullifier(hash, note.blinding),
+    ]);
+  });
+
+  it("reports a verified opening under an unregistered mint and stores it once registered", async () => {
+    const owner = ShieldedKeypair.generate();
+    const keys = LocalShieldedKeys.fromKeypair(owner);
+    const wallet = new Wallet({ identity: owner.shieldedAddress() });
+    const note = new Utxo({
+      owner: owner.signingPublicKey(),
+      asset: MINT,
+      amount: 11n,
+      blinding: bytes(31),
+      ringProgramId: OWNER,
+    });
+    const forged = { ...opening(owner.nullifierPublicKey(), note), mint: address(TREE) };
+    const event = ringEvent(owner.nullifierPublicKey(), note);
+    const input = {
+      wallet,
+      transactions: [event],
+      ring: codec([forged, opening(owner.nullifierPublicKey(), note)]),
+    };
+
+    const report = await decryptWithKeys(keys, input);
+    expect(report.unknownAssetFields).toEqual([assetField(MINT)]);
+    const { hash } = event.outputSlots[0]!.outputContext;
+    expect(report.unregisteredRingNotes).toEqual([
+      {
+        utxo: note,
+        outputContext: { hash, tree: treeAddress(TREE_ID), treeId: TREE_ID, leafIndex: 4n },
+        nullifier: owner.nullifier(hash, note.blinding),
+        spent: false,
+      },
+    ]);
+    expect(wallet.utxos()).toEqual([]);
+    wallet.registerAsset(12n, MINT);
+    expect((await decryptWithKeys(keys, input)).unregisteredRingNotes).toEqual([]);
+    expect(wallet.ringBalances(true)).toEqual([
+      { ringProgramId: OWNER, assets: [{ assetId: 12n, mint: MINT, amount: 11n, utxos: [] }] },
+    ]);
   });
 });

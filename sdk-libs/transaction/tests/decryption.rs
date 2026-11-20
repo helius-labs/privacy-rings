@@ -2,13 +2,14 @@ mod common;
 
 use std::{
     cell::RefCell,
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
 };
 
 use common::{keypair, wallet_utxo};
 use solana_signature::Signature;
 use spr_event::{encode_merge_output_data, MergeOutputDataRef, OutputDataEncoding};
-use spr_keypair::{ShieldedAddress, ShieldedKeypair, ViewingKey, X25519Pubkey};
+use spr_interface::ZERO_NULLIFIER_PUBKEY;
+use spr_keypair::{NullifierKey, ShieldedAddress, ShieldedKeypair, ViewingKey, X25519Pubkey};
 use spr_transaction::{
     decrypt, decrypt_spendable,
     instructions::merge::{
@@ -22,9 +23,9 @@ use spr_transaction::{
     },
     verify_owned, verify_spendable, Address, AssetBalance, AssetRegistry, Balances, Data,
     DataRecord, DecryptLabel, DecryptRequest, DecryptionResult, DeriveRequest, EncryptedScheme,
-    LocalShieldedKeys, Mint, OutputContext, OutputSlot, OwnerCx, ShieldedKeys, ShieldedTransaction,
-    SpendableDecryptionResult, TransactionError, TransactionKeyRequest, Utxo, UtxoSerialization,
-    WalletUtxo, TRANSFER_PLAINTEXT,
+    LocalShieldedKeys, Mint, OutputContext, OutputSlot, OwnerCx, RingCodec, RingOpening,
+    ShieldedKeys, ShieldedTransaction, SpendableDecryptionResult, TransactionError,
+    TransactionKeyRequest, Utxo, UtxoSerialization, WalletUtxo, TRANSFER_PLAINTEXT,
 };
 
 fn owner_cx<'a>(owner: &ShieldedKeypair, assets: &'a AssetRegistry) -> OwnerCx<'a> {
@@ -1328,4 +1329,218 @@ fn low_order_transaction_keys_leave_the_scan_intact() {
 
     let candidates = decrypt(&owner, &batch, &assets).unwrap();
     assert_eq!(candidates.utxos, vec![note]);
+}
+
+const RING: Address = Address::new_from_array([41; 32]);
+
+struct Codec(Address, Vec<RingOpening>);
+
+impl RingCodec for Codec {
+    type Error = TransactionError;
+
+    fn ring_program_id(&self) -> Address {
+        self.0
+    }
+
+    fn open(&self, _: &ShieldedTransaction) -> Result<Vec<RingOpening>, TransactionError> {
+        Ok(self.1.clone())
+    }
+}
+
+fn ring_note(owner: &ShieldedKeypair, mint: Mint, amount: u64, slot_index: u32) -> WalletUtxo {
+    let mut note = wallet_utxo(owner, mint, amount, 5, 1);
+    note.utxo.ring_program_id = Some(RING);
+    note.slot_index = slot_index;
+    note.leaf_index += u64::from(slot_index);
+    refresh_commitment(owner, &mut note);
+    note
+}
+
+fn opening(note: &WalletUtxo) -> RingOpening {
+    RingOpening {
+        slot_index: note.slot_index,
+        nullifier_pubkey: note.nullifier_pubkey,
+        mint: note.utxo.asset.asset,
+        amount: note.utxo.amount,
+        blinding: note.utxo.blinding,
+        data: note.utxo.data.clone(),
+        data_hash: note.data_hash,
+        ring_data_hash: note.ring_data_hash,
+    }
+}
+
+fn ring_event(notes: &[&WalletUtxo]) -> ShieldedTransaction {
+    let slots = notes.iter().map(|note| slot(note, vec![])).collect();
+    ShieldedTransaction {
+        ring_program_id: Some(RING),
+        ..publication(notes[0], slots)
+    }
+}
+
+fn ring_balance(notes: Vec<WalletUtxo>, mint: Mint, amount: u64) -> BTreeMap<Address, Balances> {
+    BTreeMap::from([(
+        RING,
+        Balances {
+            assets: vec![balance(notes, mint, amount)],
+        },
+    )])
+}
+
+#[test]
+fn ring_openings_count_only_once_their_commitment_rebuilds() {
+    let owner = keypair(40);
+    let spl = Mint::new(Address::new_from_array([42; 32]), 9);
+    let unregistered = Mint::new(Address::new_from_array([43; 32]), 0);
+    let mut assets = AssetRegistry::new([(spl.asset_id, spl.asset)]).unwrap();
+    let registered_note = ring_note(&owner, spl, 7, 0);
+    let unregistered_note = ring_note(&owner, unregistered, 11, 1);
+    let forged_amount = RingOpening {
+        amount: 8,
+        ..opening(&registered_note)
+    };
+    let forged_mint = RingOpening {
+        mint: Address::new_from_array([44; 32]),
+        ..opening(&unregistered_note)
+    };
+    let codec = Codec(
+        RING,
+        vec![
+            forged_amount,
+            opening(&registered_note),
+            forged_mint,
+            opening(&unregistered_note),
+        ],
+    );
+    let event = ring_event(&[&registered_note, &unregistered_note]);
+    let mut foreign = DecryptionResult::default();
+    let other_ring = Codec(Address::new_from_array([46; 32]), codec.1.clone());
+    foreign
+        .extend_with_ring(&owner, std::slice::from_ref(&event), &assets, &other_ring)
+        .unwrap();
+    assert!(foreign.utxos.is_empty() && foreign.unknown_mints.is_empty());
+
+    let mut decrypted = DecryptionResult::default();
+    let unregistered_notes = decrypted
+        .extend_with_ring(&owner, std::slice::from_ref(&event), &assets, &codec)
+        .unwrap();
+    assert_eq!(unregistered_notes, std::slice::from_ref(&unregistered_note));
+    assert_eq!(
+        decrypted.unknown_mints,
+        BTreeSet::from([unregistered.asset])
+    );
+    let spendable = verify_spendable(&owner, &decrypted).unwrap();
+    assert_eq!(spendable.balances, Balances::default());
+    assert_eq!(
+        spendable.ring_balances(),
+        ring_balance(vec![registered_note.clone()], spl, 7)
+    );
+
+    let registered = Mint::new(unregistered.asset, 12);
+    assets
+        .insert(registered.asset_id, registered.asset)
+        .unwrap();
+    let mut rerun = DecryptionResult::default();
+    assert!(rerun
+        .extend_with_ring(&owner, &[event], &assets, &codec)
+        .unwrap()
+        .is_empty());
+    let mut credited = unregistered_note;
+    credited.utxo.asset = registered;
+    assert_eq!(
+        verify_spendable(&owner, &rerun).unwrap().ring_balances(),
+        BTreeMap::from([(
+            RING,
+            Balances {
+                assets: vec![
+                    balance(vec![registered_note], spl, 7),
+                    balance(vec![credited], registered, 11),
+                ],
+            },
+        )])
+    );
+}
+
+#[test]
+fn a_codec_opens_the_ring_data_core_cannot_hash() {
+    let owner = keypair(45);
+    let mut note = ring_note(&owner, Mint::SOL, 31, 0);
+    note.utxo.data = Data::new(vec![DataRecord::RingData(vec![7])]);
+    note.ring_data_hash = Some([5; 32]);
+    refresh_commitment(&owner, &mut note);
+    let tx_key = keypair(46).viewing_key;
+    let output = confidential_slot(&note, owner.viewing_pubkey(), &tx_key, 0);
+    let OutputDataEncoding::Encrypted(mut blob) = output.output_data().unwrap() else {
+        panic!("encrypted envelope")
+    };
+    *blob.first_mut().unwrap() = EncryptedScheme::RingConfidential.as_byte();
+    let mut event = ring_event(&[&note]);
+    event.output_slots = vec![slot(
+        &note,
+        borsh::to_vec(&OutputDataEncoding::Encrypted(blob)).unwrap(),
+    )];
+    event.tx_viewing_pk = Some(tx_key.pubkey());
+    event.salt = Some([7; 16]);
+    let assets = AssetRegistry::default();
+
+    let core = decrypt_spendable(&owner, std::slice::from_ref(&event), &assets).unwrap();
+    assert!(core.ring_balances().is_empty());
+    let mut decrypted = DecryptionResult::default();
+    decrypted
+        .extend_with_ring(
+            &owner,
+            &[event],
+            &assets,
+            &Codec(RING, vec![opening(&note)]),
+        )
+        .unwrap();
+    assert_eq!(
+        verify_spendable(&owner, &decrypted)
+            .unwrap()
+            .ring_balances(),
+        ring_balance(vec![note], Mint::SOL, 31)
+    );
+}
+
+#[test]
+fn a_zero_key_ring_note_counts_under_the_public_nullifier_and_no_other_key() {
+    let owner = keypair(47);
+    let mut note = ring_note(&owner, Mint::SOL, 9, 0);
+    note.nullifier_pubkey = ZERO_NULLIFIER_PUBKEY;
+    refresh_commitment(&owner, &mut note);
+    note.nullifier = NullifierKey::from_secret([0; 31])
+        .nullifier(&note.utxo_hash, &note.utxo.blinding)
+        .unwrap();
+    let foreign_key = RingOpening {
+        nullifier_pubkey: [7; 32],
+        ..opening(&note)
+    };
+    let codec = Codec(RING, vec![foreign_key, opening(&note)]);
+    let mut decrypted = DecryptionResult::default();
+    decrypted
+        .extend_with_ring(
+            &owner,
+            &[ring_event(&[&note])],
+            &AssetRegistry::default(),
+            &codec,
+        )
+        .unwrap();
+    assert_eq!(
+        verify_spendable(&owner, &decrypted)
+            .unwrap()
+            .ring_balances(),
+        ring_balance(vec![note], Mint::SOL, 9)
+    );
+}
+
+#[test]
+fn verify_owned_refuses_a_zero_key_note_outside_a_ring() {
+    let owner = keypair(48);
+    let mut note = wallet_utxo(&owner, Mint::SOL, 4, 6, 2);
+    note.nullifier_pubkey = ZERO_NULLIFIER_PUBKEY;
+    refresh_commitment(&owner, &mut note);
+    let decrypted = DecryptionResult {
+        utxos: vec![note],
+        ..DecryptionResult::default()
+    };
+    assert!(verify_owned(&owner, &decrypted).unwrap().utxos.is_empty());
 }

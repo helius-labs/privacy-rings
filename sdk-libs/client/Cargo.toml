@@ -183,6 +183,9 @@ name = "transfer_dummy"
 required-features = ["proofs"]
 
 [[test]]
+name = "ring_payment"
+
+[[test]]
 name = "solana_rpc"
 
 [[test]]

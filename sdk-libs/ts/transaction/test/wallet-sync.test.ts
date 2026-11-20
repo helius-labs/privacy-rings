@@ -138,6 +138,7 @@ function reportRow(value: unknown): SyncReport {
     // These fixtures predate merge-field recovery; no case contains an
     // unresolved merge asset.
     unknownAssetFields: [],
+    unregisteredRingNotes: [],
   };
 }
 
@@ -183,8 +184,8 @@ function shieldedTransactions(
               encodeProofless(output),
               "plaintext",
             );
-            // Wallet sync hashes under the one live tree, so the proofless hash
-            // the fixture leaves for recomputation is taken under the same id.
+            // The proofless hash the fixture leaves for recomputation is taken
+            // under the tree id its slot names.
             hash = new Utxo({
               owner: keypair.signingPublicKey(),
               asset,
@@ -197,6 +198,8 @@ function shieldedTransactions(
             outputContext: {
               hash,
               tree: encodeAddress(hexBytes(fixtureString(slot, "treeBytes"))),
+              // The fixture's commitments open in tree 0.
+              treeId: DEFAULT_TREE_ID,
               leafIndex: BigInt(fixtureString(slot, "leafIndex")),
             },
             payload,
@@ -287,6 +290,7 @@ describe("manifest-verified wallet behavior", () => {
       const outputContext = {
         hash: hexBytes(fixtureString(row, "hashBytes")) as Bytes32,
         tree: SOL_MINT,
+        treeId: DEFAULT_TREE_ID,
         leafIndex: BigInt(fixtureString(row, "leafIndex")),
       };
       const nullifier = utxo.nullifier(outputContext.hash, value.nullifier);
