@@ -103,6 +103,7 @@ export {
   walletSnapshotKey,
   WalletError,
   type DepositTransactionParams,
+  type DecryptionRecipientProvider,
   type AssetMetadata,
   type MergeTransactionParams,
   type MultiTransferTransactionParams,

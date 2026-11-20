@@ -21,6 +21,7 @@ pub(crate) enum Service {
     Validator,
     Photon,
     Prover,
+    Decryption,
 }
 
 impl Service {
@@ -30,6 +31,7 @@ impl Service {
             Self::Validator => "solana-test-validator",
             Self::Photon => "photon",
             Self::Prover => "prover-server",
+            Self::Decryption => "spr-tvc-decryption-service-local",
         }
     }
 }
@@ -84,16 +86,26 @@ pub(crate) fn spawn_service(
         .stderr(Stdio::from(stderr))
         .spawn()
         .with_context(|| format!("failed to spawn {}", binary.display()))?;
-    if let Some(scope) = scope {
+    if let Some(scope) = scope
+        .as_deref()
+        .or_else(|| (service == Service::Decryption).then_some(log_dir.as_path()))
+    {
         // 1. A scoped child without an ownership receipt must not survive
         // startup.
-        if let Err(error) = record_owned_process(&scope, log_name, child.id()) {
+        if let Err(error) = record_owned_process(scope, log_name, child.id()) {
             let _ = child.kill();
             let _ = child.wait();
             return Err(error);
         }
     }
     Ok(child)
+}
+
+pub(crate) fn stop_decryption_service(log_dir: &str) -> Result<()> {
+    let scope = process_scope()?;
+    let directory = scope.as_deref().unwrap_or_else(|| Path::new(log_dir));
+    stop_owned_receipt(&receipt_path(directory, Service::Decryption.log_name()));
+    Ok(())
 }
 
 fn service_log_dir(scope: Option<&Path>, log_dir: &str) -> PathBuf {

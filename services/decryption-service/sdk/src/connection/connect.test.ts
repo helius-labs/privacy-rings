@@ -195,6 +195,29 @@ describe("verification", () => {
     verifyBootProofMock.mockReset().mockResolvedValue(undefined)
   );
 
+  it("verifies the fresh Gatekeeper session using the Boot Proof bundled with the ping", async () => {
+    const { bootProof, info, pingAnswer, signedPolicy, authorities, expectedPcrs } = connectFixture();
+    const fetch = vi.fn<NonNullable<DecryptionServiceConnectionConfig["transport"]>["fetch"]>(
+      async (url, init) => {
+        expect(url.pathname).toBe("/v1/decryption/session");
+        expect(new Headers(init?.headers).get("x-api-key")).toBe("test-key");
+        expect(init?.redirect).toBe("error");
+        const { encrypted_challenge } = JSON.parse(String(init?.body)) as { encrypted_challenge: string };
+        return Response.json({ info, ping: JSON.parse(pingAnswer(encrypted_challenge)), bootProof });
+      },
+    );
+    const config: DecryptionServiceConnectionConfig = {
+      backend: { endpoint: new URL("https://gateway.example.invalid"), gatekeeperApiKey: "test-key" },
+      network: "devnet",
+      nowMs: () => 1_750_000_000_000n,
+      release: { releasePolicy: signedPolicy, releaseAuthorities: authorities, qosIdentityPcrs: expectedPcrs },
+      transport: { fetch },
+    };
+    await expect(verify(config)).resolves.toMatchObject({ info });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(verifyBootProofMock).toHaveBeenCalledWith(expect.objectContaining({ bootProof }));
+  });
+
   it("runs encrypted QOS ping, resolves the Boot Proof, and holds the verified release", async () => {
     const {
       ephemeralPublicKey,

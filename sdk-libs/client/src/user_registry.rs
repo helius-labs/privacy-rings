@@ -480,6 +480,24 @@ pub fn try_resolve_registered_address<R: Rpc>(
     )?))
 }
 
+/// Uses the registry record, then the decryption service if the record is absent.
+pub fn resolve_shielded_recipient<R: Rpc>(
+    rpc: &R,
+    owner: Pubkey,
+    service: impl FnOnce(Pubkey) -> Result<ShieldedAddress, ClientError>,
+) -> Result<ShieldedAddress, ClientError> {
+    if let Some(record) = try_resolve_registered_address(rpc, owner)? {
+        return Ok(record.address);
+    }
+    let address = service(owner)?;
+    if address.signing_pubkey.as_ed25519()? != owner.to_bytes() {
+        return Err(ClientError::AddressResolution(
+            "the decryption service returned another owner".into(),
+        ));
+    }
+    Ok(address)
+}
+
 pub async fn try_resolve_registered_address_async<R: AsyncRpc>(
     rpc: &R,
     owner: Pubkey,
@@ -901,6 +919,31 @@ mod tests {
 
         let tag = recipient_confidential_view_tag_sync(&rpc, owner).expect("tag");
         assert_eq!(tag, [0u8; 32]);
+    }
+
+    #[test]
+    fn decryption_resolution_uses_only_a_successful_registry_miss() {
+        let keys = ShieldedKeypair::new_ed25519().unwrap();
+        let owner = keys.pubkey();
+        let address = keys.shielded_address().unwrap();
+        let registered = registry_holding(owner, fields(&address));
+        let resolved = resolve_shielded_recipient(&registered, owner, |_| {
+            panic!("the registered owner must use its registry keys")
+        })
+        .unwrap();
+        assert_eq!(resolved, address);
+
+        let missing = MockRpc::default();
+        assert_eq!(
+            resolve_shielded_recipient(&missing, owner, |requested| {
+                assert_eq!(requested, owner);
+                Ok(address)
+            })
+            .unwrap(),
+            address
+        );
+        let wrong_address = ed25519_address(19);
+        assert!(resolve_shielded_recipient(&missing, owner, |_| Ok(wrong_address)).is_err());
     }
 
     #[tokio::test]

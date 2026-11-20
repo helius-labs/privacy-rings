@@ -2029,15 +2029,8 @@ name = "client-example"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
  "bytemuck",
- "getrandom 0.4.3",
- "hex",
- "qos_nsm",
- "qos_p256",
  "reqwest",
- "serde",
- "serde_json",
  "solana-address 2.7.0",
  "solana-instruction 3.5.1",
  "solana-keypair",
@@ -2046,6 +2039,7 @@ dependencies = [
  "solana-signer",
  "solana-system-interface",
  "spr-client",
+ "spr-decryption-client",
  "spr-interface",
  "spr-keypair",
  "spr-program",
@@ -10217,6 +10211,30 @@ dependencies = [
  "tokio",
  "url",
  "wincode",
+ "zeroize",
+]
+
+[[package]]
+name = "spr-decryption-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "getrandom 0.4.3",
+ "hex",
+ "hkdf",
+ "qos_nsm",
+ "qos_p256",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "solana-address 2.7.0",
+ "solana-signer",
+ "spr-client",
+ "spr-keypair",
+ "spr-transaction",
+ "spr-tvc-protocol",
  "zeroize",
 ]
 

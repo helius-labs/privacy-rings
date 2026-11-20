@@ -17,6 +17,12 @@ native transactions and artifact checksums. The standalone Node suite checks its
 native fixture, compiles the circuit/client, builds the stock Xark WASM runtime,
 and verifies real proofs and rejected witness/public-input mutations.
 
+[Decryption localnet](workflows/decryption-service-localnet.yml) runs
+`just headless-e2e` after service, keypair, or localnet CLI changes. The
+CLI starts the loopback enclave. The test sends to an unfunded recipient,
+registers them with the sender as fee payer, and recovers and sweeps the
+earlier note.
+
 1. [Protocol operations](workflows/protocol-ops.yml)
 
     **Triggered by:** PR/main changes to:

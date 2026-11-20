@@ -19,3 +19,8 @@ The enclave and release tool share a service lockfile because QOS pins
 `libc` independently of the Privacy Rings workspace. The enclave uses this
 checkout's SPR keypair crate. The wire protocol and Rust devnet test use
 the root Cargo workspace.
+
+For an interactive localnet, run `just build-local-decryption` from the
+repository root and add `--decryption-port 44030` to `zolana dev start`.
+The CLI starts the same loopback enclave used in CI and prints its URL.
+`zolana dev start --stop` stops that process.

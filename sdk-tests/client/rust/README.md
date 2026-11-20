@@ -171,6 +171,8 @@ release before loading the payer.
 Populate `services/decryption-service/sdk/releases/devnet.json` with the signed pin for the release
 Gatekeeper serves. [Pinning instructions](../../../services/decryption-service/xtask/README.md#pin-devnet)
 
+Set `SPR_E2E_RELEASE_PIN` to use a signed pin from an existing deployment.
+
 Run from the repository root with a funded devnet payer and a Helius devnet
 API key in `HELIUS_API_KEY` or `API_KEY`. Each run funds a fresh sender
 and leaves its test balances on devnet.

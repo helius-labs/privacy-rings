@@ -1,7 +1,9 @@
 export {
   createDecryptionService,
+  createGatekeeperDecryptionService,
   type DecryptionService,
   type DecryptionServiceConfig,
+  type GatekeeperDecryptionServiceConfig,
 } from "./client/decryption.js";
 export { DECRYPTION_SERVICE_RELEASES } from "./protocol/releases.js";
 export type { DecryptionServiceKeys } from "./client/keys.js";

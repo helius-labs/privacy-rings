@@ -1,9 +1,6 @@
-mod gateway;
-
 use std::{cell::RefCell, env, path::Path};
 
 use anyhow::{anyhow, ensure, Context, Result};
-use gateway::{decrypt_item, Gateway};
 use reqwest::Url;
 use solana_keypair::{read_keypair_file, Keypair};
 use solana_signature::Signature;
@@ -15,13 +12,12 @@ use spr_client::{
     HistoryFilters, IndexerRpcConfig, ProofDataSource, ProverClient, Rpc, SolanaRpc, SprClient,
     SprIndexer,
 };
+use spr_decryption_client::{DecryptionClient, Network, ReleasePin, ServiceKeys};
 use spr_interface::{
     instruction::{instruction_data::transact::TransactIxData, tag},
     pda, SHIELDED_POOL_PROGRAM_ID,
 };
-use spr_keypair::{
-    NullifierKey, ShieldedAddress, ShieldedKeypair, SigningKey, ViewingKey, X25519Pubkey,
-};
+use spr_keypair::{ShieldedAddress, ShieldedKeypair, SigningKey, ViewingKey, X25519Pubkey};
 use spr_program::instruction::{AssetDeposit, Deposit, DepositAsset, Transact};
 use spr_transaction::{
     decrypt_spendable,
@@ -31,6 +27,8 @@ use spr_transaction::{
 };
 use spr_tvc_protocol::DecryptItem;
 
+const RELEASE: &str =
+    include_str!("../../../../../services/decryption-service/sdk/releases/devnet.json");
 const DEVNET: &str = "https://devnet.helius-rpc.com/";
 const DEVNET_GENESIS: &str = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
 const TREE: u16 = 0;
@@ -54,6 +52,38 @@ fn registered_sender_pays_unregistered_recipient() {
     }
 }
 
+#[test]
+#[ignore = "requires the loopback decryption test service"]
+fn loopback_decrypts_an_owner_signed_note() -> Result<()> {
+    let endpoint = env::var("DECRYPTION_SERVICE_LOCAL_ENDPOINT")?;
+    let client = DecryptionClient::connect_local(Url::parse(&endpoint)?)?;
+    let owner = Keypair::new();
+    let address = client.public_keys(owner.pubkey())?;
+    let keys = client.open(&owner)?;
+    assert_eq!(keys.address()?, address);
+    let sender = ViewingKey::new();
+    let salt = spr_keypair::viewing_key::random_salt();
+    let plaintext = b"shielded note payload";
+    let ciphertext = sender.encrypt_slot(&address.viewing_pubkey, plaintext, salt, 0)?;
+    let request = DecryptRequest {
+        ciphertext: &ciphertext,
+        viewing_pubkey: address.viewing_pubkey,
+        tx_viewing_pubkey: sender.pubkey(),
+        salt,
+        slot_index: 0,
+        label: spr_transaction::DecryptLabel::Utxo,
+    };
+    assert_eq!(keys.decrypt(&[request])?, vec![plaintext.to_vec()]);
+    let other = Keypair::new();
+    let wrong_keys = client.open(&other)?;
+    assert!(matches!(
+        wrong_keys.decrypt(&[request]),
+        Err(TransactionError::UnknownViewingKey)
+    ));
+    assert!(DecryptionClient::connect_local(Url::parse("http://192.0.2.1")?).is_err());
+    Ok(())
+}
+
 fn run(api_key: &str, payer: &Path) -> Result<()> {
     let rpc = SolanaRpc::new(helius_url("", api_key)?.to_string());
     ensure!(
@@ -66,13 +96,23 @@ fn run(api_key: &str, payer: &Path) -> Result<()> {
     prover.attest().context("attest the devnet prover")?;
     let client = SprClient::new(rpc, SprIndexer::new(&indexer_url), prover)
         .with_proof_data_source(ProofDataSource::Client);
-    let gateway = Gateway::connect(api_key).context("attest the Gatekeeper decryption service")?;
+    let pin = match env::var_os("SPR_E2E_RELEASE_PIN") {
+        Some(path) => std::fs::read_to_string(path).context("read the devnet release pin")?,
+        None => RELEASE.to_owned(),
+    };
+    let gateway = DecryptionClient::connect(
+        Url::parse(DEVNET)?,
+        api_key,
+        Network::Devnet,
+        ReleasePin::from_json(&pin)?,
+    )
+    .context("attest the Gatekeeper decryption service")?;
 
     let a = Keypair::new();
     let b = Keypair::new();
     let local_a = local_keys(&a)?;
     let address_a = local_a.shielded_address()?;
-    let address_b = gateway.public_keys(b.pubkey())?;
+    let address_b = gateway.resolve_recipient(client.rpc(), b.pubkey())?;
     assert_eq!(gateway.public_keys(b.pubkey())?, address_b);
     let service_a = gateway.public_keys(a.pubkey())?;
     assert_ne!(service_a.viewing_pubkey, address_b.viewing_pubkey);
@@ -106,6 +146,10 @@ fn run(api_key: &str, payer: &Path) -> Result<()> {
     assert_eq!(
         register_if_absent(client.rpc(), &a, &local_a)?,
         StrictRegistration::Current
+    );
+    assert_eq!(
+        gateway.resolve_recipient(client.rpc(), a.pubkey())?,
+        address_a
     );
     println!("Registered A: {registration}");
 
@@ -184,13 +228,8 @@ fn run(api_key: &str, payer: &Path) -> Result<()> {
     assert_eq!(change.tx_signature, send_sig);
     assert_ne!(change.nullifier, note.nullifier);
 
-    let nullifier = NullifierKey::from_secret(gateway.decrypt(&b, Vec::new())?.nullifier_secret);
-    assert_eq!(nullifier.pubkey()?, address_b.nullifier_pubkey);
     let remote_b = RecipientKeys {
-        gateway: &gateway,
-        owner: &b,
-        address: address_b,
-        nullifier,
+        keys: gateway.open(&b)?,
         last_item: RefCell::new(None),
     };
     let incoming = only_note(&remote_b, &received, SEND)?;
@@ -206,7 +245,7 @@ fn run(api_key: &str, payer: &Path) -> Result<()> {
         .context("B did not request decryption")?;
     gateway.check_authorization(&b, &a, &item)?;
     let b_plain = gateway.check_replay(&b, item.clone())?;
-    let a_plain = gateway.decrypt(&a, vec![item])?;
+    let a_plain = gateway.test_decrypt(&a, vec![item])?;
     assert_ne!(
         b_plain.plaintexts, a_plain.plaintexts,
         "A's service key must not recover B's plaintext"
@@ -324,59 +363,44 @@ fn assert_chain_commitment(
 }
 
 struct RecipientKeys<'a> {
-    gateway: &'a Gateway<'a>,
-    owner: &'a Keypair,
-    address: ShieldedAddress,
-    nullifier: NullifierKey,
+    keys: ServiceKeys<'a>,
     last_item: RefCell<Option<DecryptItem>>,
 }
 
 impl ShieldedKeys for RecipientKeys<'_> {
     fn address(&self) -> Result<ShieldedAddress, TransactionError> {
-        Ok(self.address)
+        self.keys.address()
     }
 
     fn viewing_public_keys(&self) -> Vec<X25519Pubkey> {
-        vec![self.address.viewing_pubkey]
+        self.keys.viewing_public_keys()
     }
 
     fn decrypt(&self, requests: &[DecryptRequest<'_>]) -> Result<Vec<Vec<u8>>, TransactionError> {
-        let items = requests.iter().map(decrypt_item).collect::<Vec<_>>();
-        self.last_item.replace(items.first().cloned());
-        let mut result = self
-            .gateway
-            .decrypt(self.owner, items)
-            .map_err(|error| TransactionError::Authority(error.to_string()))?;
-        let key = NullifierKey::from_secret(result.nullifier_secret);
-        if key.pubkey()? != self.address.nullifier_pubkey {
-            return Err(TransactionError::Authority(
-                "service returned a different nullifier key".into(),
-            ));
-        }
-        Ok(std::mem::take(&mut result.plaintexts))
+        self.last_item
+            .replace(requests.first().map(|request| DecryptItem {
+                ciphertext: request.ciphertext.to_vec(),
+                ephemeral_viewing_public_key: request.tx_viewing_pubkey.as_bytes().to_vec(),
+                salt: request.salt.to_vec(),
+                slot_index: request.slot_index.into(),
+                label: match request.label {
+                    spr_transaction::DecryptLabel::Utxo => spr_tvc_protocol::DecryptLabel::Transfer,
+                    spr_transaction::DecryptLabel::RingDeposit => {
+                        spr_tvc_protocol::DecryptLabel::RingDeposit
+                    }
+                },
+            }));
+        self.keys.decrypt(requests)
     }
 
     fn derive(&self, requests: &[DeriveRequest]) -> Result<Vec<[u8; 32]>, TransactionError> {
-        requests
-            .iter()
-            .map(|request| match request {
-                DeriveRequest::Nullifier {
-                    utxo_hash,
-                    blinding,
-                } => Ok(self.nullifier.nullifier(utxo_hash, blinding)?),
-                _ => Err(TransactionError::Authority(
-                    "expected note nullifier derivation".into(),
-                )),
-            })
-            .collect()
+        self.keys.derive(requests)
     }
 
     fn transaction_keys(
         &self,
-        _: &[TransactionKeyRequest],
+        requests: &[TransactionKeyRequest],
     ) -> Result<Vec<ViewingKey>, TransactionError> {
-        Err(TransactionError::Authority(
-            "receiving does not derive transaction keys".into(),
-        ))
+        self.keys.transaction_keys(requests)
     }
 }

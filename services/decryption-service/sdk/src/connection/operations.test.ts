@@ -81,7 +81,27 @@ describe("operation replies", () => {
   it("opens only a reply signed by the replica for this request and ciphertext", async () => {
     const f = fixture();
     await expect(sealedExchange(f.context, f.exchange)).resolves.toBe(f.result);
-    expect(f.verifyOperationAppProof).toHaveBeenCalledWith(expect.objectContaining({ publicKey: ephemeral }), undefined);
+    expect(f.verifyOperationAppProof).toHaveBeenCalledWith(expect.objectContaining({ publicKey: ephemeral }), undefined, undefined);
+  });
+
+  it("verifies the proof attached to the Gatekeeper operation before opening its reply", async () => {
+    const f = fixture();
+    const bootProof = { ephemeralPublicKeyHex: ephemeral, awsAttestationDocB64: "fixture-proof" };
+    const context: ConnectedTvcRuntime = {
+      ...f.context,
+      backend: { endpoint: new URL("https://gateway.example"), gatekeeperApiKey: "test-key" },
+      transport: {
+        fetch: async (url, init) => {
+          expect(url.pathname).toBe("/v1/decryption/operations");
+          expect(new Headers(init?.headers).get("x-api-key")).toBe("test-key");
+          return Response.json({ response: f.response, bootProof });
+        },
+      },
+    };
+    await expect(sealedExchange(context, f.exchange)).resolves.toBe(f.result);
+    expect(f.verifyOperationAppProof).toHaveBeenCalledWith(
+      expect.objectContaining({ publicKey: ephemeral }), undefined, bootProof,
+    );
   });
 
   it.each([

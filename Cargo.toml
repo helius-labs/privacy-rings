@@ -24,6 +24,7 @@ members = [
     "sdk-libs/program/tests/wasm/program",
     "sdk-libs/macros",
     "sdk-libs/client",
+    "sdk-libs/decryption-client",
     "sdk-libs/prover-tee",
     "prover/tee/policy",
     "sdk-libs/gnark-ffi-prover",
