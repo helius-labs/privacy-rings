@@ -38,8 +38,8 @@ permissions:
 env:
   NODE_VERSION: "24"
   # Future canonical base: https://www.helius.dev/privacy/api
-  # Change this only after the Helius website proxies that path to /zolana/ts-sdk.
-  PUBLIC_BASE_URL: ${{ inputs.public_base_url || 'https://helius-labs.github.io/zolana/ts-sdk' }}
+  # Change this only after the Helius website proxies that path to /privacy-rings/ts-sdk.
+  PUBLIC_BASE_URL: ${{ inputs.public_base_url || 'https://helius-labs.github.io/privacy-rings/ts-sdk' }}
   PACKAGE_DIR: ${{ inputs.package_dir || 'sdk-libs/ts' }}
   TAG_PREFIX: ${{ inputs.tag_prefix || 'ts-sdk-v' }}
   ZOLANA_DIR: ${{ inputs.zolana_dir || '.' }}
