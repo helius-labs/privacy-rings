@@ -352,7 +352,7 @@ const transfer = await buildMultiTransferTransaction({
 
 More outputs take a wider proof that accepts fewer UTXOs: two payments spend at
 most 24, past which the build fails with `WALLET_TOO_MANY_INPUTS` until the
-balance is merged.
+balance is [merged](#merge).
 
 ### Withdrawal
 
@@ -376,6 +376,44 @@ await syncWallet({ client, wallet, keys, config: { requireSlot: slot } });
 For an SPL withdrawal, pass `asset: mint`. Token-2022 withdrawals also take
 `splTokenProgram: SPL_TOKEN_2022_PROGRAM_ID`; the recipient token account is
 created idempotently when needed.
+
+### Merge
+
+A merge combines several private notes of one asset into one, so later
+transfers spend fewer inputs. The owner's registry record must opt in first:
+new records start with merging disabled, and until the record names
+`MergeEncryptionScheme.PoseidonCtrV1`, `buildMergeTransaction` fails with
+`WALLET_BUILD_MERGE` and `causeCode` `WALLET_MERGE_ENCRYPTION_SCHEME_UNSUPPORTED`.
+The opt-in is one signed transaction:
+
+```ts
+import {
+  buildMergeTransaction,
+  buildSetMergeEncryptionTransaction,
+  MergeEncryptionScheme,
+} from "@heliuslabs/spr";
+
+const optIn = await buildSetMergeEncryptionTransaction({
+  client,
+  owner: feePayer.address,
+  scheme: MergeEncryptionScheme.PoseidonCtrV1,
+});
+await submit(optIn, feePayer);
+
+const merge = await buildMergeTransaction({
+  client,
+  wallet,
+  keys,
+  feePayer: feePayer.address,
+});
+const slot = await client.confirmTransaction(await submit(merge, feePayer));
+await syncWallet({ client, wallet, keys, config: { requireSlot: slot } });
+```
+
+Without `inputs`, the merge takes up to `MERGE_INPUT_COUNT` (24) of the
+smallest plain SOL notes; pass `asset: mint` for an SPL balance, or `inputs`
+to name up to `MAX_MERGE_INPUTS` (52) notes by hash. Fewer than two notes fail
+with `causeCode` `WALLET_NOTHING_TO_MERGE`.
 
 ### Sponsored fees
 
