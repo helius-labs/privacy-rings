@@ -199,6 +199,69 @@ custom output to an absolute path before Cargo starts the package test
 process.
 Run `just check-test-hygiene` before committing test-structure changes.
 
+## Functional transact vectors
+
+`test-vectors/transact_functional.json` is one catalog of successful
+`transact` scenarios that every ring must settle: the default ring here, and
+each custom ring in its own repository, which reads the same file. A scenario
+that settles in one ring and not another is a compatibility gap.
+
+A vector is written in ring-agnostic terms: actors with fixed key seeds,
+funded notes, ordered steps of real input slots, real output slots and public
+legs, the padding mode and minimum slot counts, and the state each step must
+leave (transaction signers, real inputs and outputs, public balance deltas,
+each actor's unspent notes). Proofs, blindings, tree positions and instruction
+bytes differ per run and per ring, so every runner derives them. `rings`
+states per ring whether a case runs, is `not_applicable` by design, or is
+`pending` with a reason; nothing is left out silently.
+
+- **Generator:** the table in `program-tests/test-utils/src/functional_vectors/catalog.rs`.
+  `spec.rs` refuses a case no ring can settle (unbalanced asset, unauthorized
+  input owner, too many public assets) and derives every expectation.
+  Regenerate with
+  `cargo test -p spr-test-utils --test functional_vectors write_functional_vectors -- --ignored`.
+- **Hermetic checks** (`cargo test -p spr-test-utils --test functional_vectors`):
+  the committed file matches the generator; every dimension value of
+  `coverage.rs` has a case in each ring (the file's `coverage` object lists
+  them); every case naming a `circuitVector` has the same real slots, amounts,
+  padding, slot counts and public movement as that case in
+  `anonymous_eddsa_accepting.json`.
+- **Default-ring runner:** `src/support/functional_vectors.rs`, run by the
+  `transact_functional_vectors` binary (`proofs` feature, in
+  `just test-program-proofs-programs-only`). Each step proves and settles as a
+  top-level Shielded Pool `transact` on the in-circuit owner rail through the
+  client path (`ConfidentialTransaction`, `Submission`, the litesvm indexer).
+  The binary's list must equal the catalog's default-ring `run` set.
+
+To add a case, add a `VectorSpec` to the matching group in `catalog.rs`,
+regenerate, and add its name to `default_ring_vectors!` when it runs on the
+default ring.
+
+Two runner choices stand in for state a live pool already has. The SOL
+interface is funded above its rent minimum before the first deposit, since the
+vectors move amounts far below it. A cached input reads a cache the runner
+creates through `CreateCache` and seats with the note's hash, as an earlier
+merge would, because a client `transact` cannot write a cache. Data-bearing
+notes are rebuilt by the runner from the output it sent and confirmed against
+the indexed leaf, since only the owning application can recompute a data hash.
+
+Circuit cases with no functional vector, and why:
+
+| Circuit case | Reason |
+| --- | --- |
+| `tree_id_boundaries`, `max_public_deposit`, `max_public_withdrawal`, `input_sum_past_u64` | Tree id `0xffff` and amounts near `2^64` are not reachable on a test chain. |
+| `inputs_across_tree_slots` | Five input trees; the program accepts two. Two trees are covered by `inputs_across_two_trees`. |
+| `same_note_in_two_trees` | Proofless deposits derive distinct blindings, so identical notes cannot be funded; `equal_notes_in_two_trees` covers equal owner, asset and amount. |
+| `signer_at_last_index` | The program builds the signer vector from the signer accounts in order, so a signer after zero entries is a witness-only layout. |
+| `public_slot_two_active` | The client assigns public slots in asset order, so slot placement is a witness-only layout. |
+| `dummy_flag_without_dummies` | The program sets the dummy-input policy from the tree's headroom, not the client. |
+| `ring_data_hash` | The vector format has no ring-data field yet; ring data is the ring program's own encoding. |
+
+Default-ring `pending` cases name what blocks them:
+`unused_signer` (the client derives owner signers from the spent inputs),
+`hidden_note_then_hidden_address` and `signer_address_beside_hidden_note`
+(the client places address slots before note slots).
+
 ## Test tooling
 
 Beyond `cargo test`, two tools sharpen the suite. Install locally with
