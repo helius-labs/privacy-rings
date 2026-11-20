@@ -1,0 +1,765 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "SPR root JSON-RPC facade prototype",
+    "version": "0.0.0-prototype",
+    "description": "Experimental; requires the gateway spr-root-rpc-prototype feature. Existing REST endpoints remain supported. This file describes the facade, not a deployed API. Batch arrays use the same item schemas; existing gateway batch limits apply."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8080"
+    }
+  ],
+  "security": [
+    {
+      "apiKey": []
+    }
+  ],
+  "paths": {
+    "/": {
+      "post": {
+        "operationId": "sprRpc",
+        "summary": "Dispatch SPR calls by JSON-RPC method",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "oneOf": [
+                      {
+                        "$ref": "../../services/photon/src/openapi/specs/rings.yaml#/paths/~1getEncryptedUtxosByTags/post/requestBody/content/application~1json/schema"
+                      },
+                      {
+                        "$ref": "../../services/photon/src/openapi/specs/rings.yaml#/paths/~1getShieldedTransactionsByTags/post/requestBody/content/application~1json/schema"
+                      },
+                      {
+                        "$ref": "../../services/photon/src/openapi/specs/rings.yaml#/paths/~1getShieldedTransactionsBySignature/post/requestBody/content/application~1json/schema"
+                      },
+                      {
+                        "$ref": "../../services/photon/src/openapi/specs/rings.yaml#/paths/~1getShieldedTransactionsByNullifiers/post/requestBody/content/application~1json/schema"
+                      },
+                      {
+                        "$ref": "../../services/photon/src/openapi/specs/rings.yaml#/paths/~1getMerkleProofs/post/requestBody/content/application~1json/schema"
+                      },
+                      {
+                        "$ref": "../../services/photon/src/openapi/specs/rings.yaml#/paths/~1getNonInclusionProofs/post/requestBody/content/application~1json/schema"
+                      },
+                      {
+                        "$ref": "../../services/photon/src/openapi/specs/rings.yaml#/paths/~1getUserRecords/post/requestBody/content/application~1json/schema"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "jsonrpc": {
+                            "const": "2.0"
+                          },
+                          "id": {
+                            "type": [
+                              "string",
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "method": {
+                            "const": "zolanaProve"
+                          },
+                          "params": {
+                            "type": "object",
+                            "properties": {
+                              "provingKey": {
+                                "type": "string",
+                                "pattern": "^[a-z0-9_]{1,128}$"
+                              },
+                              "indexed": {
+                                "type": "boolean",
+                                "default": false
+                              },
+                              "encryptedRequest": {
+                                "type": "object",
+                                "properties": {
+                                  "version": {
+                                    "const": "v1"
+                                  },
+                                  "enc": {
+                                    "type": "string",
+                                    "pattern": "^(?:[0-9a-f]{2})+$",
+                                    "minLength": 64,
+                                    "maxLength": 64
+                                  },
+                                  "ciphertext": {
+                                    "type": "string",
+                                    "pattern": "^(?:[0-9a-f]{2})+$",
+                                    "minLength": 32
+                                  }
+                                },
+                                "required": [
+                                  "version",
+                                  "enc",
+                                  "ciphertext"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "required": [
+                              "provingKey",
+                              "encryptedRequest"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "jsonrpc",
+                          "id",
+                          "method",
+                          "params"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "jsonrpc": {
+                            "const": "2.0"
+                          },
+                          "id": {
+                            "type": [
+                              "string",
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "method": {
+                            "const": "zolanaProveStatus"
+                          },
+                          "params": {
+                            "type": "object",
+                            "properties": {
+                              "provingKey": {
+                                "type": "string",
+                                "pattern": "^[a-z0-9_]{1,128}$"
+                              },
+                              "jobId": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              }
+                            },
+                            "required": [
+                              "provingKey",
+                              "jobId"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "jsonrpc",
+                          "id",
+                          "method",
+                          "params"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "jsonrpc": {
+                            "const": "2.0"
+                          },
+                          "id": {
+                            "type": [
+                              "string",
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "method": {
+                            "const": "sprProverAttestation"
+                          },
+                          "params": {
+                            "type": "object",
+                            "properties": {
+                              "nonce": {
+                                "type": "string",
+                                "pattern": "^(?:[0-9a-f]{2})+$",
+                                "minLength": 64,
+                                "maxLength": 64
+                              }
+                            },
+                            "required": [
+                              "nonce"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "jsonrpc",
+                          "id",
+                          "method",
+                          "params"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "jsonrpc": {
+                            "const": "2.0"
+                          },
+                          "id": {
+                            "type": [
+                              "string",
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "method": {
+                            "const": "sprProvingKeys"
+                          },
+                          "params": {
+                            "type": "object",
+                            "properties": {},
+                            "required": [],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "jsonrpc",
+                          "id",
+                          "method",
+                          "params"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "jsonrpc": {
+                            "const": "2.0"
+                          },
+                          "id": {
+                            "type": [
+                              "string",
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "method": {
+                            "const": "privateWalletSession"
+                          },
+                          "params": {
+                            "type": "object",
+                            "description": "Existing tvc-gateway request payload, including unchanged encrypted fields; validated by its existing handler."
+                          }
+                        },
+                        "required": [
+                          "jsonrpc",
+                          "id",
+                          "method",
+                          "params"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "jsonrpc": {
+                            "const": "2.0"
+                          },
+                          "id": {
+                            "type": [
+                              "string",
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "method": {
+                            "const": "privateWalletEnroll"
+                          },
+                          "params": {
+                            "type": "object",
+                            "description": "Existing tvc-gateway request payload, including unchanged encrypted fields; validated by its existing handler."
+                          }
+                        },
+                        "required": [
+                          "jsonrpc",
+                          "id",
+                          "method",
+                          "params"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "jsonrpc": {
+                            "const": "2.0"
+                          },
+                          "id": {
+                            "type": [
+                              "string",
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "method": {
+                            "const": "privateWalletOperations"
+                          },
+                          "params": {
+                            "type": "object",
+                            "description": "Existing tvc-gateway request payload, including unchanged encrypted fields; validated by its existing handler."
+                          }
+                        },
+                        "required": [
+                          "jsonrpc",
+                          "id",
+                          "method",
+                          "params"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "jsonrpc": {
+                            "const": "2.0"
+                          },
+                          "id": {
+                            "type": [
+                              "string",
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "method": {
+                            "const": "decryptionSession"
+                          },
+                          "params": {
+                            "type": "object",
+                            "description": "Existing tvc-gateway request payload, including unchanged encrypted fields; validated by its existing handler."
+                          }
+                        },
+                        "required": [
+                          "jsonrpc",
+                          "id",
+                          "method",
+                          "params"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "jsonrpc": {
+                            "const": "2.0"
+                          },
+                          "id": {
+                            "type": [
+                              "string",
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "method": {
+                            "const": "decryptionOperations"
+                          },
+                          "params": {
+                            "type": "object",
+                            "description": "Existing tvc-gateway request payload, including unchanged encrypted fields; validated by its existing handler."
+                          }
+                        },
+                        "required": [
+                          "jsonrpc",
+                          "id",
+                          "method",
+                          "params"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "items": {
+                      "oneOf": [
+                        {
+                          "$ref": "../../services/photon/src/openapi/specs/rings.yaml#/paths/~1getEncryptedUtxosByTags/post/requestBody/content/application~1json/schema"
+                        },
+                        {
+                          "$ref": "../../services/photon/src/openapi/specs/rings.yaml#/paths/~1getShieldedTransactionsByTags/post/requestBody/content/application~1json/schema"
+                        },
+                        {
+                          "$ref": "../../services/photon/src/openapi/specs/rings.yaml#/paths/~1getShieldedTransactionsBySignature/post/requestBody/content/application~1json/schema"
+                        },
+                        {
+                          "$ref": "../../services/photon/src/openapi/specs/rings.yaml#/paths/~1getShieldedTransactionsByNullifiers/post/requestBody/content/application~1json/schema"
+                        },
+                        {
+                          "$ref": "../../services/photon/src/openapi/specs/rings.yaml#/paths/~1getMerkleProofs/post/requestBody/content/application~1json/schema"
+                        },
+                        {
+                          "$ref": "../../services/photon/src/openapi/specs/rings.yaml#/paths/~1getNonInclusionProofs/post/requestBody/content/application~1json/schema"
+                        },
+                        {
+                          "$ref": "../../services/photon/src/openapi/specs/rings.yaml#/paths/~1getUserRecords/post/requestBody/content/application~1json/schema"
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "jsonrpc": {
+                              "const": "2.0"
+                            },
+                            "id": {
+                              "type": [
+                                "string",
+                                "number",
+                                "null"
+                              ]
+                            },
+                            "method": {
+                              "const": "zolanaProve"
+                            },
+                            "params": {
+                              "type": "object",
+                              "properties": {
+                                "provingKey": {
+                                  "type": "string",
+                                  "pattern": "^[a-z0-9_]{1,128}$"
+                                },
+                                "indexed": {
+                                  "type": "boolean",
+                                  "default": false
+                                },
+                                "encryptedRequest": {
+                                  "type": "object",
+                                  "properties": {
+                                    "version": {
+                                      "const": "v1"
+                                    },
+                                    "enc": {
+                                      "type": "string",
+                                      "pattern": "^(?:[0-9a-f]{2})+$",
+                                      "minLength": 64,
+                                      "maxLength": 64
+                                    },
+                                    "ciphertext": {
+                                      "type": "string",
+                                      "pattern": "^(?:[0-9a-f]{2})+$",
+                                      "minLength": 32
+                                    }
+                                  },
+                                  "required": [
+                                    "version",
+                                    "enc",
+                                    "ciphertext"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              },
+                              "required": [
+                                "provingKey",
+                                "encryptedRequest"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "jsonrpc",
+                            "id",
+                            "method",
+                            "params"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "jsonrpc": {
+                              "const": "2.0"
+                            },
+                            "id": {
+                              "type": [
+                                "string",
+                                "number",
+                                "null"
+                              ]
+                            },
+                            "method": {
+                              "const": "zolanaProveStatus"
+                            },
+                            "params": {
+                              "type": "object",
+                              "properties": {
+                                "provingKey": {
+                                  "type": "string",
+                                  "pattern": "^[a-z0-9_]{1,128}$"
+                                },
+                                "jobId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 256
+                                }
+                              },
+                              "required": [
+                                "provingKey",
+                                "jobId"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "jsonrpc",
+                            "id",
+                            "method",
+                            "params"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "jsonrpc": {
+                              "const": "2.0"
+                            },
+                            "id": {
+                              "type": [
+                                "string",
+                                "number",
+                                "null"
+                              ]
+                            },
+                            "method": {
+                              "const": "sprProverAttestation"
+                            },
+                            "params": {
+                              "type": "object",
+                              "properties": {
+                                "nonce": {
+                                  "type": "string",
+                                  "pattern": "^(?:[0-9a-f]{2})+$",
+                                  "minLength": 64,
+                                  "maxLength": 64
+                                }
+                              },
+                              "required": [
+                                "nonce"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "jsonrpc",
+                            "id",
+                            "method",
+                            "params"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "jsonrpc": {
+                              "const": "2.0"
+                            },
+                            "id": {
+                              "type": [
+                                "string",
+                                "number",
+                                "null"
+                              ]
+                            },
+                            "method": {
+                              "const": "sprProvingKeys"
+                            },
+                            "params": {
+                              "type": "object",
+                              "properties": {},
+                              "required": [],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "jsonrpc",
+                            "id",
+                            "method",
+                            "params"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "jsonrpc": {
+                              "const": "2.0"
+                            },
+                            "id": {
+                              "type": [
+                                "string",
+                                "number",
+                                "null"
+                              ]
+                            },
+                            "method": {
+                              "const": "privateWalletSession"
+                            },
+                            "params": {
+                              "type": "object",
+                              "description": "Existing tvc-gateway request payload, including unchanged encrypted fields; validated by its existing handler."
+                            }
+                          },
+                          "required": [
+                            "jsonrpc",
+                            "id",
+                            "method",
+                            "params"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "jsonrpc": {
+                              "const": "2.0"
+                            },
+                            "id": {
+                              "type": [
+                                "string",
+                                "number",
+                                "null"
+                              ]
+                            },
+                            "method": {
+                              "const": "privateWalletEnroll"
+                            },
+                            "params": {
+                              "type": "object",
+                              "description": "Existing tvc-gateway request payload, including unchanged encrypted fields; validated by its existing handler."
+                            }
+                          },
+                          "required": [
+                            "jsonrpc",
+                            "id",
+                            "method",
+                            "params"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "jsonrpc": {
+                              "const": "2.0"
+                            },
+                            "id": {
+                              "type": [
+                                "string",
+                                "number",
+                                "null"
+                              ]
+                            },
+                            "method": {
+                              "const": "privateWalletOperations"
+                            },
+                            "params": {
+                              "type": "object",
+                              "description": "Existing tvc-gateway request payload, including unchanged encrypted fields; validated by its existing handler."
+                            }
+                          },
+                          "required": [
+                            "jsonrpc",
+                            "id",
+                            "method",
+                            "params"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "jsonrpc": {
+                              "const": "2.0"
+                            },
+                            "id": {
+                              "type": [
+                                "string",
+                                "number",
+                                "null"
+                              ]
+                            },
+                            "method": {
+                              "const": "decryptionSession"
+                            },
+                            "params": {
+                              "type": "object",
+                              "description": "Existing tvc-gateway request payload, including unchanged encrypted fields; validated by its existing handler."
+                            }
+                          },
+                          "required": [
+                            "jsonrpc",
+                            "id",
+                            "method",
+                            "params"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "jsonrpc": {
+                              "const": "2.0"
+                            },
+                            "id": {
+                              "type": [
+                                "string",
+                                "number",
+                                "null"
+                              ]
+                            },
+                            "method": {
+                              "const": "decryptionOperations"
+                            },
+                            "params": {
+                              "type": "object",
+                              "description": "Existing tvc-gateway request payload, including unchanged encrypted fields; validated by its existing handler."
+                            }
+                          },
+                          "required": [
+                            "jsonrpc",
+                            "id",
+                            "method",
+                            "params"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "JSON-RPC response (or batch). Indexer envelopes pass through; wallet/discovery values are returned as result. Encrypted proof result is {version: \"v1\", ciphertext: <hex>}, including authenticated inner failures. Upstream refusals use error -32050 with data.status, data.body and data.retryAfter."
+          },
+          "4XX": {
+            "description": "Existing gateway authentication, access-control, size or admission rejection."
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "apiKey": {
+        "type": "apiKey",
+        "in": "query",
+        "name": "api-key"
+      }
+    }
+  }
+}
