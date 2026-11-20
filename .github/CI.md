@@ -390,6 +390,10 @@ and verifies real proofs and rejected witness/public-input mutations.
     In repository Settings → Pages, set the build and deployment source to
     **GitHub Actions**; otherwise `actions/deploy-pages` fails with HTTP 404.
     The `github-pages` environment must allow the `ts-sdk-v*` tag pattern.
+    The tag version must match `sdk-libs/ts/package.json`, and a version
+    already published is never rebuilt. To serve the reference from
+    `https://www.helius.dev/privacy/api/`, first proxy `/privacy/api/*` on the
+    Helius website to `/zolana/ts-sdk/*`, then change `PUBLIC_BASE_URL`.
 
 17. [PR-only enforcement](workflows/enforce-pr-only.yml)
 
