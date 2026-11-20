@@ -1,5 +1,6 @@
 import type {
   ChainReader,
+  DecryptionRecipientProvider,
   ProofDataSourceContext,
   TransactionAssembler,
   WalletKeys,
@@ -55,6 +56,8 @@ export interface PrivateTransactionParams {
 
 export interface TransferTransactionParams extends PrivateTransactionParams {
   readonly recipient: TransferDestination;
+  /** Used when the registry confirms the recipient has no record. */
+  readonly decryptionService?: DecryptionRecipientProvider;
   readonly asset?: Address;
   readonly amount: bigint;
 }
@@ -68,6 +71,7 @@ export interface TransferPayment {
 export interface MultiTransferTransactionParams extends PrivateTransactionParams {
   /** Each paid as its own private output, in this order; one to fifteen of them. */
   readonly payments: readonly TransferPayment[];
+  readonly decryptionService?: DecryptionRecipientProvider;
   readonly asset?: Address;
 }
 
@@ -95,6 +99,9 @@ export async function buildTransferTransaction(
         wallet: input.wallet,
         payer: input.feePayer,
         recipient: input.recipient,
+        ...(input.decryptionService === undefined
+          ? {}
+          : { decryptionService: input.decryptionService }),
         asset: input.asset ?? SOL_MINT,
         amount: input.amount,
       },
@@ -124,6 +131,9 @@ export async function buildMultiTransferTransaction(
         wallet: input.wallet,
         payer: input.feePayer,
         payments: input.payments,
+        ...(input.decryptionService === undefined
+          ? {}
+          : { decryptionService: input.decryptionService }),
         asset: input.asset ?? SOL_MINT,
       },
       context,

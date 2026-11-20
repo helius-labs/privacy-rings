@@ -4,13 +4,29 @@ on:
   pull_request:
     paths:
       - services/decryption-service/**
+      - sdk-libs/client/src/user_registry.rs
+      - sdk-libs/decryption-client/**
       - sdk-libs/keypair/**
+      - sdk-libs/ts/src/wallet/**
+      - sdk-tests/client/rust/tests/decryption/**
+      - cli/src/args.rs
+      - cli/src/localnet.rs
+      - cli/src/process.rs
+      - justfile
       - .github/workflows/decryption-service-localnet.yml
   push:
     branches: [main]
     paths:
       - services/decryption-service/**
+      - sdk-libs/client/src/user_registry.rs
+      - sdk-libs/decryption-client/**
       - sdk-libs/keypair/**
+      - sdk-libs/ts/src/wallet/**
+      - sdk-tests/client/rust/tests/decryption/**
+      - cli/src/args.rs
+      - cli/src/localnet.rs
+      - cli/src/process.rs
+      - justfile
       - .github/workflows/decryption-service-localnet.yml
   workflow_dispatch:
   schedule:

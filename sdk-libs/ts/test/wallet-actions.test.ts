@@ -342,6 +342,61 @@ describe("private transaction construction", () => {
     });
   });
 
+  it("uses verified service keys after a successful registry miss", async () => {
+    const recipient = ShieldedKeypair.generate().shieldedAddress();
+    const address = vi.fn(async () => recipient);
+    const context = { signal: new AbortController().signal };
+    const created = await createTransfer(
+      {
+        client: { getAccount: async () => undefined },
+        decryptionService: { address },
+        wallet: fundedWallet(ShieldedKeypair.generate(), [100n]),
+        payer: PAYER,
+        recipient: recipient.solanaAddress(),
+        asset: SOL_MINT,
+        amount: 10n,
+      },
+      context,
+    );
+    expect(created.recipient.address).toBe(recipient);
+    expect(address).toHaveBeenCalledWith(recipient.solanaAddress(), context);
+  });
+
+  it("leaves spend state intact on registry failure or a mismatched service address", async () => {
+    const wallet = fundedWallet(ShieldedKeypair.generate(), [100n]);
+    const before = serializeWallet(wallet);
+    const address = vi.fn(async () => ShieldedKeypair.generate().shieldedAddress());
+    const input = {
+      decryptionService: { address },
+      wallet,
+      payer: PAYER,
+      recipient: RECIPIENT,
+      asset: SOL_MINT,
+      amount: 10n,
+    };
+    await expect(
+      createTransfer({
+        ...input,
+        client: {
+          getAccount: async () => {
+            throw new Error("RPC unavailable");
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "WALLET_CREATE_TRANSFER" });
+    expect(address).not.toHaveBeenCalled();
+    await expect(
+      createTransfer({
+        ...input,
+        client: { getAccount: async () => undefined },
+      }),
+    ).rejects.toMatchObject({
+      code: "WALLET_CREATE_TRANSFER",
+      causeCode: "WALLET_DECRYPTION_RECIPIENT_MISMATCH",
+    });
+    expect(serializeWallet(wallet)).toEqual(before);
+  });
+
   it("keeps split and merge conservation in their internal intent models", async () => {
     const keypair = ShieldedKeypair.generate();
     const wallet = fundedWallet(keypair, [20n, 30n, 100n]);

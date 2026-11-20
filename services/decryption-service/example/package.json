@@ -10,7 +10,7 @@
     "test": "tsx --test tests/*.test.ts"
   },
   "dependencies": {
-    "@heliuslabs/spr": "0.9.0-alpha",
+    "@heliuslabs/spr": "link:../../../sdk-libs/ts",
     "@solana/kit": "^8.3.0",
     "@turnkey/sdk-server": "^8.3.0",
     "dotenv": "^17.0.0",

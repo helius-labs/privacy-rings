@@ -1,6 +1,7 @@
 import { awaitWithSignal } from "./request.js";
 import { DecryptionServiceError } from "../protocol/error.js";
 import { canonicalizeJsonValue } from "../protocol/jcs.js";
+import { parseStrictJson } from "../protocol/json.js";
 import type {
   TurnkeyAppProofWire,
   TurnkeyBootProofWire,
@@ -18,6 +19,7 @@ export type BootProofResolver = (input: ResolveBootProofInput) => Promise<Turnke
 export type EnclaveBackend = {
   readonly endpoint: URL;
   readonly resolveBootProof?: BootProofResolver;
+  readonly gatekeeperApiKey?: string;
 };
 
 /** The enclave's request fields around the ciphertext. */
@@ -30,6 +32,24 @@ export type EncryptedRequestWire = {
 
 const MAX_DISCOVERY_RESPONSE_BYTES = 64n * 1024n;
 const MAX_PING_RESPONSE_BYTES = 64n * 1024n;
+const MAX_BOOT_PROOF_BYTES = 512n * 1024n;
+
+function postGatekeeper(
+  backend: EnclaveBackend,
+  route: "session" | "operations",
+  transport: DecryptionServiceTransport,
+  body: string,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const apiKey = backend.gatekeeperApiKey;
+  if (apiKey === undefined) throw new DecryptionServiceError("BootProofUnverified");
+  return fetchWithSignal(transport, endpointUrl(backend.endpoint, `/v1/decryption/${route}`), {
+    method: "POST",
+    redirect: "error",
+    headers: { "content-type": "application/json", "x-api-key": apiKey },
+    body,
+  }, signal);
+}
 function postJson(transport: DecryptionServiceTransport, url: URL, body: string, signal?: AbortSignal): Promise<Response> {
   return fetchWithSignal(transport, url, {
     method: "POST",
@@ -73,8 +93,21 @@ export async function fetchSession(
   pingBody: string,
   transport: DecryptionServiceTransport,
   signal?: AbortSignal,
-): Promise<{ infoText: string; pingText: string }> {
+): Promise<{ infoText: string; pingText: string; bootProof?: TurnkeyBootProofWire }> {
   const { endpoint } = backend;
+  if (backend.gatekeeperApiKey !== undefined) {
+    const response = await postGatekeeper(backend, "session", transport, pingBody, signal);
+    const text = await readAnswer(
+      response, "BootProofUnverified", MAX_DISCOVERY_RESPONSE_BYTES + MAX_PING_RESPONSE_BYTES +
+        MAX_BOOT_PROOF_BYTES, signal,
+    );
+    const answer = parseStrictJson<{
+      info: unknown;
+      ping: unknown;
+      bootProof: TurnkeyBootProofWire;
+    }>(text, ["info", "ping", "bootProof"]);
+    return { infoText: JSON.stringify(answer.info), pingText: JSON.stringify(answer.ping), bootProof: answer.bootProof };
+  }
   const infoText = await fetchDiscovery(endpoint, transport, signal);
   return { infoText, pingText: await fetchPing(endpoint, pingBody, transport, signal) };
 }
@@ -108,4 +141,29 @@ export async function sendToEnclave(
   );
   const code = response.status >= 500 ? "OperationUnavailable" : "OperationRejected";
   return readAnswer(response, code, maxAnswerBytes, signal);
+}
+
+export async function sendOperation(
+  backend: EnclaveBackend,
+  request: EncryptedRequestWire,
+  transport: DecryptionServiceTransport,
+  maxAnswerBytes: bigint,
+  signal?: AbortSignal,
+): Promise<{ responseText: string; bootProof?: TurnkeyBootProofWire }> {
+  if (backend.gatekeeperApiKey === undefined) {
+    return { responseText: await sendToEnclave(backend.endpoint, request, transport, maxAnswerBytes, signal) };
+  }
+  const response = await postGatekeeper(
+    backend, "operations", transport, canonicalizeJsonValue(request), signal,
+  );
+  const code = response.status >= 500 ? "OperationUnavailable" : "OperationRejected";
+  const text = await readAnswer(response, code, maxAnswerBytes + MAX_BOOT_PROOF_BYTES, signal);
+  const answer = parseStrictJson<{ response: unknown; bootProof: TurnkeyBootProofWire }>(
+    text, ["response", "bootProof"],
+  );
+  const responseText = JSON.stringify(answer.response);
+  if (BigInt(new TextEncoder().encode(responseText).length) > maxAnswerBytes) {
+    throw new DecryptionServiceError("ResponseTooLarge");
+  }
+  return { responseText, bootProof: answer.bootProof };
 }

@@ -404,6 +404,10 @@ verify: verify-rust prover-server-test
 cli *args:
     cargo run -p spr-cli -- {{args}}
 
+# Build the loopback test service for zolana dev start --decryption-port.
+build-local-decryption:
+    cargo build --manifest-path services/decryption-service/Cargo.toml --locked -p spr-tvc-decryption-service --features local-dev --bin spr-tvc-decryption-service-local
+
 build-cli:
     #!/usr/bin/env bash
     [[ -z "${ZOLANA_PREBUILT:-}" ]] || exit 0

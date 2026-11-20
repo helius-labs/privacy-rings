@@ -5,10 +5,13 @@ use anyhow::{anyhow, bail, Context, Result};
 use crate::{
     args::TestValidatorOptions,
     config::{READINESS_TIMEOUT, SCOPED_PHOTON_BLOCK_FETCHES, TERMINATION_GRACE_PERIOD},
-    http::{wait_for_photon_indexing_with_child, wait_for_port_closed, wait_for_rpc_with_child},
+    http::{
+        wait_for_http_get_with_child, wait_for_photon_indexing_with_child, wait_for_port_closed,
+        wait_for_rpc_with_child,
+    },
     process::{
         find_binary, log_tail, path_string, process_scope, remove_launchd_validators,
-        require_scoped_port_available, spawn_service, stop_port, Service,
+        require_scoped_port_available, spawn_service, stop_decryption_service, stop_port, Service,
     },
     prover::ProverService,
     release::Release,
@@ -17,10 +20,26 @@ use crate::{
 pub(crate) fn run_test_validator(mut opts: TestValidatorOptions) -> Result<()> {
     if opts.stop {
         println!("Stopping local validator environment");
+        stop_decryption_service(&opts.log_dir)?;
         stop_test_env(&opts);
         println!("Local validator environment stopped");
         return Ok(());
     }
+
+    let decryption = opts
+        .decryption_port
+        .map(|port| {
+            let binary = find_binary(
+                &["ZOLANA_DECRYPTION_SERVICE_BIN"],
+                &["services/decryption-service/target/debug/spr-tvc-decryption-service-local"],
+                &["spr-tvc-decryption-service-local"],
+            )
+            .context("build the loopback enclave with just build-local-decryption")?;
+            stop_decryption_service(&opts.log_dir)?;
+            wait_for_port_closed(port, TERMINATION_GRACE_PERIOD)?;
+            Ok::<_, anyhow::Error>((port, binary))
+        })
+        .transpose()?;
 
     println!("Starting local validator");
     stop_test_validator(&opts);
@@ -110,6 +129,28 @@ pub(crate) fn run_test_validator(mut opts: TestValidatorOptions) -> Result<()> {
             None => None,
         };
         start_photon_service(&opts, photon_binary.as_deref())?;
+    }
+
+    if let Some((port, binary)) = decryption {
+        let mut child = spawn_service(
+            &binary,
+            &["--port".into(), port.to_string()],
+            &[],
+            Service::Decryption,
+            &opts.log_dir,
+        )?;
+        if let Err(error) = wait_for_http_get_with_child(
+            port,
+            "/health",
+            READINESS_TIMEOUT,
+            &mut child,
+            "decryption test service",
+        ) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error).context("start the loopback decryption service");
+        }
+        println!("Decryption test service: http://127.0.0.1:{port}");
     }
 
     println!("Local validator environment is ready");

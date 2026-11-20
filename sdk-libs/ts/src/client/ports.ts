@@ -62,6 +62,11 @@ export interface ChainReader {
   getBalance(address: Address, context?: RequestContext): Promise<bigint>;
 }
 
+/** A verified service that publishes shielded addresses for Solana owners. */
+export interface DecryptionRecipientProvider {
+  address(owner: Address, context?: RequestContext): Promise<ShieldedAddress>;
+}
+
 export interface BlockhashProvider {
   getLatestBlockhash(context?: RequestContext): Promise<LatestBlockhash>;
 }

@@ -1,0 +1,31 @@
+[package]
+name = "spr-decryption-client"
+version = "0.1.0"
+description = "Attested Turnkey decryption client for Solana Privacy Rings"
+edition.workspace = true
+repository.workspace = true
+license = "AGPL-3.0-only"
+publish = false
+
+[features]
+test-support = []
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+getrandom = "0.4"
+hex.workspace = true
+hkdf.workspace = true
+qos_nsm = { version = "=0.16.3", default-features = false }
+qos_p256.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+solana-address.workspace = true
+solana-signer.workspace = true
+spr-client.workspace = true
+spr-keypair.workspace = true
+spr-transaction.workspace = true
+spr-tvc-protocol = { path = "../../services/decryption-service/protocol" }
+zeroize.workspace = true

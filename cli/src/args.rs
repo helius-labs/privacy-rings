@@ -649,6 +649,13 @@ pub(crate) struct TestValidatorOptions {
 
     #[arg(
         long,
+        value_parser = clap::value_parser!(u16).range(1..),
+        help = "Start the loopback decryption test service on this port"
+    )]
+    pub(crate) decryption_port: Option<u16>,
+
+    #[arg(
+        long,
         help = "Photon database URL; omit for Photon's temporary SQLite database"
     )]
     pub(crate) photon_db_url: Option<String>,

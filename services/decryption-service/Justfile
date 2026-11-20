@@ -31,6 +31,7 @@ regenerate-protocol-fixtures:
     cargo test --manifest-path {{root}}/Cargo.toml --locked -p spr-tvc-protocol --test conformance regenerate_content_addressed_fixtures -- --ignored --exact
 
 setup:
+    cd {{root}} && npm ci --workspace @heliuslabs/spr && npm run build:ts
     {{pnpm}} install --frozen-lockfile
 
 build-ts:
@@ -38,7 +39,13 @@ build-ts:
 
 # Send, claim and sweep on a fresh localnet. See tests/README.md.
 headless-e2e port_offset="200": setup build-ts
-    bash tests/localnet.sh "$1" bash tests/with-local-decryption.sh {{pnpm}} --filter spr-tvc-typescript-client-example example
+    #!/usr/bin/env bash
+    bash tests/localnet.sh "$1" bash -ec '
+        {{pnpm}} --filter spr-tvc-typescript-client-example example
+        cargo test --manifest-path {{root}}/Cargo.toml --locked -p client-example \
+            --features devnet-decryption --test devnet-decryption \
+            -- --ignored --exact loopback_decrypts_an_owner_signed_note
+    '
 
 ci: fmt-check lint test setup
     bash tests/with-local-decryption.sh {{pnpm}} ci:ts

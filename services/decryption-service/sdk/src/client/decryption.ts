@@ -2,11 +2,11 @@ import { ShieldedAddress, ShieldedPublicKey, type Bytes32, type ProofService } f
 import { X25519PublicKey, type Bytes31 } from "@heliuslabs/spr/keypair";
 import { getAddressEncoder, type Address, type MessagePartialSigner } from "@solana/kit";
 
-import type { BootProofResolver } from "../connection/backend.js";
+import type { BootProofResolver, EnclaveBackend } from "../connection/backend.js";
 import { requestScope, type DecryptionServiceRequestOptions } from "../connection/request.js";
 import { createDecryptionServiceSession, type DecryptionServiceSession } from "../connection/session.js";
 import type { DecryptionServiceTransport } from "../connection/http.js";
-import { DecryptionServiceHttpError } from "../protocol/error.js";
+import { DecryptionServiceError, DecryptionServiceHttpError } from "../protocol/error.js";
 import { requireHex } from "../protocol/hex.js";
 import { requireNetwork } from "../protocol/network.js";
 import { releaseForConnection, type ReleaseTrust } from "../protocol/releases.js";
@@ -28,6 +28,10 @@ export type DecryptionServiceConfig = {
   readonly nowMs?: () => bigint;
   readonly transport?: DecryptionServiceTransport;
   readonly requestTimeoutMs?: number;
+};
+
+export type GatekeeperDecryptionServiceConfig = Omit<DecryptionServiceConfig, "resolveBootProof"> & {
+  readonly apiKey: string;
 };
 
 export type DecryptionService = {
@@ -116,12 +120,29 @@ export function decryptionServiceFromSession(
 
 /** A client of the decryption service at `config.endpoint`, verified against its release. */
 export function createDecryptionService(config: DecryptionServiceConfig): DecryptionService {
+  const { endpoint, resolveBootProof } = config;
+  return createClient(config, { endpoint, resolveBootProof });
+}
+
+/** Uses the Boot Proof bundled by Gatekeeper with each signed enclave reply. */
+export function createGatekeeperDecryptionService(config: GatekeeperDecryptionServiceConfig): DecryptionService {
+  const endpoint = new URL(config.endpoint);
+  if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || !config.apiKey.trim()) {
+    throw new DecryptionServiceError("InvalidGatekeeperConfig");
+  }
+  return createClient(config, { endpoint, gatekeeperApiKey: config.apiKey });
+}
+
+function createClient(
+  config: Omit<DecryptionServiceConfig, "resolveBootProof">,
+  backend: EnclaveBackend,
+): DecryptionService {
   const network = requireNetwork(config.network);
-  const { endpoint, resolveBootProof, nowMs, transport, requestTimeoutMs } = config;
+  const { nowMs, transport, requestTimeoutMs } = config;
   return decryptionServiceFromSession(
     createDecryptionServiceSession({
       network,
-      backend: { endpoint, resolveBootProof },
+      backend,
       release: releaseForConnection(network, config.release),
       ...(network === "devnet" && nowMs !== undefined ? { nowMs } : {}),
       ...(transport === undefined ? {} : { transport }),

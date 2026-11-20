@@ -5,9 +5,12 @@ loopback test. Run `just decryption-e2e` to repeat that test on its own.
 Rust tests live under each crate's `tests/`. SDK unit tests sit beside the
 implementation.
 
-`just headless-e2e` builds the programs, local validator, indexer, and prover
-from this checkout. Run it from `services/decryption-service`. Pass a port
-offset to run a separate localnet.
+`just headless-e2e` starts the validator, indexer, prover, and loopback
+enclave. The TypeScript example sends to an unregistered address with
+zero public SOL, registers it, and recovers and sweeps the first note.
+The Rust SDK opens an owner-signed note through the same enclave. Run
+from `services/decryption-service` and pass a port offset for a separate
+localnet.
 
 The [Rust client test](../../../sdk-tests/client/rust/README.md#devnet-decryption)
 exercises a registered sender and an unregistered recipient through the deployed
