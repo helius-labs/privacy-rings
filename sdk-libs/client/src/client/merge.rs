@@ -135,7 +135,7 @@ impl<'a> MergeSubmission<'a> {
             .input_witnesses(&commitments, &self.merge.dummy_nullifiers(), None)
             .await?;
         ensure_on_tree(&witnesses, pda::tree(input_tree_id))?;
-        let result = MergeProver {
+        let mut result = MergeProver {
             transaction: self.merge.clone(),
             nullifier_key: self.nullifier_key.clone(),
             proofs: witnesses.spend_proofs,
@@ -143,12 +143,13 @@ impl<'a> MergeSubmission<'a> {
             cache: None,
         }
         .build()?;
-        let proof = match &self.prover {
+        let (inputs, proof) = match &self.prover {
             Some(prover) => {
-                prove_on_blocking_pool(Arc::clone(prover), requests::merge(&result.inputs)?).await?
+                prove_on_blocking_pool(Arc::clone(prover), result.inputs, requests::merge).await?
             }
-            None => client.prove_merge(&result.inputs).await?,
+            None => client.prove_owned(result.inputs, requests::merge).await?,
         };
+        result.inputs = inputs;
         let keys = match &self.prover {
             Some(prover) => prover.key_set(),
             None => client.key_set(),
