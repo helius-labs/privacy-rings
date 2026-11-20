@@ -10,6 +10,7 @@
 | `sdk-libs/` | Rust SDK, client, and indexer API crates |
 | `cli/` | Zolana developer and operator CLI |
 | `services/photon/` | Photon indexer, migrations, snapshots, and JSON-RPC service |
+| [`services/decryption-service/`](services/decryption-service) | Turnkey enclave and SDK for receiving shielded notes before registration |
 | `protocol-ops/` | Protocol operator CLI, forester, batch prover, instruction builders, smart accounts, and reference trees |
 | `prover/` | Go prover server + Rust prover client |
 | `xtask/` | Workspace dev tooling |
