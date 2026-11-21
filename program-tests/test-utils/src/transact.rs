@@ -911,15 +911,35 @@ pub fn build_spl_withdrawal(
         .context("create asset counter")?;
     pt.create_spl_interface(authority, &mint)
         .context("create SPL interface")?;
+    let payer = pt.payer.pubkey();
+    let user_token = pt
+        .create_token_account(&mint, &payer)
+        .context("create user token account")?;
+    pt.mint_to(&mint, &user_token, amount).context("mint SPL")?;
+    build_spl_withdrawal_of(
+        pt,
+        tree,
+        amount,
+        mint,
+        user_token,
+        SprProgramTest::token_program_id(),
+    )
+}
 
+/// [`build_spl_withdrawal`] for a caller-created mint whose SPL interface is
+/// registered and whose payer-owned `user_token` holds what the deposit of
+/// `amount` debits (for a Token-2022 transfer-fee mint, the gross).
+pub fn build_spl_withdrawal_of(
+    pt: &mut SprProgramTest,
+    tree: &Pubkey,
+    amount: u64,
+    mint: Pubkey,
+    user_token: Pubkey,
+    token_program: Pubkey,
+) -> Result<SplWithdrawal> {
     let payer = pt.payer.insecure_clone();
     let payer_bytes = payer.pubkey().to_bytes();
     let zero = [0u8; 32];
-
-    let user_token = pt
-        .create_token_account(&mint, &payer.pubkey())
-        .context("create user token account")?;
-    pt.mint_to(&mint, &user_token, amount).context("mint SPL")?;
     let vault = pda::spl_interface(&mint);
 
     let nullifier_key = NullifierKey::from_secret([9u8; 31]);
@@ -927,7 +947,13 @@ pub fn build_spl_withdrawal(
     let owner = PublicKey::from_ed25519(&payer_bytes);
     let owner_pk_hash = owner.owner_proof_input_hash().expect("owner hash");
     let owner_field = owner_hash(&owner, &nullifier_pk).expect("owner field");
-    let shield = SprProgramTest::spl_shield_data(amount, owner_field, &mint, &user_token);
+    let shield = SprProgramTest::spl_shield_data_with_program(
+        amount,
+        owner_field,
+        &mint,
+        &user_token,
+        token_program,
+    );
     let event = pt.deposit(tree, &payer, &shield).context("SPL deposit")?;
     let utxo = pt
         .indexed_deposit_utxo(&event, owner)
@@ -1085,7 +1111,7 @@ pub fn build_spl_withdrawal(
                 mint,
                 spl_interface: vault,
                 user_token_account: user_token,
-                token_program: SprProgramTest::token_program_id(),
+                token_program,
             },
         )],
         data: data.clone(),

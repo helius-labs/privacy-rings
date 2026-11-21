@@ -45,7 +45,7 @@ validator tiers) are the rest of the behavioral program coverage.
 | tree/pause | `tree_contract` | `admin_rejection` | `deposit_model` |
 | deposit | `deposit_functional` | `deposit_rejection`, `deposit_edge_cases` | `deposit_model`, `deposit_mutation` |
 | dispatch | `dispatch_functional` | `dispatch_rejection` | — |
-| SPL interface | `spl_interface_contract` | `spl_interface_rejection` | — |
+| SPL interface | `spl_interface_contract`, `spl_interface_transfer_fee` | `spl_interface_rejection` | — |
 | ring config | `ring_config_contract` | `admin_rejection` | — |
 | transact | `transact_functional` | `transact_settlement` | — |
 | withdrawal | `transact_withdrawal` | `transact_settlement` | — |

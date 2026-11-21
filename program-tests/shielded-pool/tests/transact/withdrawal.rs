@@ -14,6 +14,9 @@
 //! `.so` binary.
 
 use shielded_pool_tests::support::transact::{current_tree_roots, proof_env, tree_roots, Pool};
+use shielded_pool_tests::support::transfer_fee::{
+    account_withheld, create_transfer_fee_mint, create_transfer_fee_token_account,
+};
 use spr_interface::state::cache::empty_cached_input_fields;
 
 use borsh::BorshSerialize;
@@ -40,13 +43,13 @@ use spr_transaction::{
 };
 
 use spr_test_utils::transact::{
-    build_spl_withdrawal, build_transfer_prover_inputs, change_and_dummy_outputs,
-    derive_test_transfer_output_blindings, dummy_input, dummy_transfer_output, external_data_hash,
-    fe, inline_outputs, input_utxo, new_transact_ix_data, nullifier_tree, output_owner_pk_hashes,
-    prove_and_verify_transfer, public_sol_field, real_output, set_output_owner_tags,
-    single_tree_slots, sol_leg, sol_public_slots, spl_leg, spl_public_slots,
-    test_private_tx_blinding, transfer_input, transfer_output, TransferInputArgs,
-    TransferProverInputsArgs, TEST_BLINDING_SEED,
+    build_spl_withdrawal, build_spl_withdrawal_of, build_transfer_prover_inputs,
+    change_and_dummy_outputs, derive_test_transfer_output_blindings, dummy_input,
+    dummy_transfer_output, external_data_hash, fe, inline_outputs, input_utxo,
+    new_transact_ix_data, nullifier_tree, output_owner_pk_hashes, prove_and_verify_transfer,
+    public_sol_field, real_output, set_output_owner_tags, single_tree_slots, sol_leg,
+    sol_public_slots, spl_leg, spl_public_slots, test_private_tx_blinding, transfer_input,
+    transfer_output, TransferInputArgs, TransferProverInputsArgs, TEST_BLINDING_SEED,
 };
 
 const AMOUNT: u64 = 1_000_000_000;
@@ -119,6 +122,56 @@ fn shield_then_withdraw_spl_with_a_real_proof() {
         .expect("real-proof SPL withdrawal");
     assert_eq!(env.rpc.token_balance(&user_token), Some(SPL_AMOUNT));
     assert_eq!(env.rpc.token_balance(&vault), Some(0));
+}
+
+/// A Token-2022 transfer-fee note round trip: the deposit debits the gross and
+/// credits the vault the nominal amount, and the withdrawal of that note drains
+/// the vault by exactly the nominal amount while the recipient receives it net
+/// of the mint's fee, which Token-2022 withholds in the recipient account.
+#[test]
+fn shield_then_withdraw_transfer_fee_spl_with_a_real_proof() {
+    const SPL_AMOUNT: u64 = 1_000;
+    // 1%: a gross of 1_011 pays ceil(10.11) = 11 and nets 1_000.
+    const GROSS: u64 = 1_011;
+    let mut env = proof_env();
+    let tree = env.tree;
+    let payer = env.rpc.payer.insecure_clone();
+    let token_program = spr_program_test::SprProgramTest::token_2022_program_id();
+    env.rpc
+        .ensure_asset_counter(&env.authority)
+        .expect("asset counter");
+    let mint = create_transfer_fee_mint(&mut env.rpc, 100, u64::MAX);
+    env.rpc
+        .create_spl_interface_with_program(&env.authority, &mint, token_program)
+        .expect("create transfer-fee interface");
+    let user_token = create_transfer_fee_token_account(&mut env.rpc, &mint, &payer.pubkey());
+    env.rpc
+        .mint_to_with_program(&mint, &user_token, GROSS, token_program)
+        .expect("mint Token-2022 balance");
+
+    let withdrawal = build_spl_withdrawal_of(
+        &mut env.rpc,
+        &tree,
+        SPL_AMOUNT,
+        mint,
+        user_token,
+        token_program,
+    )
+    .expect("build transfer-fee SPL withdrawal");
+    let vault = withdrawal.vault;
+    assert_eq!(env.rpc.token_balance(&user_token), Some(0));
+    assert_eq!(env.rpc.token_balance(&vault), Some(SPL_AMOUNT));
+    assert_eq!(account_withheld(&env.rpc, &vault), GROSS - SPL_AMOUNT);
+
+    env.rpc
+        .create_and_send_default_payer_transaction(&[withdrawal.instruction], &[])
+        .expect("real-proof transfer-fee SPL withdrawal");
+    // The vault drops by exactly the note's amount; 1% of 1_000 is withheld
+    // from the recipient, the normal Token-2022 outcome for any transfer.
+    assert_eq!(env.rpc.token_balance(&vault), Some(0));
+    assert_eq!(env.rpc.token_balance(&user_token), Some(SPL_AMOUNT - 10));
+    assert_eq!(account_withheld(&env.rpc, &user_token), 10);
+    assert_eq!(account_withheld(&env.rpc, &vault), GROSS - SPL_AMOUNT);
 }
 
 #[test]

@@ -13,7 +13,7 @@ use super::{
     transaction::maybe_airdrop,
     util::{
         configured_spl_token_account, ensure_positive, format_address, parse_address, parse_pubkey,
-        resolve_spl_token_program,
+        resolve_spl_token_program, spl_deposit_gross,
     },
 };
 use crate::{args::DepositOptions, cli_config::CliConfigFile};
@@ -36,10 +36,14 @@ pub(crate) fn run_deposit(opts: DepositOptions) -> Result<()> {
         .transpose()?
         .unwrap_or_else(|| material.funding.pubkey());
     let recipient = resolve_registered_address(&rpc, recipient_pubkey)?;
+    // A transfer-fee mint debits more than the note amount; the vault and the
+    // note still receive exactly `opts.amount`.
+    let mut debit = (opts.amount, 0);
     let deposit_asset = if asset == spr_transaction::SOL_MINT {
         DepositAsset::Sol
     } else {
         let mint = solana_pubkey::Pubkey::new_from_array(asset.to_bytes());
+        debit = spl_deposit_gross(&rpc, &mint, opts.amount)?;
         DepositAsset::Spl(DepositSplAccounts {
             mint,
             user_token: spl_token_account.context("SPL deposit needs a token account")?,
@@ -68,8 +72,10 @@ pub(crate) fn run_deposit(opts: DepositOptions) -> Result<()> {
     )?;
     let indexed = wait_for_indexed_utxo(&indexer, view_tag, signature)?;
     println!(
-        "ok deposit amount={} mint={} to={} utxo_hash={} signature={}",
+        "ok deposit amount={} debited={} transfer_fee={} mint={} to={} utxo_hash={} signature={}",
         opts.amount,
+        debit.0,
+        debit.1,
         format_address(asset),
         recipient_pubkey,
         hex::encode(indexed.output_slot.output_context.hash),

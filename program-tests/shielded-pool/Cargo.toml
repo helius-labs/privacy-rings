@@ -131,6 +131,10 @@ name = "spl_interface_rejection"
 path = "tests/spl_interface/rejection.rs"
 
 [[test]]
+name = "spl_interface_transfer_fee"
+path = "tests/spl_interface/transfer_fee.rs"
+
+[[test]]
 name = "ring_config_contract"
 path = "tests/ring_config/contract.rs"
 
