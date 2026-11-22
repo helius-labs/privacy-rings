@@ -238,7 +238,7 @@ async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
     sign_policy(&mut revocation);
     let revocation = json(&revocation).unwrap();
 
-    service.0.cache.lock().await.session = Some(session);
+    service.0.cache.lock().await.session = Some(session.clone());
 
     let signer = Arc::new(Keypair::new_from_array([21; 32]));
     let owner = signer.pubkey();
@@ -367,6 +367,13 @@ async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
         Err(NitroDecryptionError::Policy(NitroPolicyError::Rollback))
     ));
     server.await.unwrap();
+    assert!(matches!(
+        service
+            .0
+            .attest(session.policy.clone(), &session.policy.targets()[0])
+            .await,
+        Err(NitroDecryptionError::Policy(NitroPolicyError::Rollback))
+    ));
 }
 
 #[tokio::test]

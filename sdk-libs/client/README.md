@@ -76,7 +76,8 @@ under the service keys. The returned handle implements `ShieldedKeys` for
 `UtxoScan` and `ProofAuthority` for spending. Blocking callers can use
 `resolve_recipient_sync` and `open_sync`.
 
-The client attests the selected replica with a fresh challenge, then encrypts
+The client checks the current checkpoint before each attestation probe and
+before caching the verified boot. It attests with a fresh challenge and encrypts
 the request to its attested transport key. A decrypt signature binds the
 Solana network, release, batch and one-time response key. The client checks
 the reply's boot signature, request and ciphertext digests, and current

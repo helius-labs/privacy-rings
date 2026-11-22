@@ -340,12 +340,15 @@ impl Service {
             .map(|offset| {
                 let index = (start + offset) % count;
                 let target = &targets[index];
+                let policy = policy.clone();
                 async move {
                     if offset > 0 {
                         tokio::time::sleep(Duration::from_millis(offset as u64 * PROBE_STAGGER_MS))
                             .await;
                     }
-                    self.attest(target).await.map(|replica| (index, replica))
+                    self.attest(policy, target)
+                        .await
+                        .map(|replica| (index, replica))
                 }
             })
             .collect::<FuturesUnordered<_>>();
@@ -364,6 +367,7 @@ impl Service {
                 return Ok(session);
             }
         }
+        self.policies.require_current(policy.clone()).await?;
         Err(NitroDecryptionError::Attestation)
     }
 
@@ -393,8 +397,13 @@ impl Service {
         }
     }
 
-    async fn attest(&self, target: &NitroTarget) -> Result<Replica, NitroDecryptionError> {
+    async fn attest(
+        &self,
+        policy: Arc<AcceptedNitroPolicy>,
+        target: &NitroTarget,
+    ) -> Result<Replica, NitroDecryptionError> {
         let nonce: [u8; 32] = random_bytes()?;
+        self.policies.require_current(policy).await?;
         let response = self
             .http
             .post(route(&target.endpoint, &["v1", "nitro", "attestation"])?)
