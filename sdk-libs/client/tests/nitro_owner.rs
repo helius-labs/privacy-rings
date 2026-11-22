@@ -76,7 +76,7 @@ async fn queued_signer_checks_policy_after_acquiring_its_slot() {
         Duration::from_secs(5),
         async {
             if revoked.get() {
-                return Err(NitroPolicyError::Rollback.into());
+                return Err(NitroPolicyError::Superseded.into());
             }
             Ok(())
         },
@@ -87,7 +87,7 @@ async fn queued_signer_checks_policy_after_acquiring_its_slot() {
     drop(previous);
     assert!(matches!(
         approval.await,
-        Err(NitroDecryptionError::Policy(NitroPolicyError::Rollback))
+        Err(NitroDecryptionError::Policy(NitroPolicyError::Superseded))
     ));
     assert_eq!(worker.available_permits(), 1);
 }

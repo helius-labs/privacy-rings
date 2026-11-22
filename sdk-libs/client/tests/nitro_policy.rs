@@ -324,7 +324,7 @@ fn revocation_persists_across_restart() {
     assert_eq!(reopened.current(&trust).unwrap().unwrap().sequence, 3);
     assert!(matches!(
         prior.require_current(&trust, &reopened, fixture.now()),
-        Err(NitroPolicyError::Rollback)
+        Err(NitroPolicyError::Superseded)
     ));
     assert!(matches!(
         fixture.accept(&trust, &reopened, "successor", "successor"),
@@ -351,10 +351,13 @@ fn concurrent_clients_cannot_restore_or_replace_a_checkpoint() {
         if let Ok(prior) = prior {
             assert!(matches!(
                 prior.require_current(&trust, &store, fixture.now()),
-                Err(NitroPolicyError::Rollback)
+                Err(NitroPolicyError::Superseded)
             ));
         } else {
-            assert!(matches!(prior, Err(NitroPolicyError::Rollback)));
+            assert!(matches!(
+                prior,
+                Err(NitroPolicyError::Rollback | NitroPolicyError::Superseded)
+            ));
         }
     });
     let current = store.current(&trust).unwrap().unwrap();

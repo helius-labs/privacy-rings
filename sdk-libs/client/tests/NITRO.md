@@ -9,6 +9,7 @@ Run `cargo test -p spr-client --lib nitro_` and
 | Installed trust pins one exact policy at its minimum sequence. A competing policy at that sequence or a successor that names a different digest fails before checkpoint storage. | [Release policy](nitro_policy.rs) |
 | Both signed heads must agree with the saved checkpoint wherever they expose its revision or immediate successor. Storage checks those links while committing the new checkpoint. | [Checkpoint](nitro_policy.rs) |
 | A checkpoint read that crosses a policy deadline cannot authorize an operation. | [Deadline](nitro_policy.rs) |
+| A stalled checkpoint read cannot dispatch an attestation probe after the monotonic connection deadline. An unsigned lookup refreshes a superseded policy once, preserving the fresh result or revocation. A rollback stops the lookup. | [Wallet transport](nitro_transport.rs) |
 | A stalled file lock returns a storage error for reads and writes. After the lock is released, the last committed revision is still readable and its successor can commit. | [Lock contention](nitro_policy.rs) |
 | The wallet commits its policy before contacting a replica. Reopening and concurrent writes preserve revocation, sequence, custody floor and recovery-only mode. | [Checkpoint](nitro_policy.rs) |
 | A fresh Nitro boot binds discovery, both boot points and PCR0–4. | [Discovery binding](nitro_exchange.rs) and the AWS evidence verifier tests in `spr-prover-tee` |

@@ -39,6 +39,8 @@ pub enum NitroPolicyError {
     Unavailable,
     #[error("standalone decryption policy would roll back or replace an accepted revision")]
     Rollback,
+    #[error("standalone decryption policy was superseded by a stored revision")]
+    Superseded,
     #[error("standalone decryption checkpoint storage failed")]
     Storage,
     #[error("standalone decryption was revoked")]
@@ -232,7 +234,7 @@ impl AcceptedNitroPolicy {
             return Err(NitroPolicyError::Invalid);
         }
         if store.current(trust)?.as_ref() != Some(&self.checkpoint) {
-            return Err(NitroPolicyError::Rollback);
+            return Err(NitroPolicyError::Superseded);
         }
         self.require_valid_at(now()?)
     }

@@ -1,7 +1,7 @@
 use std::{
     io::{BufRead, BufReader, Read, Write},
     net::TcpStream,
-    sync::Arc,
+    sync::{mpsc, Arc, Mutex},
     time::Duration,
 };
 
@@ -17,13 +17,15 @@ use spr_keypair::{NullifierKey, X25519Pubkey};
 use tokio::time::Instant;
 
 use super::{
-    super::{crypto, NitroDecryptionService, Session, SESSION_MS},
+    super::{
+        crypto, retry_public_keys, NitroDecryptionService, Session, SessionWindow, SESSION_MS,
+    },
     tests::fixture_replica,
     *,
 };
 use crate::nitro_policy::{
-    accept_published_nitro_policy, now_ms, NitroCheckpointStore, NitroPolicyError,
-    UnixNitroCheckpointStore,
+    accept_published_nitro_policy, now_ms, NitroCheckpoint, NitroCheckpointStore, NitroPolicyError,
+    NitroPolicyUpdate, UnixNitroCheckpointStore,
 };
 
 const POLICY_FIXTURE: &str = include_str!("fixtures/nitro-policy.json");
@@ -194,8 +196,10 @@ fn accepted_boot(
         policy,
         replica: fixture_replica(&exchange),
         endpoint: endpoint.parse().unwrap(),
-        expires_at_ms: now + 60_000,
-        freshness_deadline: Instant::now() + Duration::from_millis(SESSION_MS),
+        window: SessionWindow {
+            expires_at_ms: now + SESSION_MS,
+            deadline: Instant::now() + Duration::from_millis(SESSION_MS),
+        },
     });
     (trust, session)
 }
@@ -213,8 +217,103 @@ async fn cached_policy_expires_by_monotonic_time_even_if_wall_time_remains_valid
     session.policy.require_valid_at(now_ms().unwrap()).unwrap();
     assert!(matches!(
         service.0.require_current(&session).await,
+        Err(NitroDecryptionError::SessionExpired)
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn checkpoint_wait_cannot_dispatch_a_probe_after_the_freshness_deadline() {
+    struct StalledCheckpoint {
+        checkpoint: NitroCheckpoint,
+        entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl NitroCheckpointStore for StalledCheckpoint {
+        fn current(&self, _: &NitroTrust) -> Result<Option<NitroCheckpoint>, NitroPolicyError> {
+            if let Some(entered) = self.entered.lock().unwrap().take() {
+                entered.send(()).unwrap();
+                self.release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(2))
+                    .map_err(|_| NitroPolicyError::Storage)?;
+            }
+            Ok(Some(self.checkpoint.clone()))
+        }
+
+        fn accept(
+            &self,
+            _: &NitroTrust,
+            _: &NitroPolicyUpdate<'_>,
+        ) -> Result<bool, NitroPolicyError> {
+            unreachable!("attestation only reads the checkpoint")
+        }
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/nitro/", listener.local_addr().unwrap());
+    let fixture: Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let store = UnixNitroCheckpointStore::open(directory.path()).unwrap();
+    let (trust, session) = accepted_boot(&fixture, &endpoint, now_ms().unwrap(), &store);
+    let (entered, waiting) = tokio::sync::oneshot::channel();
+    let (release, released) = mpsc::channel();
+    let store = Arc::new(StalledCheckpoint {
+        checkpoint: session.policy.checkpoint().clone(),
+        entered: Mutex::new(Some(entered)),
+        release: Mutex::new(released),
+    });
+    let service = NitroDecryptionService::new(trust, store).unwrap();
+    let probe = tokio::spawn(async move {
+        service
+            .0
+            .attest(
+                session.policy.clone(),
+                &session.policy.targets()[0],
+                session.window,
+            )
+            .await
+    });
+    waiting.await.unwrap();
+    tokio::time::advance(Duration::from_millis(SESSION_MS)).await;
+    let result = probe.await.unwrap();
+    release.send(()).unwrap();
+    assert!(matches!(result, Err(NitroDecryptionError::SessionExpired)));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1), listener.accept())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn unsigned_lookup_refreshes_one_superseded_policy_and_reports_its_result() {
+    let mut outcomes = [
+        Err(NitroPolicyError::Superseded.into()),
+        Err::<(), _>(NitroPolicyError::Revoked.into()),
+    ]
+    .into_iter();
+    assert!(matches!(
+        retry_public_keys(async || outcomes.next().unwrap()).await,
+        Err(NitroDecryptionError::Policy(NitroPolicyError::Revoked))
+    ));
+    assert!(outcomes.next().is_none());
+
+    let mut outcomes = [Err(NitroPolicyError::Rollback.into()), Ok(())].into_iter();
+    assert!(matches!(
+        retry_public_keys(async || outcomes.next().unwrap()).await,
         Err(NitroDecryptionError::Policy(NitroPolicyError::Rollback))
     ));
+    assert!(matches!(outcomes.next(), Some(Ok(()))));
+
+    let mut outcomes = [Err(NitroPolicyError::Superseded.into()), Ok(42)].into_iter();
+    assert_eq!(
+        retry_public_keys(async || outcomes.next().unwrap())
+            .await
+            .unwrap(),
+        42
+    );
 }
 
 #[tokio::test]
@@ -364,15 +463,19 @@ async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
     );
     assert!(matches!(
         keys.decrypt_async(&[request]).await,
-        Err(NitroDecryptionError::Policy(NitroPolicyError::Rollback))
+        Err(NitroDecryptionError::Policy(NitroPolicyError::Superseded))
     ));
     server.await.unwrap();
     assert!(matches!(
         service
             .0
-            .attest(session.policy.clone(), &session.policy.targets()[0])
+            .attest(
+                session.policy.clone(),
+                &session.policy.targets()[0],
+                session.window
+            )
             .await,
-        Err(NitroDecryptionError::Policy(NitroPolicyError::Rollback))
+        Err(NitroDecryptionError::Policy(NitroPolicyError::Superseded))
     ));
 }
 

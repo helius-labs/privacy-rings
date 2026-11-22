@@ -71,6 +71,8 @@ pub enum NitroDecryptionError {
     Signature,
     #[error("wallet signer did not finish before the authorization deadline")]
     OwnerTimeout,
+    #[error("the attested decryption session expired")]
+    SessionExpired,
     #[error("OS random generation failed")]
     Random,
     #[error("Nitro decryption only accepts recovery requests")]
@@ -106,8 +108,27 @@ struct Session {
     policy: Arc<AcceptedNitroPolicy>,
     replica: Replica,
     endpoint: Url,
+    window: SessionWindow,
+}
+
+#[derive(Clone, Copy)]
+struct SessionWindow {
     expires_at_ms: u64,
-    freshness_deadline: Instant,
+    deadline: Instant,
+}
+
+impl SessionWindow {
+    fn remaining(self, now_ms: u64) -> Duration {
+        Duration::from_millis(self.expires_at_ms.saturating_sub(now_ms))
+            .min(self.deadline.saturating_duration_since(Instant::now()))
+    }
+
+    fn require_current(self, now_ms: u64) -> Result<(), NitroDecryptionError> {
+        if self.remaining(now_ms).is_zero() {
+            return Err(NitroDecryptionError::SessionExpired);
+        }
+        Ok(())
+    }
 }
 
 impl NitroDecryptionService {
@@ -184,40 +205,34 @@ impl NitroDecryptionService {
         accepts_payment: bool,
     ) -> Result<ShieldedAddress, NitroDecryptionError> {
         wire::owner_key(owner)?;
-        let mut session = self.0.session().await?;
-        let mut retry = true;
-        loop {
+        let result = retry_public_keys(async || {
+            let session = self.0.session().await?;
             if accepts_payment && session.policy.checkpoint().recovery_only {
+                self.0.require_current(&session).await?;
                 return Err(NitroDecryptionError::RecoveryOnly);
             }
-            match self
-                .0
+            self.0
                 .exchange(&session, Operation::public_keys(owner), None)
                 .await
-            {
-                Ok(OperationResult::PublicKeys {
-                    nullifier_public_key,
-                    viewing_public_key,
-                }) => {
-                    let nullifier_pubkey = wire::fixed(&nullifier_public_key)?;
-                    if !is_canonical_bn254_scalar_be(&nullifier_pubkey) {
-                        return Err(NitroDecryptionError::Protocol);
-                    }
-                    return Ok(ShieldedAddress {
-                        signing_pubkey: PublicKey::from_ed25519(&owner.to_bytes()),
-                        viewing_pubkey: X25519Pubkey::from_bytes(wire::fixed(&viewing_public_key)?)
-                            .map_err(|_| NitroDecryptionError::Protocol)?,
-                        nullifier_pubkey,
-                    });
-                }
-                Err(error) if retry && recoverable(&error) => {
-                    session = self.0.session().await?;
-                    retry = false;
-                }
-                Err(error) => return Err(error),
-                Ok(_) => return Err(NitroDecryptionError::Protocol),
-            }
+        })
+        .await?;
+        let OperationResult::PublicKeys {
+            nullifier_public_key,
+            viewing_public_key,
+        } = result
+        else {
+            return Err(NitroDecryptionError::Protocol);
+        };
+        let nullifier_pubkey = wire::fixed(&nullifier_public_key)?;
+        if !is_canonical_bn254_scalar_be(&nullifier_pubkey) {
+            return Err(NitroDecryptionError::Protocol);
         }
+        Ok(ShieldedAddress {
+            signing_pubkey: PublicKey::from_ed25519(&owner.to_bytes()),
+            viewing_pubkey: X25519Pubkey::from_bytes(wire::fixed(&viewing_public_key)?)
+                .map_err(|_| NitroDecryptionError::Protocol)?,
+            nullifier_pubkey,
+        })
     }
 
     async fn decrypt_batch(
@@ -267,11 +282,22 @@ impl NitroDecryptionService {
     }
 }
 
+async fn retry_public_keys<T>(
+    mut call: impl AsyncFnMut() -> Result<T, NitroDecryptionError>,
+) -> Result<T, NitroDecryptionError> {
+    let result = call().await;
+    if result.as_ref().is_err_and(recoverable) {
+        return call().await;
+    }
+    result
+}
+
 fn recoverable(error: &NitroDecryptionError) -> bool {
     match error {
         NitroDecryptionError::Unavailable
         | NitroDecryptionError::Protocol
-        | NitroDecryptionError::Policy(NitroPolicyError::Rollback) => true,
+        | NitroDecryptionError::SessionExpired
+        | NitroDecryptionError::Policy(NitroPolicyError::Superseded) => true,
         NitroDecryptionError::Http(status) => {
             status.is_server_error()
                 || [StatusCode::BAD_REQUEST, StatusCode::REQUEST_TIMEOUT].contains(status)
@@ -330,12 +356,28 @@ impl Service {
         }
 
         cache.session = None;
-        let expires_at_ms = now_ms()?.saturating_add(SESSION_MS);
-        let freshness_deadline = Instant::now() + Duration::from_millis(SESSION_MS);
+        let window = SessionWindow {
+            expires_at_ms: now_ms()?.saturating_add(SESSION_MS),
+            deadline: Instant::now() + Duration::from_millis(SESSION_MS),
+        };
+        let (session, index) = timeout_at(window.deadline, self.connect(cache.next_target, window))
+            .await
+            .map_err(|_| NitroDecryptionError::SessionExpired)??;
+        cache.next_target = index + 1;
+        cache.session = Some(session.clone());
+        Ok(session)
+    }
+
+    async fn connect(
+        &self,
+        next_target: usize,
+        window: SessionWindow,
+    ) -> Result<(Arc<Session>, usize), NitroDecryptionError> {
         let policy = Arc::new(self.policies.read().await?);
+        window.require_current(now_ms()?)?;
         let targets = policy.targets();
         let count = targets.len();
-        let start = cache.next_target % count;
+        let start = next_target % count;
         let mut probes = (0..count)
             .map(|offset| {
                 let index = (start + offset) % count;
@@ -346,42 +388,59 @@ impl Service {
                         tokio::time::sleep(Duration::from_millis(offset as u64 * PROBE_STAGGER_MS))
                             .await;
                     }
-                    self.attest(policy, target)
+                    self.attest(policy, target, window)
                         .await
                         .map(|replica| (index, replica))
                 }
             })
             .collect::<FuturesUnordered<_>>();
         while let Some(candidate) = probes.next().await {
-            if let Ok((index, replica)) = candidate {
-                let session = Arc::new(Session {
-                    policy: policy.clone(),
-                    endpoint: targets[index].endpoint.clone(),
-                    replica,
-                    expires_at_ms,
-                    freshness_deadline,
-                });
-                self.require_current(&session).await?;
-                cache.next_target = index + 1;
-                cache.session = Some(session.clone());
-                return Ok(session);
+            match candidate {
+                Ok((index, replica)) => {
+                    let session = Arc::new(Session {
+                        policy: policy.clone(),
+                        endpoint: targets[index].endpoint.clone(),
+                        replica,
+                        window,
+                    });
+                    self.require_current(&session).await?;
+                    return Ok((session, index));
+                }
+                Err(
+                    error @ (NitroDecryptionError::SessionExpired
+                    | NitroDecryptionError::Policy(NitroPolicyError::Superseded)),
+                ) => return Err(error),
+                Err(_) => (),
             }
         }
-        self.policies.require_current(policy.clone()).await?;
+        self.require_fresh_policy(&policy, window).await?;
         Err(NitroDecryptionError::Attestation)
     }
 
-    async fn require_current(&self, session: &Session) -> Result<(), NitroDecryptionError> {
-        self.policies
-            .require_current(session.policy.clone())
-            .await?;
+    async fn require_fresh_policy(
+        &self,
+        policy: &Arc<AcceptedNitroPolicy>,
+        window: SessionWindow,
+    ) -> Result<u64, NitroDecryptionError> {
+        window.require_current(now_ms()?)?;
+        timeout_at(
+            window.deadline,
+            self.policies.require_current(policy.clone()),
+        )
+        .await
+        .map_err(|_| NitroDecryptionError::SessionExpired)??;
         let now = now_ms()?;
-        session.policy.require_valid_at(now)?;
-        if !(session.replica.valid_from_ms..=session.replica.valid_through_ms).contains(&now)
-            || now >= session.expires_at_ms
-            || Instant::now() >= session.freshness_deadline
-        {
-            return Err(NitroPolicyError::Rollback.into());
+        policy.require_valid_at(now)?;
+        window.require_current(now)?;
+        Ok(now)
+    }
+
+    async fn require_current(&self, session: &Session) -> Result<(), NitroDecryptionError> {
+        let now = self
+            .require_fresh_policy(&session.policy, session.window)
+            .await?;
+        if !(session.replica.valid_from_ms..=session.replica.valid_through_ms).contains(&now) {
+            return Err(NitroDecryptionError::SessionExpired);
         }
         Ok(())
     }
@@ -401,9 +460,10 @@ impl Service {
         &self,
         policy: Arc<AcceptedNitroPolicy>,
         target: &NitroTarget,
+        window: SessionWindow,
     ) -> Result<Replica, NitroDecryptionError> {
         let nonce: [u8; 32] = random_bytes()?;
-        self.policies.require_current(policy).await?;
+        self.require_fresh_policy(&policy, window).await?;
         let response = self
             .http
             .post(route(&target.endpoint, &["v1", "nitro", "attestation"])?)
@@ -460,14 +520,12 @@ impl Service {
             let key = wire::owner_key(owner)?;
             let message = wire::owner_message(&key, self.trust.network(), &digest);
             let expires_at = session
-                .expires_at_ms
-                .min(session.policy.expires_at_ms())
+                .policy
+                .expires_at_ms()
                 .min(session.replica.valid_through_ms.saturating_add(1));
-            let timeout = Duration::from_millis(expires_at.saturating_sub(now_ms()?)).min(
-                session
-                    .freshness_deadline
-                    .saturating_duration_since(Instant::now()),
-            );
+            let now = now_ms()?;
+            let timeout = Duration::from_millis(expires_at.saturating_sub(now))
+                .min(session.window.remaining(now));
             let signature = owner_call(
                 &self.owner_work,
                 timeout,
