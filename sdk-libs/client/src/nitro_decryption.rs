@@ -107,6 +107,7 @@ struct Session {
     replica: Replica,
     endpoint: Url,
     expires_at_ms: u64,
+    freshness_deadline: Instant,
 }
 
 impl NitroDecryptionService {
@@ -329,6 +330,8 @@ impl Service {
         }
 
         cache.session = None;
+        let expires_at_ms = now_ms()?.saturating_add(SESSION_MS);
+        let freshness_deadline = Instant::now() + Duration::from_millis(SESSION_MS);
         let policy = Arc::new(self.policies.read().await?);
         let targets = policy.targets();
         let count = targets.len();
@@ -352,7 +355,8 @@ impl Service {
                     policy: policy.clone(),
                     endpoint: targets[index].endpoint.clone(),
                     replica,
-                    expires_at_ms: now_ms()?.saturating_add(SESSION_MS),
+                    expires_at_ms,
+                    freshness_deadline,
                 });
                 self.require_current(&session).await?;
                 cache.next_target = index + 1;
@@ -371,6 +375,7 @@ impl Service {
         session.policy.require_valid_at(now)?;
         if !(session.replica.valid_from_ms..=session.replica.valid_through_ms).contains(&now)
             || now >= session.expires_at_ms
+            || Instant::now() >= session.freshness_deadline
         {
             return Err(NitroPolicyError::Rollback.into());
         }
@@ -449,7 +454,11 @@ impl Service {
                 .expires_at_ms
                 .min(session.policy.expires_at_ms())
                 .min(session.replica.valid_through_ms.saturating_add(1));
-            let timeout = Duration::from_millis(expires_at.saturating_sub(now_ms()?));
+            let timeout = Duration::from_millis(expires_at.saturating_sub(now_ms()?)).min(
+                session
+                    .freshness_deadline
+                    .saturating_duration_since(Instant::now()),
+            );
             let signature = owner_call(
                 &self.owner_work,
                 timeout,

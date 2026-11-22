@@ -14,9 +14,10 @@ use serde_json::{json, Value};
 use solana_keypair::Keypair;
 use solana_signer::Signer;
 use spr_keypair::{NullifierKey, X25519Pubkey};
+use tokio::time::Instant;
 
 use super::{
-    super::{crypto, NitroDecryptionService, Session},
+    super::{crypto, NitroDecryptionService, Session, SESSION_MS},
     tests::fixture_replica,
     *,
 };
@@ -194,8 +195,26 @@ fn accepted_boot(
         replica: fixture_replica(&exchange),
         endpoint: endpoint.parse().unwrap(),
         expires_at_ms: now + 60_000,
+        freshness_deadline: Instant::now() + Duration::from_millis(SESSION_MS),
     });
     (trust, session)
+}
+
+#[tokio::test(start_paused = true)]
+async fn cached_policy_expires_by_monotonic_time_even_if_wall_time_remains_valid() {
+    let fixture: Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(UnixNitroCheckpointStore::open(directory.path()).unwrap());
+    let (trust, session) = accepted_boot(&fixture, "http://127.0.0.1/", now_ms().unwrap(), &store);
+    let service = NitroDecryptionService::new(trust, store).unwrap();
+    tokio::time::advance(Duration::from_millis(SESSION_MS - 1)).await;
+    service.0.require_current(&session).await.unwrap();
+    tokio::time::advance(Duration::from_millis(1)).await;
+    session.policy.require_valid_at(now_ms().unwrap()).unwrap();
+    assert!(matches!(
+        service.0.require_current(&session).await,
+        Err(NitroDecryptionError::Policy(NitroPolicyError::Rollback))
+    ));
 }
 
 #[tokio::test]
