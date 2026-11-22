@@ -345,9 +345,10 @@ registration.
 
 With a `decryptionService`, the builder returns a `PreparedPayment`. Pass a
 sign-only callback to `send`. The SDK verifies the message and every required
-signature, resolves each Solana recipient again, checks the exact blockhash,
-and submits through the same payment client. Custom payment clients return
-the RPC slot with `getBlockhashValidity`. Explicit
+signature and refreshes the recipients before checking the exact blockhash.
+After that RPC returns, it refreshes them again before broadcast. Solana
+enforces blockhash validity when it processes the transaction. Custom
+payment clients return the RPC slot with `getBlockhashValidity`. Explicit
 shielded addresses keep their original keys.
 Each prepared payment can be sent once. `cancel()`
 releases a transfer's reserved inputs before signing starts. A failure
@@ -362,7 +363,7 @@ each affected nullifier through the invalidity response's slot.
 
 For persistent wallets, pass `persistence: { store, cipher }` to the transfer
 builder. The SDK seals and saves the signed payment record on the wallet's
-sync queue before repeating the recipient and blockhash checks and broadcasting.
+sync queue before the final recipient and blockhash checks.
 `store.save` must resolve after committing its atomic replacement. The
 restored record holds the inputs until sync can settle them. A stopped
 payment may leave a saved reservation for sync to clear after expiry.

@@ -1265,6 +1265,7 @@ describe("unsigned public transaction builders", () => {
     "uncertain send",
     "save failed",
     "recipient changed",
+    "recipient changed during the blockhash check",
     "blockhash expired",
     "RPC slot regressed",
     "input spent",
@@ -1284,6 +1285,7 @@ describe("unsigned public transaction builders", () => {
     const before = serializeWallet(wallet);
     const controller = new AbortController();
     let stored: string | undefined;
+    let checkedBlockhashAfterSave = false;
     let finishSave = () => {};
     const writing = new Promise<void>((resolve) => {
       finishSave = resolve;
@@ -1298,11 +1300,16 @@ describe("unsigned public transaction builders", () => {
         stored = sealed;
       }),
     };
-    const address = vi.fn(async () =>
-      outcome === "recipient changed" && stored !== undefined ? rotated : recipient,
-    );
+    const address = vi.fn(async () => {
+      if (outcome === "recipient changed" && stored !== undefined) return rotated;
+      if (outcome === "recipient changed during the blockhash check" && checkedBlockhashAfterSave) {
+        return rotated;
+      }
+      return recipient;
+    });
     const getBlockhashValidity = vi.fn(async () => {
       if (stored === undefined) return { slot: 10n, valid: true };
+      checkedBlockhashAfterSave = true;
       return {
         slot: outcome === "RPC slot regressed" ? 9n : 11n,
         valid: outcome !== "blockhash expired",
@@ -1344,6 +1351,7 @@ describe("unsigned public transaction builders", () => {
       "uncertain send": "CLIENT_RPC",
       "save failed": "WALLET_PERSIST",
       "recipient changed": "WALLET_DECRYPTION_RECIPIENT_MISMATCH",
+      "recipient changed during the blockhash check": "WALLET_DECRYPTION_RECIPIENT_MISMATCH",
       "blockhash expired": "WALLET_PAYMENT_BLOCKHASH",
       "RPC slot regressed": "WALLET_PAYMENT_BLOCKHASH",
       "input spent": "WALLET_UNSIGNED_INPUT_UNAVAILABLE",

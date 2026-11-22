@@ -136,6 +136,8 @@ export function prepareServicePayment(
               throw new WalletError("WALLET_PAYMENT_BLOCKHASH");
             }
             signal.throwIfAborted();
+            await revalidate({ signal });
+            signal.throwIfAborted();
             reservation?.assertPending(expected);
             attempted = expected;
             if ((await broadcast(checked, { signal })) !== expected) {

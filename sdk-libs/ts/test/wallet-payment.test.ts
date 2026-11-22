@@ -7,7 +7,7 @@ import {
 } from "@solana/kit";
 import { expect, it, vi } from "vitest";
 
-import { buildDepositTransaction, ShieldedKeypair } from "../src/index.js";
+import { buildDepositTransaction, ShieldedAddress, ShieldedKeypair } from "../src/index.js";
 import { depositClient } from "./helpers/clients.js";
 import { emptyTransaction } from "./helpers/transactions.js";
 
@@ -97,7 +97,7 @@ it("submits a prepared payment once, even when a second caller enters during sig
     causeCode: "WALLET_PAYMENT_ALREADY_USED",
   });
   expect(await first).toBe(getSignatureFromTransaction(broadcastTransaction.mock.calls[0]![0]));
-  expect(address).toHaveBeenCalledTimes(3);
+  expect(address).toHaveBeenCalledTimes(4);
   expect(broadcastTransaction).toHaveBeenCalledOnce();
 });
 
@@ -152,6 +152,28 @@ it.each(["signing", "recipient lookup"] as const)(
     expect(broadcastTransaction).not.toHaveBeenCalled();
   },
 );
+
+it("refuses a recipient change during the blockhash check", async () => {
+  const { prepared, sign, recipient, address, broadcastTransaction, getBlockhashValidity } =
+    await payment();
+  const changed = ShieldedKeypair.generate().shieldedAddress();
+  getBlockhashValidity.mockImplementationOnce(async () => {
+    address.mockResolvedValueOnce(
+      ShieldedAddress.fromPublicKeys(
+        recipient.signingPublicKey,
+        recipient.nullifierPublicKey,
+        changed.viewingPublicKey,
+      ),
+    );
+    return { slot: 2n, valid: true };
+  });
+  await expect(prepared.send(sign)).rejects.toMatchObject({
+    code: "WALLET_SUBMIT_PAYMENT",
+    causeCode: "WALLET_DECRYPTION_RECIPIENT_MISMATCH",
+  });
+  expect(getBlockhashValidity).toHaveBeenCalledOnce();
+  expect(broadcastTransaction).not.toHaveBeenCalled();
+});
 
 it("keeps the managed submission path when the caller edits its builder arguments", async () => {
   const payer = await generateKeyPairSigner();

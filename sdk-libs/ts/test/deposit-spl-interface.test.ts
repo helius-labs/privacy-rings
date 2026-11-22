@@ -138,7 +138,7 @@ it("builds the same SOL deposit with a service-resolved recipient as with explic
     expect(transaction.messageBytes).toEqual(explicit.messageBytes);
     return signTransactionWithSigners([payer], transaction);
   });
-  expect(address).toHaveBeenCalledTimes(3);
+  expect(address).toHaveBeenCalledTimes(4);
   expect(broadcastTransaction).toHaveBeenCalledOnce();
 });
 
