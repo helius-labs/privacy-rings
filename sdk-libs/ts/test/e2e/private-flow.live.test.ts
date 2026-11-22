@@ -874,7 +874,8 @@ describe("live SDK lifecycle", { concurrent: false }, () => {
     ]);
     await waitForSignature(client.solanaRpc, signature);
     await sync(client, recipient);
-    expect(lookups).toBe(3);
+    // Look up the recipient initially, after preparation, and before and after fetching the final blockhash.
+    expect(lookups).toBe(4);
     expect(recipient.wallet.balance(SOL_MINT).amount).toBe(10_000_000n);
     expect(await fetchUserRecord({ rpc: client, owner: recipient.signer.address })).toBeUndefined();
     expect(await client.getBalance(recipient.signer.address)).toBe(0n);
