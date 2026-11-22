@@ -20,7 +20,10 @@ pub use encryption::{decrypt_response, EncryptedRequest};
 pub use fixture_prover::{seal_response, FixtureProver, OpenedRequest};
 #[cfg(any(test, feature = "test-fixtures"))]
 pub use nitro::fixture::Fixture as NitroFixture;
-pub use nitro::{NitroIdentity, NitroMeasurement, NitroPolicy};
+pub use nitro::{
+    verify_nitro_serving_boot, NitroIdentity, NitroMeasurement, NitroPolicy, NitroServingPins,
+    VerifiedNitroServingBoot,
+};
 pub use platform::{Anchors, Platform, PlatformIdentity, PlatformPolicy};
 pub use policy::{GpuRequirement, TeePolicy, TeePolicyFile};
 pub use signed::{
