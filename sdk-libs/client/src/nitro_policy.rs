@@ -79,7 +79,7 @@ pub struct NitroTrust {
 
 struct Publication {
     endpoint: Url,
-    account: String,
+    pin: wire::Publication,
 }
 
 impl NitroTrust {
@@ -144,7 +144,7 @@ impl NitroTrust {
     pub fn publication_routes(&self) -> [(&Url, &str); 2] {
         self.publications
             .each_ref()
-            .map(|row| (&row.endpoint, row.account.as_str()))
+            .map(|row| (&row.endpoint, row.pin.account.as_str()))
     }
 }
 
@@ -334,6 +334,7 @@ fn verify_head(trust: &NitroTrust, input: &[u8]) -> Result<Head, NitroPolicyErro
         || policy.network != trust.network
         || identifier::<32>(&policy.security_domain_id)? != trust.security_domain_id
         || identifier::<32>(&policy.note_seed_commitment)? != trust.note_seed_commitment
+        || policy.publications.each_ref() != trust.publications.each_ref().map(|row| &row.pin)
         || (sequence == 1) != previous.is_none()
         || expires_at_ms <= valid_from_ms
         || expires_at_ms - valid_from_ms > MAX_LIFETIME_MS
@@ -476,10 +477,7 @@ fn publication(
         network.as_str(),
     ))
     .map_err(|_| NitroPolicyError::Trust)?;
-    Ok(Publication {
-        endpoint,
-        account: pin.account,
-    })
+    Ok(Publication { endpoint, pin })
 }
 
 fn bounded(input: &[u8]) -> Result<&[u8], NitroPolicyError> {

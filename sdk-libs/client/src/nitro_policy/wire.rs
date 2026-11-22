@@ -20,12 +20,12 @@ pub(super) struct Trust {
     pub(super) custody_keys: Vec<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Publication {
+    pub(super) account: String,
     pub(super) bucket: String,
     pub(super) region: String,
-    pub(super) account: String,
 }
 
 #[derive(Deserialize)]
@@ -61,6 +61,7 @@ pub(super) struct Policy {
     pub(super) note_seed_commitment: String,
     #[serde(deserialize_with = "required_nullable")]
     pub(super) previous_policy_digest: Option<String>,
+    pub(super) publications: [Publication; 2],
     pub(super) recovery_only: bool,
     pub(super) security_domain_id: String,
     pub(super) sequence: String,

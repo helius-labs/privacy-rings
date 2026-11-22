@@ -92,6 +92,36 @@ fn both_published_heads_authorize_exact_target() {
 }
 
 #[test]
+fn signed_policies_require_the_pinned_publication_pair() {
+    let fixture = Fixture::load();
+    let dir = tempfile::tempdir().unwrap();
+    let store = UnixNitroCheckpointStore::open(dir.path()).unwrap();
+    let original = &fixture.0["trust"];
+    let mut reversed = original.clone();
+    reversed["publications"].as_array_mut().unwrap().swap(0, 1);
+    let mut alternatives = vec![reversed];
+    for (field, value) in [
+        ("bucket", "replacement-primary"),
+        ("region", "us-west-2"),
+        ("account", "333333333333"),
+    ] {
+        let mut pins = original.clone();
+        pins["publications"][0][field] = json!(value);
+        alternatives.push(pins);
+    }
+    for pins in alternatives {
+        let trust = NitroTrust::from_json(&serde_json::to_vec(&pins).unwrap()).unwrap();
+        for name in ["genesis", "revoke"] {
+            assert!(matches!(
+                fixture.accept(&trust, &store, name, name),
+                Err(NitroPolicyError::Invalid)
+            ));
+            assert_eq!(store.current(&trust).unwrap(), None);
+        }
+    }
+}
+
+#[test]
 fn only_the_exact_predecessor_can_be_used_during_publication() {
     let fixture = Fixture::load();
     let trust = fixture.trust();
@@ -147,11 +177,18 @@ fn both_quorums_and_strict_wire_format_are_required() {
         "\"previousPolicyDigest\":null,\"previousPolicyDigest\":null",
     );
     let missing = original.replace("\"previousPolicyDigest\":null,", "");
+    let mut without_publications = fixture.0["envelopes"]["genesis"].clone();
+    without_publications["policy"]
+        .as_object_mut()
+        .unwrap()
+        .remove("publications");
+    let without_publications = serde_json::to_vec(&without_publications).unwrap();
     let tampered = original.replace("first-release", "forged-release");
     let oversized = vec![b' '; MAX_POLICY_BYTES + 1];
     for head in [
         duplicate.as_bytes(),
         missing.as_bytes(),
+        &without_publications,
         tampered.as_bytes(),
         &oversized,
         b"",

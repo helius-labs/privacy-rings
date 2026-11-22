@@ -51,8 +51,9 @@ Without the `reqwest` feature neither crate links reqwest and only
 `nitro_policy::NitroPolicyReader` fetches the current policy from two
 independently owned S3 buckets named in the wallet's shipped trust pins. Both
 heads need the pinned release quorum and two of the three custody policy
-approvals. The mirror may hold the primary's exact predecessor during an
-update. The wallet pins the exact policy digest at its minimum sequence and
+approvals over the ordered bucket, region and owner pair. The signed pair
+must match the wallet's pins. The mirror may hold the primary's exact
+predecessor during an update. The wallet pins the exact policy digest at its minimum sequence and
 requires the immediate successor to name that digest. Both heads are required
 before the SDK trusts the endpoint, executable
 hash, custody epoch and PCR0–4 for any replica.

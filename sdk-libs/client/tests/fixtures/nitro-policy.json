@@ -1,5 +1,5 @@
 {
-  "source": "spr-tvc #61 at 8bd307b8, sdk/src/attestation/nitro-policy.ts, synthetic keys",
+  "source": "spr-tvc #61, native Nitro release policy with pinned publications, synthetic keys",
   "trust": {
     "network": "devnet",
     "securityDomainId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
@@ -29,10 +29,10 @@
         "account": "222222222222"
       }
     ],
-    "minimumPolicyDigest": "9d5fc55272c87581dfd8954dc74d0950521735c9c7d876f3c3576385bea68771"
+    "minimumPolicyDigest": "5f2555ceea9e7b5fa3b3eef466ef06996d37c4bd6bc882307dfad03fecf8bb9d"
   },
   "now": 1795290720000,
-  "firstDigest": "9d5fc55272c87581dfd8954dc74d0950521735c9c7d876f3c3576385bea68771",
+  "firstDigest": "5f2555ceea9e7b5fa3b3eef466ef06996d37c4bd6bc882307dfad03fecf8bb9d",
   "envelopes": {
     "genesis": {
       "policy": {
@@ -43,6 +43,18 @@
         "noteSeedCommitment": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
         "sequence": "1",
         "previousPolicyDigest": null,
+        "publications": [
+          {
+            "bucket": "fixture-release-primary",
+            "region": "us-east-1",
+            "account": "111111111111"
+          },
+          {
+            "bucket": "fixture-release-mirror",
+            "region": "eu-north-1",
+            "account": "222222222222"
+          }
+        ],
         "validFromMs": "1795290719000",
         "expiresAtMs": "1795290721000",
         "targets": [
@@ -67,21 +79,21 @@
       "signatures": [
         {
           "key": "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
-          "signature": "0f09b99c64d8771ca2fc183b71a13f10f74ee8db6bbda432f0178b1fb720ba73388a254ca2b1312ac6ed7e0846ab9718ac8ca3228042ae19df62c5783853d265"
+          "signature": "9f1b96a64f01839875149f9cb8801033ba60cbe48f9c361d8479f7a3af76efe20e7e67b0bf96fc148803995887ab273add00132c38a74944958653705c585451"
         },
         {
           "key": "047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
-          "signature": "0a2144ab7f00b0cb845787dc10c02aebf9a47268089e52ab6f059532de2a99551f720d75d411e5d03cf2423fe47af25dccc818fed8f5b1a035e5c5be5f3e267e"
+          "signature": "ddfb76c9d326b76117c4d04bac4148942520e7dbbfbe67b8f5d3c9de02d949286d86065cf08bc4dd8cd53491d8c6ff40741e49130092723e570400181dc3a19a"
         }
       ],
       "custodySignatures": [
         {
           "key": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
-          "signature": "2fee8e8a751e0c6d3bf4e124b7f740fee91685f673f79e5c038d3ea7c9e37c08357fd4a49e763107bf8cf55ba075660c5c6d3e951358c69846b2e2f193ba947e"
+          "signature": "d52ea2ac75f8ca6e72aba162b09571ff52bc62e126d38bc7649cd08acb2b48bc5c948776e94b2e8fbaae076c4a7e8b72f5d812fdb23ff8c3c57c4a16847bb12e"
         },
         {
           "key": "0451590b7a515140d2d784c85608668fdfef8c82fd1f5be52421554a0dc3d033ede0c17da8904a727d8ae1bf36bf8a79260d012f00d4d80888d1d0bb44fda16da4",
-          "signature": "92cda890ec7eaec9df1dfb1898da8db50f5d858fd15f017b8461ef4441eadadc3daf5910c647679c05b937bf90ff512c310ebfac3866b2fd561c14716463d10e"
+          "signature": "e5ac12d93c0a690da782dd5219e3b841a0750f2ed3caf1957f35fc7400be6a1c58539eb6ec33241705cf384afd14d5004cba949ef802c486e3ccea9a59e39345"
         }
       ]
     },
@@ -93,7 +105,19 @@
         "securityDomainId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "noteSeedCommitment": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
         "sequence": "2",
-        "previousPolicyDigest": "9d5fc55272c87581dfd8954dc74d0950521735c9c7d876f3c3576385bea68771",
+        "previousPolicyDigest": "5f2555ceea9e7b5fa3b3eef466ef06996d37c4bd6bc882307dfad03fecf8bb9d",
+        "publications": [
+          {
+            "bucket": "fixture-release-primary",
+            "region": "us-east-1",
+            "account": "111111111111"
+          },
+          {
+            "bucket": "fixture-release-mirror",
+            "region": "eu-north-1",
+            "account": "222222222222"
+          }
+        ],
         "validFromMs": "1795290719000",
         "expiresAtMs": "1795290721000",
         "targets": [
@@ -118,21 +142,21 @@
       "signatures": [
         {
           "key": "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
-          "signature": "9eb560be06d2be37b9882a5ce0c02c682cdeb89bdd6663d6b9c2e81635085ab30f6e5dac58503d260073b20bbe56f7f08fc80b667346b186fc8be8904e4ed8ef"
+          "signature": "708d67182d64ac7dd02ca5362bf9042508c2bc5babaa65d1fe6028b9d33bcedf46ed043ee5fd8a959f5305efd38ffff0ad38822db73258e8166d447ae744194c"
         },
         {
           "key": "047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
-          "signature": "e6886b700b87cd03d5ab82d0e943911dde7315c8f092566ab4381380036fb025173b0b4b184c451650d43585431fb41557624f33347879e067041fe4ac4d0996"
+          "signature": "1d07e7e825e92a4768b298b2a4bf2d603c697b77cc93874a7137bb06a700eef64fcf05c079f24c057d80ed535706ff25a82425e2274ce4d630d27866ed2df219"
         }
       ],
       "custodySignatures": [
         {
           "key": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
-          "signature": "ef6cb244c36bd1f6fdf7a3c5f3ae86f5fae939ee73f348b28d7f64e074dec20e14f734c2f89c201d02778e875caa33a2d6301aa1aa786380dc9bfbebd3e3fa1e"
+          "signature": "829161c292938ad79986e4b60e24cc79052b9c4967438e8780b5320507bd7f54571d4307065bc3ab3e1dbf6d32fdb7b7926273731d30832d06d37dd8b5ac7619"
         },
         {
           "key": "0451590b7a515140d2d784c85608668fdfef8c82fd1f5be52421554a0dc3d033ede0c17da8904a727d8ae1bf36bf8a79260d012f00d4d80888d1d0bb44fda16da4",
-          "signature": "b15a787a9da1a2ab500f9ccfaa94b43dcb7f9bc5cba6ca3c15aadb8c4cb0a09e564f1b3c112fbfeddfc79bf2ef154d70be4f21f50e1bff76ae00fe118f5f9ea5"
+          "signature": "255bca772e4b4101e726504248b6fa205d4afd729c8d7e6669ebd6cc864fe7623ed36945bc26014cabc7b927f0366656d1df032d4c4a8704acc60d542ecfe230"
         }
       ]
     },
@@ -144,7 +168,19 @@
         "securityDomainId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "noteSeedCommitment": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
         "sequence": "3",
-        "previousPolicyDigest": "893b94ec9079d9f8aa05765141e61ebe9510ef54b555f7bf0b4f60b4ca607a7b",
+        "previousPolicyDigest": "3f43b2515a801cfb9cb76dc9ab046d472ea95ea3694d042f61c9cefc36597b7d",
+        "publications": [
+          {
+            "bucket": "fixture-release-primary",
+            "region": "us-east-1",
+            "account": "111111111111"
+          },
+          {
+            "bucket": "fixture-release-mirror",
+            "region": "eu-north-1",
+            "account": "222222222222"
+          }
+        ],
         "validFromMs": "1795290719000",
         "expiresAtMs": "1795290721000",
         "targets": [],
@@ -154,21 +190,21 @@
       "signatures": [
         {
           "key": "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
-          "signature": "4b5b159182e318f51492c593ac95c2484c3de2e64918224bdf6bfb65a5d662676074fe1e8946b804fdcfd7f0340e84d2683d1f6182620cb95074b9753750a941"
+          "signature": "bca9d3524851527e778b903a11400021d126f64ea490b2febcae4c5d01063b893a6eae4e37a35e0fbf4b7190bc5fe8cf4d26fe8ea4149318109302ad057f085c"
         },
         {
           "key": "047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
-          "signature": "d0ecbfa0ec55b59306bcaefc84e9b9c07dadaf5e16e393986e6d2c325237ba230f747a91ec52bf02bb7b45cb94b09592290d40faded8c9d695edb5b8321fa7d1"
+          "signature": "bc51729fb6e56cb01e882209ff721dae4fe03e3a0e87b3edc822fdc5102f37771b4d14dcc2b68a3e3c23f47954d550e151eb1e2a1c40104322c483522bdfc51e"
         }
       ],
       "custodySignatures": [
         {
           "key": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
-          "signature": "293348e3bd017da1e29af0585087cc8be2cee310a918099d25268d8c03bf52ab3066f505661d5b7c1edbbae1922829a635e5238377c4f8e1c19408db6cc7a6c4"
+          "signature": "75de7772529d4c335e520232f380f01c9907bf8e410bf6c58a11f6d47bc2a9922ed68dc260327c4d0cb67eba02c24ff8e50118893c49c40a49bcfa22dba292cb"
         },
         {
           "key": "0451590b7a515140d2d784c85608668fdfef8c82fd1f5be52421554a0dc3d033ede0c17da8904a727d8ae1bf36bf8a79260d012f00d4d80888d1d0bb44fda16da4",
-          "signature": "94fd2cca43242302ddc306ff194d485f32254e732e03c7ba349c6417007f40e473fc32637489ca55f66d98abe095b221dd23f0dfb101a98135a34be6c425df3f"
+          "signature": "75836c5cf4633b46d101f26eeedc4d530ef983ae701b695cd1c3c5b7dce6e59a5c5ebf8473d5fcaacbfc2f5f2c7fec250a2070ef2dede896e1531af2093a70bb"
         }
       ]
     },
@@ -180,7 +216,19 @@
         "securityDomainId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "noteSeedCommitment": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
         "sequence": "3",
-        "previousPolicyDigest": "9d5fc55272c87581dfd8954dc74d0950521735c9c7d876f3c3576385bea68771",
+        "previousPolicyDigest": "5f2555ceea9e7b5fa3b3eef466ef06996d37c4bd6bc882307dfad03fecf8bb9d",
+        "publications": [
+          {
+            "bucket": "fixture-release-primary",
+            "region": "us-east-1",
+            "account": "111111111111"
+          },
+          {
+            "bucket": "fixture-release-mirror",
+            "region": "eu-north-1",
+            "account": "222222222222"
+          }
+        ],
         "validFromMs": "1795290719000",
         "expiresAtMs": "1795290721000",
         "targets": [
@@ -205,21 +253,21 @@
       "signatures": [
         {
           "key": "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
-          "signature": "9d6681f95fce29a232d9bbf232a802bb436f07bc1e54eda058e175d221e83718711195dbe6a0520308ab7b69abc9b34b401d32d1fa6bd33a9b43214a36eefc8a"
+          "signature": "b937dce24fe43d1c8c64e5bb1ca78b89c726f7e83504477920f859a1603dbca4486ff41d3fd139ea5f194f16cf41374714b27d63b342c273642ae8e05ba49c83"
         },
         {
           "key": "047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
-          "signature": "5c93bebe484257c750fba37577263177f96da656c899aab520f734cfb6acb0fc17ddd97409c597a3a85e9b510263d036cda1b2f9a50740e04bf89ed6397f6fc2"
+          "signature": "d7573ab94dc7539a4eb230a47cfa80b9453e4dd320da643188709eda5d7cfde23ec4799481de1fe51c70281c4a4b9fb3aff7a8d4b93705c84fc22f1e9bf9785c"
         }
       ],
       "custodySignatures": [
         {
           "key": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
-          "signature": "d8341fa53944bc449b747ee9e3d71dae825b6a11d33f5489773ffd639fa5dfa45f012a0fee9acd2bab73cd00f3375b314509b668519b478f11a776fa0f4bc951"
+          "signature": "61357f9793d7dfd2199e488943a360f9197fb52efbe79dc4ec60852bcd3190f67882ae2a84ecd0f99b0a561b80a75ccbe93fd72127a2b6f3cd9d89024ea173ad"
         },
         {
           "key": "0451590b7a515140d2d784c85608668fdfef8c82fd1f5be52421554a0dc3d033ede0c17da8904a727d8ae1bf36bf8a79260d012f00d4d80888d1d0bb44fda16da4",
-          "signature": "de1826c10b7d472e40bee4ba14c447aac0b427c34a8c8aa66f009ad00d45b4810c27faa55b58c25fd9234a157a61af9c4306e58f8a06ac64675718cf3e1708e6"
+          "signature": "40541fd421bf2ffc39f9dfb7a89dc4c35e9a0ed96094a3c4a7ce9f6930d004c87eeae6d8c4c032a79c90a322c8859c996ead6f62b62cd9d490a74b7597a9eb62"
         }
       ]
     },
@@ -232,6 +280,18 @@
         "noteSeedCommitment": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
         "sequence": "2",
         "previousPolicyDigest": "abababababababababababababababababababababababababababababababab",
+        "publications": [
+          {
+            "bucket": "fixture-release-primary",
+            "region": "us-east-1",
+            "account": "111111111111"
+          },
+          {
+            "bucket": "fixture-release-mirror",
+            "region": "eu-north-1",
+            "account": "222222222222"
+          }
+        ],
         "validFromMs": "1795290719000",
         "expiresAtMs": "1795290721000",
         "targets": [
@@ -256,21 +316,21 @@
       "signatures": [
         {
           "key": "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
-          "signature": "d53c717654098f6f5432b040eb83dbaf34948ffb47324a32db30ef21b5ad47f3323e39af723de821e7d8528e7a93df44298ccdb703193f2e6759f752ef7c5497"
+          "signature": "afd6576cd908fda686eec6733bbb5ef9ce4baaf8ca99dc15b968718e7044a37327dda116583f84fc3f48ac1068532597389326baeb9cdb32dac06142bac87ae2"
         },
         {
           "key": "047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
-          "signature": "509e8808d1d00927f90462e28848fcb12a97a03ef35a8d64127ec90b70b8bbf95274a57a0a1ff56e62431e99619f07276213ef4638045187ef90696c04b85944"
+          "signature": "64e13d6a33730c449949f710847f48cb81a79f5dcd609ad3a40a1b730f4e5d892e9e3543d6274a328db6417cfc152e001920ae8a6d6b16e4820f052dbc842767"
         }
       ],
       "custodySignatures": [
         {
           "key": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
-          "signature": "4863564ad460c1d9d62a64de1d733902f535b164736e5c6ae6232c3bf3f4bace17d0d38452e42334c4f64c394d644a429599a64341c81bd34345c87fb649473f"
+          "signature": "fdbbbcfb2995ec15faf519822ee7ff729a8a4304860dc196aa730b717dda7af333a6ed7d14884c047d1d67372abf30d69d5ba2f828c5a22c04bda8e67c4e1c02"
         },
         {
           "key": "0451590b7a515140d2d784c85608668fdfef8c82fd1f5be52421554a0dc3d033ede0c17da8904a727d8ae1bf36bf8a79260d012f00d4d80888d1d0bb44fda16da4",
-          "signature": "9807bc2bbe0fc5e3c4452a88af29ab330efc3cdca101f9b93d2715264478a3e91b1c9f020fd9be8577f9d3fa5abe9a6834c16ff60fa273bbecbfc80d5e3a3f24"
+          "signature": "2d56984d3519d3ba1561dd228e1d4b4b9f7a2e3c349098fe9be168d31675f5ca41b40722781a6fc97134609f89bb5cb6556df8e54c749c52a00cd38fb99e636a"
         }
       ]
     },
@@ -282,7 +342,19 @@
         "securityDomainId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "noteSeedCommitment": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
         "sequence": "2",
-        "previousPolicyDigest": "9d5fc55272c87581dfd8954dc74d0950521735c9c7d876f3c3576385bea68771",
+        "previousPolicyDigest": "5f2555ceea9e7b5fa3b3eef466ef06996d37c4bd6bc882307dfad03fecf8bb9d",
+        "publications": [
+          {
+            "bucket": "fixture-release-primary",
+            "region": "us-east-1",
+            "account": "111111111111"
+          },
+          {
+            "bucket": "fixture-release-mirror",
+            "region": "eu-north-1",
+            "account": "222222222222"
+          }
+        ],
         "validFromMs": "1795290719000",
         "expiresAtMs": "1795290721000",
         "targets": [
@@ -307,21 +379,21 @@
       "signatures": [
         {
           "key": "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
-          "signature": "d7ab8abb743fea9faa1a5b3a63c52c5ae22bd0b081cba6d58dfe6975c1aa2f4040aab22b45379f82bf1970ca025bc24d126d4a1e5beceaa95558fae4de7d97ab"
+          "signature": "daf62b0a46551bb589300f4da043b50bfcdd0d737882397fa3ab9d0bcc2852464df75bd158d8b51f64b90c961254205422aa844f6b193cb155cb7671f522ceeb"
         },
         {
           "key": "047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
-          "signature": "e5afc052dfa26dd2ff31880fdef313ddf4d251a2379e81d18d5278bab7f932831b7ddfe8c358cea03fccad314c3cf589e140e525ae5c3ec4c38ab36d6c534b6b"
+          "signature": "0643adae0d6ae8b0c680704b783ff2e7ed0f163051040373e8799ea8223c08c3462806c8389cf1e0b6468de5269bafa74d43df16599b0245b23a56c8bdbd7f01"
         }
       ],
       "custodySignatures": [
         {
           "key": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
-          "signature": "39f22c91057725a682651ced10ab89fe719e51be5fca94e9ca0ad65aa645203a5646343607de5265b2668fe11d4de53463e99845992a203652cd6dcd7d8b4f89"
+          "signature": "e10cbd169761b047d6f7f2d6f7c35835cdbf331c91aba1aca39fec75d7bf7b626a816c8634d3a93001465ee174c43c8a87805b50d82ca9e0fb07a674c8af64ac"
         },
         {
           "key": "0451590b7a515140d2d784c85608668fdfef8c82fd1f5be52421554a0dc3d033ede0c17da8904a727d8ae1bf36bf8a79260d012f00d4d80888d1d0bb44fda16da4",
-          "signature": "6512b5e176710db42093f76c2720c3a07cb04cb62733aef1b4a6c4b1e91dfe3834e7b0323b77e16e8f2916b1ebb00c8fe70708bb491aa027df5bf114e8a21e84"
+          "signature": "8e6cb190a554770ac9f7e6e5cb1745e9bc83a61ef81cacd53c64859350aca1b43c6727e65dca85e5d17d9c48c12a105177aecc2ca52911b584dd01ff19d84148"
         }
       ]
     },
@@ -333,7 +405,19 @@
         "securityDomainId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "noteSeedCommitment": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
         "sequence": "3",
-        "previousPolicyDigest": "893b94ec9079d9f8aa05765141e61ebe9510ef54b555f7bf0b4f60b4ca607a7b",
+        "previousPolicyDigest": "3f43b2515a801cfb9cb76dc9ab046d472ea95ea3694d042f61c9cefc36597b7d",
+        "publications": [
+          {
+            "bucket": "fixture-release-primary",
+            "region": "us-east-1",
+            "account": "111111111111"
+          },
+          {
+            "bucket": "fixture-release-mirror",
+            "region": "eu-north-1",
+            "account": "222222222222"
+          }
+        ],
         "validFromMs": "1795290719000",
         "expiresAtMs": "1795290721000",
         "targets": [
@@ -358,21 +442,21 @@
       "signatures": [
         {
           "key": "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
-          "signature": "d4f2ee2de8e29ff1effffc6d2f19a1b60daf12f452da63fc24bdf4f1b0b2a53b76bea225f6acf6739484b6ec361db690dbeac77f5df6d12356ec11c9cb072178"
+          "signature": "014f208bf705caba767aaa669d6ea736240cbc7e823711fa1957fd1eba90f0e474b44c2cddf6141992dc6891378f1aa69dadf6ab12fd1a8530bed6eb82bb5f50"
         },
         {
           "key": "047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
-          "signature": "f967b2a69ab89017a7f818736d62c4f22b6c37329e8dbd534b9d80b0ae9397311ba4b0e5686ca73cc4a2226d4a23486c9aecbf8a5e184b6a1df5d4f0d417afec"
+          "signature": "710cf520585d6779adc5d9ecb0ced14a9a7b08b3c12b796365b57b284c6c30da556af82238b5a5a157cb7df0c678eabd932f8f86c86248c1bdb147525f8a8a39"
         }
       ],
       "custodySignatures": [
         {
           "key": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
-          "signature": "35cc4efd1079f74c081be29c3f9642abef6142ab323566f39585f1e5eff9cb282dbbd5eac33760290c3ea90cd6202674c59449b25d08734860a2a7dfd6df4c2b"
+          "signature": "c1d4eabcbdf494357ff1ebd3cbf25163c764cc93b9cb45c0505d382f2732879c1e0b9ca3c9654498a7e598bbecf3c0477747cb92c50fc12c98f781d9a144e3fe"
         },
         {
           "key": "0451590b7a515140d2d784c85608668fdfef8c82fd1f5be52421554a0dc3d033ede0c17da8904a727d8ae1bf36bf8a79260d012f00d4d80888d1d0bb44fda16da4",
-          "signature": "e37e828904f0c682139f9a1d355203a3c56180ef381aca9032a435d9f06aa60c1077312908116c7275868ae078342750e6329755d550ed2ff881acded60618de"
+          "signature": "6e3407ebdb5cfacd59f3963f5fd6300ef4eba53465c5d729bc8e118892a8d88e14066b7aa2f1ff8d5433d6b60a071301b9668da615cc427c0d44854f4cf4f773"
         }
       ]
     },
@@ -384,7 +468,19 @@
         "securityDomainId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "noteSeedCommitment": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
         "sequence": "3",
-        "previousPolicyDigest": "893b94ec9079d9f8aa05765141e61ebe9510ef54b555f7bf0b4f60b4ca607a7b",
+        "previousPolicyDigest": "3f43b2515a801cfb9cb76dc9ab046d472ea95ea3694d042f61c9cefc36597b7d",
+        "publications": [
+          {
+            "bucket": "fixture-release-primary",
+            "region": "us-east-1",
+            "account": "111111111111"
+          },
+          {
+            "bucket": "fixture-release-mirror",
+            "region": "eu-north-1",
+            "account": "222222222222"
+          }
+        ],
         "validFromMs": "1795290719000",
         "expiresAtMs": "1795290721000",
         "targets": [
@@ -409,21 +505,21 @@
       "signatures": [
         {
           "key": "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
-          "signature": "932ace9876bee4bd97cebe87a65a5bd77df11c970f98f065b669b7e18ec7321e4bad14470ab696acb6255ebacdad6f7e9d6c9713af3b2307442d6edaff3fdbad"
+          "signature": "861f061e3b2ea399d0447f1983758c6b28e7a4d72b89848803880f40b426c6703b095d0585720a7cca4283140df72a4fbb9dab616e6acfac98b89321b99a4271"
         },
         {
           "key": "047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
-          "signature": "ce015e3ee7a8631f3cc0646c840c772b433b25558ce6ce836f8129a35344cbc36d13ab2253963e62b808b534aaa7b690bb906f6d50ef0b381293cbf3079fdba3"
+          "signature": "ac7970a6de8785975bf05b56ad3e3403770978613c2817eaf37afe0f109a1162694f84057d8c2461216aa976ccfeb28de0e89a5754de386ad752a1e1c7a2090b"
         }
       ],
       "custodySignatures": [
         {
           "key": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
-          "signature": "6a41a03a4a9e2bbacf1420b3929745489356ddbbb4bf73cbfdc4fd0041277fb154c020a4e47858e51de5d13a1799dce5f64044a50b9a94cf1478d341134c3dc8"
+          "signature": "edd9df6af67391e8f45e6c054e4200334e3e68de455dc78a71b9311cde956e892b71549f8e70863329a0ffd8d18aa4691993425a36a0fc8e02a8b2e3c89db58d"
         },
         {
           "key": "0451590b7a515140d2d784c85608668fdfef8c82fd1f5be52421554a0dc3d033ede0c17da8904a727d8ae1bf36bf8a79260d012f00d4d80888d1d0bb44fda16da4",
-          "signature": "1df16ce0f6a8e4b48b8780e6b23c3405e08b5e87e6f8b8cb3d8c2a1821f5b9473bc5a5a513faf1d894ab80cbc91ad60ba8204f895b04cda5ce68ea6ee5ef089c"
+          "signature": "48deed33eb2e81edd817980c17472d9130c5578073baa7adda5c1e20b4562a1a11181aef25e4852c3bfd6695abe362b281e52f0c282d04e01aa0c25ec60e0622"
         }
       ]
     },
@@ -436,6 +532,18 @@
         "noteSeedCommitment": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
         "sequence": "1",
         "previousPolicyDigest": null,
+        "publications": [
+          {
+            "bucket": "fixture-release-primary",
+            "region": "us-east-1",
+            "account": "111111111111"
+          },
+          {
+            "bucket": "fixture-release-mirror",
+            "region": "eu-north-1",
+            "account": "222222222222"
+          }
+        ],
         "validFromMs": "1795290719000",
         "expiresAtMs": "1795290721000",
         "targets": [
@@ -460,21 +568,21 @@
       "signatures": [
         {
           "key": "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
-          "signature": "0f09b99c64d8771ca2fc183b71a13f10f74ee8db6bbda432f0178b1fb720ba73388a254ca2b1312ac6ed7e0846ab9718ac8ca3228042ae19df62c5783853d265"
+          "signature": "9f1b96a64f01839875149f9cb8801033ba60cbe48f9c361d8479f7a3af76efe20e7e67b0bf96fc148803995887ab273add00132c38a74944958653705c585451"
         },
         {
           "key": "048e533b6fa0bf7b4625bb30667c01fb607ef9f8b8a80fef5b300628703187b2a373eb1dbde03318366d069f83a6f5900053c73633cb041b21c55e1a86c1f400b4",
-          "signature": "5da98e1a7e2946215f18fa05d67a41e7d1c1eb0de1c280938ea6d5971691b6015787e65e503e84f87890adf3bac32dfdea5810b9787a50eaad1aff550549fe48"
+          "signature": "cc144c8b6d0adfeb6bdf570de6b7740d7594005a1ef1527607a87d14443b46ec1254d6f40a1d73ba2439a7856ec3b3af6077855e8dead5f92355c2b768e4a9e7"
         }
       ],
       "custodySignatures": [
         {
           "key": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
-          "signature": "2fee8e8a751e0c6d3bf4e124b7f740fee91685f673f79e5c038d3ea7c9e37c08357fd4a49e763107bf8cf55ba075660c5c6d3e951358c69846b2e2f193ba947e"
+          "signature": "d52ea2ac75f8ca6e72aba162b09571ff52bc62e126d38bc7649cd08acb2b48bc5c948776e94b2e8fbaae076c4a7e8b72f5d812fdb23ff8c3c57c4a16847bb12e"
         },
         {
           "key": "0451590b7a515140d2d784c85608668fdfef8c82fd1f5be52421554a0dc3d033ede0c17da8904a727d8ae1bf36bf8a79260d012f00d4d80888d1d0bb44fda16da4",
-          "signature": "92cda890ec7eaec9df1dfb1898da8db50f5d858fd15f017b8461ef4441eadadc3daf5910c647679c05b937bf90ff512c310ebfac3866b2fd561c14716463d10e"
+          "signature": "e5ac12d93c0a690da782dd5219e3b841a0750f2ed3caf1957f35fc7400be6a1c58539eb6ec33241705cf384afd14d5004cba949ef802c486e3ccea9a59e39345"
         }
       ]
     },
@@ -487,6 +595,18 @@
         "noteSeedCommitment": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
         "sequence": "1",
         "previousPolicyDigest": null,
+        "publications": [
+          {
+            "bucket": "fixture-release-primary",
+            "region": "us-east-1",
+            "account": "111111111111"
+          },
+          {
+            "bucket": "fixture-release-mirror",
+            "region": "eu-north-1",
+            "account": "222222222222"
+          }
+        ],
         "validFromMs": "1795290719000",
         "expiresAtMs": "1795290721000",
         "targets": [
@@ -511,21 +631,21 @@
       "signatures": [
         {
           "key": "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
-          "signature": "0f09b99c64d8771ca2fc183b71a13f10f74ee8db6bbda432f0178b1fb720ba73388a254ca2b1312ac6ed7e0846ab9718ac8ca3228042ae19df62c5783853d265"
+          "signature": "9f1b96a64f01839875149f9cb8801033ba60cbe48f9c361d8479f7a3af76efe20e7e67b0bf96fc148803995887ab273add00132c38a74944958653705c585451"
         },
         {
           "key": "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
-          "signature": "0f09b99c64d8771ca2fc183b71a13f10f74ee8db6bbda432f0178b1fb720ba73388a254ca2b1312ac6ed7e0846ab9718ac8ca3228042ae19df62c5783853d265"
+          "signature": "9f1b96a64f01839875149f9cb8801033ba60cbe48f9c361d8479f7a3af76efe20e7e67b0bf96fc148803995887ab273add00132c38a74944958653705c585451"
         }
       ],
       "custodySignatures": [
         {
           "key": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
-          "signature": "2fee8e8a751e0c6d3bf4e124b7f740fee91685f673f79e5c038d3ea7c9e37c08357fd4a49e763107bf8cf55ba075660c5c6d3e951358c69846b2e2f193ba947e"
+          "signature": "d52ea2ac75f8ca6e72aba162b09571ff52bc62e126d38bc7649cd08acb2b48bc5c948776e94b2e8fbaae076c4a7e8b72f5d812fdb23ff8c3c57c4a16847bb12e"
         },
         {
           "key": "0451590b7a515140d2d784c85608668fdfef8c82fd1f5be52421554a0dc3d033ede0c17da8904a727d8ae1bf36bf8a79260d012f00d4d80888d1d0bb44fda16da4",
-          "signature": "92cda890ec7eaec9df1dfb1898da8db50f5d858fd15f017b8461ef4441eadadc3daf5910c647679c05b937bf90ff512c310ebfac3866b2fd561c14716463d10e"
+          "signature": "e5ac12d93c0a690da782dd5219e3b841a0750f2ed3caf1957f35fc7400be6a1c58539eb6ec33241705cf384afd14d5004cba949ef802c486e3ccea9a59e39345"
         }
       ]
     },
@@ -538,6 +658,18 @@
         "noteSeedCommitment": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
         "sequence": "1",
         "previousPolicyDigest": null,
+        "publications": [
+          {
+            "bucket": "fixture-release-primary",
+            "region": "us-east-1",
+            "account": "111111111111"
+          },
+          {
+            "bucket": "fixture-release-mirror",
+            "region": "eu-north-1",
+            "account": "222222222222"
+          }
+        ],
         "validFromMs": "1795290719000",
         "expiresAtMs": "1795290721000",
         "targets": [
@@ -562,17 +694,17 @@
       "signatures": [
         {
           "key": "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
-          "signature": "0f09b99c64d8771ca2fc183b71a13f10f74ee8db6bbda432f0178b1fb720ba73388a254ca2b1312ac6ed7e0846ab9718ac8ca3228042ae19df62c5783853d265"
+          "signature": "9f1b96a64f01839875149f9cb8801033ba60cbe48f9c361d8479f7a3af76efe20e7e67b0bf96fc148803995887ab273add00132c38a74944958653705c585451"
         },
         {
           "key": "047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
-          "signature": "0a2144ab7f00b0cb845787dc10c02aebf9a47268089e52ab6f059532de2a99551f720d75d411e5d03cf2423fe47af25dccc818fed8f5b1a035e5c5be5f3e267e"
+          "signature": "ddfb76c9d326b76117c4d04bac4148942520e7dbbfbe67b8f5d3c9de02d949286d86065cf08bc4dd8cd53491d8c6ff40741e49130092723e570400181dc3a19a"
         }
       ],
       "custodySignatures": [
         {
           "key": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
-          "signature": "2fee8e8a751e0c6d3bf4e124b7f740fee91685f673f79e5c038d3ea7c9e37c08357fd4a49e763107bf8cf55ba075660c5c6d3e951358c69846b2e2f193ba947e"
+          "signature": "d52ea2ac75f8ca6e72aba162b09571ff52bc62e126d38bc7649cd08acb2b48bc5c948776e94b2e8fbaae076c4a7e8b72f5d812fdb23ff8c3c57c4a16847bb12e"
         }
       ]
     },
@@ -585,6 +717,18 @@
         "noteSeedCommitment": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
         "sequence": "1",
         "previousPolicyDigest": null,
+        "publications": [
+          {
+            "bucket": "fixture-release-primary",
+            "region": "us-east-1",
+            "account": "111111111111"
+          },
+          {
+            "bucket": "fixture-release-mirror",
+            "region": "eu-north-1",
+            "account": "222222222222"
+          }
+        ],
         "validFromMs": "1795290719000",
         "expiresAtMs": "1795290721000",
         "targets": [
@@ -609,21 +753,21 @@
       "signatures": [
         {
           "key": "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
-          "signature": "77958077f2fed1cf1ee07f300f0b1dfde96b9630eabf45fa4fdf13ae8d04e143716c02447642609c20d1b72dbbb150fb196320067666b4bdc6fb061d2771628c"
+          "signature": "65bf88f8cabfa78295904299fac30e9570391b945935c412f47af1e5f54564ff4dc098e7c424e6d04d248aa2388679b3fe0db2e867d9f460c2a7d2b4638f9d71"
         },
         {
           "key": "047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
-          "signature": "280b6d1985eca6ea7f71df0eb38ab141f7e8b6b863e56b0856a8767ef9c06b0650b0c4d116b7cc2000f02db73ae4a21486f14b8fca53a5042f1ea3763e8829c0"
+          "signature": "a6bf930e16d53bb2d771958ba595cb41f8ccf90f6eed04443b365e44cd2d3f99068adbda6f348ae21cddce7af9b953837c2a5cf54bcc164e3692c983c5c65ac7"
         }
       ],
       "custodySignatures": [
         {
           "key": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
-          "signature": "4508c51c06f20b62ffad653ac306c440af8579cd981d3385c30299a63c996ff242f3d05dc003722e417b19438bdc0e6fe832c48da2b22ec3bffe6485bab21231"
+          "signature": "5a8fe18cec48d14c1eae5e276fe239a6530e7b4df800d0f84bfcfac9e59ebf06266360bdd29a995c49ddc74195f2772241ecd42fc2522edbc31e987d3917cb00"
         },
         {
           "key": "0451590b7a515140d2d784c85608668fdfef8c82fd1f5be52421554a0dc3d033ede0c17da8904a727d8ae1bf36bf8a79260d012f00d4d80888d1d0bb44fda16da4",
-          "signature": "726e53316c79eb39e4e7f799d4ed3aabdd73ca2ee46deed982c724b8a98f978328c74192865009ce14e42e426c08f09bc5d921b984db7805113b9afd3b7001c2"
+          "signature": "20a2fc8102e799a55bf0bbd6bcdfdd4baeedee49fa80a411fc4c6d22ca76299d28104d9b8c4dc0c1d644ec92beb6573a37e535dc64b0584d275d899ac5ca0d5d"
         }
       ]
     },
@@ -635,7 +779,19 @@
         "securityDomainId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "noteSeedCommitment": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
         "sequence": "2",
-        "previousPolicyDigest": "9d5fc55272c87581dfd8954dc74d0950521735c9c7d876f3c3576385bea68771",
+        "previousPolicyDigest": "5f2555ceea9e7b5fa3b3eef466ef06996d37c4bd6bc882307dfad03fecf8bb9d",
+        "publications": [
+          {
+            "bucket": "fixture-release-primary",
+            "region": "us-east-1",
+            "account": "111111111111"
+          },
+          {
+            "bucket": "fixture-release-mirror",
+            "region": "eu-north-1",
+            "account": "222222222222"
+          }
+        ],
         "validFromMs": "1795290719000",
         "expiresAtMs": "1795290721000",
         "targets": [
@@ -660,21 +816,21 @@
       "signatures": [
         {
           "key": "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
-          "signature": "ed5e41078ff5319b64c5f3e0189cad49aab76658b485edc99148bf1a4728a8c86fe1babbdbcaec2ff04e3acc7280e8eedb478d45981bb5e0ffd258243d611198"
+          "signature": "9be5c85ebf5a976dcea20a8174e0aded3372f9a664583fd7d837421d8dcee3b940dfc544f1cdd53c615330847676c5eb7c0dd3f95a5cea3169a8b4caff8b0fa4"
         },
         {
           "key": "047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
-          "signature": "a5c9b53f6644db75bad74eefba420c71381a54f5a2a4a8c5cf084b536d6a653578db9e2e1190ecd726a7da0c41d0b9a8e46bf540a4ff895de23714ab43b109dc"
+          "signature": "3ab05a8a72fc5f110b2efbe62bc3ef50e6159dd8db2d9dd926fcd7f265708bb45b1fc941dcfbd457b0293268367caf13e1b3714369e3bf12849eb9776c42e4ec"
         }
       ],
       "custodySignatures": [
         {
           "key": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
-          "signature": "b8350d02bdfac188454c1ad7513cb42db8ea97713f85f85917c96a33e2859175681b6a4324bb1f9d3be7e5ee0e0b20578deacf0e6716eb3e6ad77d7781260667"
+          "signature": "260d3c76a887a84cdc7a10e5e6d8d94e6e3e28129c60f3c235ded6f3d187092967aefb0370f6c7af18502daf1200d5a8ddfde2ec8dd1b59c567187abc6366d1e"
         },
         {
           "key": "0451590b7a515140d2d784c85608668fdfef8c82fd1f5be52421554a0dc3d033ede0c17da8904a727d8ae1bf36bf8a79260d012f00d4d80888d1d0bb44fda16da4",
-          "signature": "bdd51d64ac0aabd37c1b255b0fe9e1adfff392c10d6d0ec7eda950280a39322c113d401fb37f94e7f994e774d8d4809b8c161a6d10666762191c58a8a65b90b5"
+          "signature": "92b92eac16e9b10d7f39992594a37ebf4f8479a3c6af64c23ecd68b0dd78a0740fb84e1684ae39db8cc5f9b4b9dd22cfff41b5bdf7e932d240f3516bc298ddaf"
         }
       ]
     },
@@ -686,7 +842,19 @@
         "securityDomainId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "noteSeedCommitment": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
         "sequence": "3",
-        "previousPolicyDigest": "9abe6a3460734c13b08e03e460300a20c8d88ed8bebbebb49183b5e69bf4b652",
+        "previousPolicyDigest": "30d66b7273eb79c552a17c3ea78548fbf8879ecae900086445cf8ae76fdef078",
+        "publications": [
+          {
+            "bucket": "fixture-release-primary",
+            "region": "us-east-1",
+            "account": "111111111111"
+          },
+          {
+            "bucket": "fixture-release-mirror",
+            "region": "eu-north-1",
+            "account": "222222222222"
+          }
+        ],
         "validFromMs": "1795290719000",
         "expiresAtMs": "1795290721000",
         "targets": [],
@@ -696,21 +864,21 @@
       "signatures": [
         {
           "key": "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
-          "signature": "1515f682de63f297c063728b6e84710b62223fd736ac3734f94fc1966ad33b52699e582382c4a5d17ba6ef458b4ab97b0cef642319ec306b4c2b2e2567843b5d"
+          "signature": "59ec446097eaaee5ce2e6c65acd3246d8418817e98871701c94d4135aed3553e26253060d023127b423811efeb97e463ce0f1817a944a3f63ffdedba612e5895"
         },
         {
           "key": "047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
-          "signature": "97e4de72f3c126cc7362229543b107afcb9b5c3f8c2667b7a5a3292f4411867f48e9ea0106d4603ae8bed69e29f8de6cb9a0f96181a441e2228b393f6a618c02"
+          "signature": "34aede3852b4406d7d83c4c8cd0bf58f49333a3b6a161b37d4afac46a671a8f101e9add28fe756eaa05842ce503e6bb9d4da4a3e610e24c382e7aca91485d2b5"
         }
       ],
       "custodySignatures": [
         {
           "key": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
-          "signature": "295306755354004749f354831b53fe17fe60e2546fbb129b7a466478d42de24a19dd1a7ce3b6c1895f1ba4f94fa860cb8bd348256b299b45074fa4005d620824"
+          "signature": "496f7433f429dacd3a37b248ba022e21ac6d68318e78f74373de9f4a881fee906bd9fa17e27c06d96b6443017d2d9cce25f5fa153ce4a91622fdf10300f4a1c0"
         },
         {
           "key": "0451590b7a515140d2d784c85608668fdfef8c82fd1f5be52421554a0dc3d033ede0c17da8904a727d8ae1bf36bf8a79260d012f00d4d80888d1d0bb44fda16da4",
-          "signature": "99789ddaaaacb7f45046618208603cae5e3194e02eee2a92b1db144ff7408ed10d6ab53287818838872ddb6e5e7cf629d35b5d60f4a2db47c20845da17aa1721"
+          "signature": "d6b2d6ea88d3ee658c2bf244730c965d6ec43b2156c347b93321995b2ff128813311b4b64515cb1754ef6d9284b25175d8e0c732526156903be5f5aa1161a6ae"
         }
       ]
     },
@@ -722,7 +890,19 @@
         "securityDomainId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "noteSeedCommitment": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
         "sequence": "4",
-        "previousPolicyDigest": "8e7dc0e97e7dd75be6ae5bfe5f7eed9471208b56a2b0150ea17d617e9e65e414",
+        "previousPolicyDigest": "ca1eca8aed70780965d71d14fd65ce001dffb47ce4f553f7745610c28bf7c1e1",
+        "publications": [
+          {
+            "bucket": "fixture-release-primary",
+            "region": "us-east-1",
+            "account": "111111111111"
+          },
+          {
+            "bucket": "fixture-release-mirror",
+            "region": "eu-north-1",
+            "account": "222222222222"
+          }
+        ],
         "validFromMs": "1795290719000",
         "expiresAtMs": "1795290721000",
         "targets": [],
@@ -732,21 +912,21 @@
       "signatures": [
         {
           "key": "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
-          "signature": "4372b88dd829c0702516587a66de0f6a87928e11fac2e572fa0ac7393db8583d1921ae9a25127c771708feccde80068d4b38b5b934b0cabdf16ef0a25b674cc8"
+          "signature": "b543f6f7481ed69e65156db1bb36cfb84c35c97035d4296cc9bde064df46fcc24b4aedcf680d4c8c9141b43ec6db5fcc6db59e82763633aec0e33b2350ca1417"
         },
         {
           "key": "047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
-          "signature": "a79061a9a42af201192fc4458e94c40546430be5def572982a376f9fe9695cf90235f18c2ae2e5cb4c015c9543437827a660ba643166225932126d15f6274d4f"
+          "signature": "6eae7ade700055549354ee3b44981b2b1068d11d706c20df46465dfb3446fdd959da01ae7cdb29380dfff6614db62d0910224f5f16a27cd44f43677dba4dbc4b"
         }
       ],
       "custodySignatures": [
         {
           "key": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
-          "signature": "82cc8b7f0f02058beed9c4a39ce071e468182d0ca974374816f069b2f5c9b02001ce894535774557d230a424db3d8dc7bf45d076eaf61a552a437f51bb680ee0"
+          "signature": "cc1b9ad52cde5bc5817496c906c71df6b2395e52eceac3cf9253a5706abffa20351c6e1c3b45ab5d53d0e64651d2d5fdc8c4cc2da7ffd66d36f93bcd1debf53d"
         },
         {
           "key": "0451590b7a515140d2d784c85608668fdfef8c82fd1f5be52421554a0dc3d033ede0c17da8904a727d8ae1bf36bf8a79260d012f00d4d80888d1d0bb44fda16da4",
-          "signature": "47860dde660af4284e1451cb42bb7d45990b56e48c71cd51d642f4c3f18643f0161fe47756fac05eb24a9f2e9fd1453397ef828769bc6c7f70db30fb0e48ced4"
+          "signature": "33b0ec41837b71953f24eb96af111e9490732d37b7e2333fc85933c6bfe4e0d13860b0da2a7201a767b024401eaa2bb4c1d7e84b2a3b9df50f716473d6d0d85f"
         }
       ]
     },
@@ -758,7 +938,19 @@
         "securityDomainId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "noteSeedCommitment": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
         "sequence": "4",
-        "previousPolicyDigest": "b6c5db858d4e981dab353b74fa3da3eb5c2c6a237e8966b6ea822b3b6b918a61",
+        "previousPolicyDigest": "3ab6dff0c47d0bfc5239f4ab3c4672255f641fae6e1d3306c6d2c42daeb93fdc",
+        "publications": [
+          {
+            "bucket": "fixture-release-primary",
+            "region": "us-east-1",
+            "account": "111111111111"
+          },
+          {
+            "bucket": "fixture-release-mirror",
+            "region": "eu-north-1",
+            "account": "222222222222"
+          }
+        ],
         "validFromMs": "1795290719000",
         "expiresAtMs": "1795290721000",
         "targets": [],
@@ -768,21 +960,21 @@
       "signatures": [
         {
           "key": "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
-          "signature": "ced42372112920a3a88afc08eeccc0cdc2f2e5b24b76c9f70a55ff1d5719e3901bbe75d96b8a23c30bbfc5b204a52b54ffe557a994c6e40ff237c76dd255338b"
+          "signature": "5bd35f146baa98a58581a0545bb4436e4604116658c989cf7f6233843676753609383f1537e739feb39c70917303cd2d66467ea7675e245ef6f24f7929f89263"
         },
         {
           "key": "047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
-          "signature": "c9a6b5870cbedd98f9ec5eaa3937d7b4490ad85e93f63fc93b6159d612dc06b274c461ea90ff22924a2b72873a5c8d9a7980fcadc0f8df8ef4246d7c54df6d85"
+          "signature": "6c3a0505bdaec50fc62847339f668517827877c137c7aebcb2564370567b9ecf3fbf1b6035250ff9dd7db92cca57713871a1c7e281d662be7c1557fa89ac4c3b"
         }
       ],
       "custodySignatures": [
         {
           "key": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
-          "signature": "4b12b218bb63007dded87733f379f1b35c95cfd90886f96debe7edbfe543f6b2243719631277538de4956c00e22869756ee28ffe6a30d15bc45e9cb32da592f5"
+          "signature": "63ba6a7e9c070cf8ad8f017490a5a196ab46acfc944146268c3fa58ce207fb304352f1f7aca44a7fb977a5d8be40bc771111ecc74e0a097fe5fee2609edc092e"
         },
         {
           "key": "0451590b7a515140d2d784c85608668fdfef8c82fd1f5be52421554a0dc3d033ede0c17da8904a727d8ae1bf36bf8a79260d012f00d4d80888d1d0bb44fda16da4",
-          "signature": "b9f3a0a53af5e86a4731cb814645420ae3f9d0e3d665d1d8dc0d7f40b3b2997969763a5607b0c8e9eea293e73abbf802ac6c98305380e573ab46448b54b49a50"
+          "signature": "f5da7284169f98e74cb79fa7769acaaeefd3075cb660c60ee9d6d576d221bdd51bd7eef984e03cac3604f043dbc5dc6e9ac591a63abe94caab1b787acdfe2054"
         }
       ]
     }
