@@ -9,6 +9,7 @@ use p256::{
     ecdsa::{signature::hazmat::PrehashSigner, signature::Signer as _, SigningKey},
     SecretKey,
 };
+use reqwest::StatusCode;
 use serde_json::{json, Value};
 use solana_keypair::Keypair;
 use solana_signer::Signer;
@@ -167,16 +168,12 @@ impl crate::AsyncRpc for PaymentRpc {
     }
 }
 
-#[tokio::test]
-async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let endpoint = format!("http://{}/nitro/", listener.local_addr().unwrap());
-    listener.set_nonblocking(true).unwrap();
-    let listener = tokio::net::TcpListener::from_std(listener).unwrap();
-    let fixture: Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
-    let directory = tempfile::tempdir().unwrap();
-    let store = Arc::new(UnixNitroCheckpointStore::open(directory.path()).unwrap());
-    let now = now_ms().unwrap();
+fn accepted_boot(
+    fixture: &Value,
+    endpoint: &str,
+    now: u64,
+    store: &UnixNitroCheckpointStore,
+) -> (Arc<NitroTrust>, Arc<Session>) {
     let mut active = fixture["envelopes"]["genesis"].clone();
     active["policy"]["validFromMs"] = json!((now - 1000).to_string());
     active["policy"]["expiresAtMs"] = json!((now + 60_000).to_string());
@@ -188,13 +185,33 @@ async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
         &canonical(&active["policy"])
     ])));
     let trust = Arc::new(NitroTrust::from_json(&json(&pins).unwrap()).unwrap());
-    let service = NitroDecryptionService::new(trust.clone(), store.clone()).unwrap();
     let active = json(&active).unwrap();
-    let policy =
-        Arc::new(accept_published_nitro_policy(&trust, [&active; 2], &*store, now).unwrap());
+    let policy = Arc::new(accept_published_nitro_policy(&trust, [&active; 2], store, now).unwrap());
+    // Transport tests start after attestation. The AWS verifier has its own evidence fixture.
+    let exchange: Value = serde_json::from_str(EXCHANGE_FIXTURE).unwrap();
+    let session = Arc::new(Session {
+        policy,
+        replica: fixture_replica(&exchange),
+        endpoint: endpoint.parse().unwrap(),
+        expires_at_ms: now + 60_000,
+    });
+    (trust, session)
+}
+
+#[tokio::test]
+async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/nitro/", listener.local_addr().unwrap());
+    let fixture: Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(UnixNitroCheckpointStore::open(directory.path()).unwrap());
+    let now = now_ms().unwrap();
+    let (trust, session) = accepted_boot(&fixture, &endpoint, now, &store);
+    let service = NitroDecryptionService::new(trust.clone(), store.clone()).unwrap();
     let mut revocation = fixture["envelopes"]["genesis"].clone();
     revocation["policy"]["sequence"] = json!("2");
-    revocation["policy"]["previousPolicyDigest"] = json!(hex::encode(policy.checkpoint().digest));
+    revocation["policy"]["previousPolicyDigest"] =
+        json!(hex::encode(session.policy.checkpoint().digest));
     revocation["policy"]["action"] = json!("revoke");
     revocation["policy"]["targets"] = json!([]);
     revocation["policy"]["validFromMs"] = json!((now - 1000).to_string());
@@ -202,15 +219,7 @@ async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
     sign_policy(&mut revocation);
     let revocation = json(&revocation).unwrap();
 
-    // The transport fixture starts after attestation. The Nitro verifier tests
-    // authenticate a separate fixture captured from a real AWS enclave.
-    let fixture: Value = serde_json::from_str(EXCHANGE_FIXTURE).unwrap();
-    service.0.cache.lock().await.session = Some(Arc::new(Session {
-        policy,
-        replica: fixture_replica(&fixture),
-        endpoint: endpoint.parse().unwrap(),
-        expires_at_ms: now + 60_000,
-    }));
+    service.0.cache.lock().await.session = Some(session);
 
     let signer = Arc::new(Keypair::new_from_array([21; 32]));
     let owner = signer.pubkey();
@@ -338,5 +347,60 @@ async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
         keys.decrypt_async(&[request]).await,
         Err(NitroDecryptionError::Policy(NitroPolicyError::Rollback))
     ));
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn completed_exchange_evicts_failed_boot_and_keeps_rate_limited_boot() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/nitro/", listener.local_addr().unwrap());
+    let fixture: Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(UnixNitroCheckpointStore::open(directory.path()).unwrap());
+    let (trust, session) = accepted_boot(&fixture, &endpoint, now_ms().unwrap(), &store);
+    let service = NitroDecryptionService::new(trust, store).unwrap();
+    service.0.cache.lock().await.session = Some(session.clone());
+
+    let statuses = [
+        StatusCode::TOO_MANY_REQUESTS,
+        StatusCode::SERVICE_UNAVAILABLE,
+    ];
+    let server = tokio::spawn(async move {
+        for status in statuses {
+            let (socket, _) = tokio::time::timeout(Duration::from_secs(4), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            tokio::task::spawn_blocking(move || {
+                let mut socket = socket.into_std().unwrap();
+                socket.set_nonblocking(false).unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(4)))
+                    .unwrap();
+                read_http(&socket);
+                write!(
+                    socket,
+                    "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
+            })
+            .await
+            .unwrap();
+        }
+    });
+
+    let owner = Keypair::new_from_array([21; 32]).pubkey();
+    for status in statuses {
+        let result = service
+            .0
+            .exchange(&session, Operation::public_keys(owner), None)
+            .await;
+        assert!(matches!(result, Err(NitroDecryptionError::Http(actual)) if actual == status));
+        let cache = service.0.cache.lock().await;
+        assert_eq!(
+            cache.session.is_some(),
+            status == StatusCode::TOO_MANY_REQUESTS
+        );
+    }
     server.await.unwrap();
 }

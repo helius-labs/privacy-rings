@@ -210,7 +210,6 @@ impl NitroDecryptionService {
                     });
                 }
                 Err(error) if retry && recoverable(&error) => {
-                    self.0.forget(&session).await;
                     session = self.0.session().await?;
                     retry = false;
                 }
@@ -252,12 +251,7 @@ impl NitroDecryptionService {
                 nullifier_secret,
                 plaintexts,
             }) if plaintexts.len() == items.len() => (nullifier_secret, plaintexts),
-            Err(error) => {
-                if recoverable(&error) {
-                    self.0.forget(&session).await;
-                }
-                return Err(error);
-            }
+            Err(error) => return Err(error),
             _ => return Err(NitroDecryptionError::Protocol),
         };
         let mut secret = Zeroizing::new([0; 31]);
@@ -412,6 +406,19 @@ impl Service {
     }
 
     async fn exchange(
+        &self,
+        session: &Arc<Session>,
+        operation: Operation,
+        signer: Option<(Pubkey, Arc<Owner>)>,
+    ) -> Result<OperationResult, NitroDecryptionError> {
+        let result = self.exchange_on_boot(session, operation, signer).await;
+        if result.as_ref().is_err_and(recoverable) {
+            self.forget(session).await;
+        }
+        result
+    }
+
+    async fn exchange_on_boot(
         &self,
         session: &Session,
         operation: Operation,

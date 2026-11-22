@@ -16,6 +16,7 @@ Run `cargo test -p spr-client --lib nitro_` and
 | Owner approval rechecks the checkpoint after waiting for the signer slot. The wallet stops waiting when the attested session expires. A stalled signer keeps its slot until it returns, and the async runtime can shut down while it is busy. | [Signer queue, deadline and shutdown](nitro_owner.rs) |
 | Wrong response keys and altered frames fail authentication. The wire format matches the service SDK. | [Envelope vectors](nitro_envelope.rs) |
 | A registry miss can use service keys only on the service’s Solana network. Both async and blocking lookup reject a devnet service on a mainnet RPC. | [Wallet transport](nitro_transport.rs) |
+| A retryable exchange failure discards the failed cached boot even on the last attempt. A rate-limited exchange returns HTTP 429 and preserves the boot. | [Exchange cache](nitro_transport.rs) |
 | The wallet can look up keys and recover a note through the encrypted endpoint. It refuses another viewing key, an oversized item and a reply to a request revoked in flight. | [Wallet transport](nitro_transport.rs) |
 
 The wallet transport test uses a loopback peer and starts with a verified-session

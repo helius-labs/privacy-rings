@@ -82,7 +82,9 @@ Solana network, release, batch and one-time response key. The client checks
 the reply's boot signature, request and ciphertext digests, and current
 checkpoint before opening it. Owner approval must finish within the session's
 remaining validity. A stalled synchronous signer holds the client's signer slot
-until it returns. A recovery-only release permits opening existing notes and
+until it returns. A retryable exchange failure drops the failed session, even
+after the lookup's one retry. HTTP 429 reaches the caller and preserves the
+session. A recovery-only release permits opening existing notes and
 rejects new payment lookups. [Test invariants](tests/NITRO.md)
 
 ## Proving and submitting
