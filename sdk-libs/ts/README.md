@@ -335,8 +335,10 @@ Ed25519 owner. It reads the registry again before using the service keys.
 A missing record without a provider returns `WALLET_RECIPIENT_NOT_REGISTERED`. Use
 `buildWithdrawalTransaction` for a public payment.
 
-The same provider works with deposits and multi-recipient transfers. Repeated
-payments to the same owner in a batch share one lookup. Registration directs
+The same provider works with deposits and multi-recipient transfers. A batch
+looks up each owner once per check. Before returning a transaction, the
+builders look up service-derived addresses again and require the same keys.
+A change or refusal during preparation fails the build. Registration directs
 new payments to the onchain keys. Open the service
 identity through the verified client to recover a note sent before
 registration.

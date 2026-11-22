@@ -202,8 +202,8 @@ export async function buildDepositTransaction(
 ): Promise<Transaction> {
   try {
     input.setupInstructions?.forEach(checkedSetupInstruction);
-    const resolveRecipient = paymentRecipientResolver(input, context);
-    const { address: recipient } = await resolveRecipient(input.recipient);
+    const { resolve, revalidate } = paymentRecipientResolver(input, context);
+    const { address: recipient } = await resolve(input.recipient);
     const depositor = input.depositor ?? input.feePayer;
     const tree = input.tree ?? input.client.tree;
     const asset = input.asset ?? SOL_MINT;
@@ -235,6 +235,7 @@ export async function buildDepositTransaction(
       await deposit.instruction(tree, depositor),
     ];
     const lifetime = await input.client.getLatestBlockhash(context);
+    await revalidate();
     return compileUnsignedTransaction({
       feePayer: input.feePayer,
       lifetime,

@@ -1067,6 +1067,45 @@ describe("unsigned public transaction builders", () => {
     expect(wallet.utxos()[0]?.spent).toBe(false);
   });
 
+  it.each(["single", "multi"] as const)(
+    "checks a service recipient again after assembling a %s transfer and releases inputs on failure",
+    async (kind) => {
+      const keypair = spendingKeypair();
+      const wallet = fundedWallet(keypair, [100n]);
+      const recipient = ShieldedKeypair.generate().shieldedAddress();
+      const replacement = ShieldedKeypair.generate().shieldedAddress();
+      const changed = ShieldedAddress.fromPublicKeys(
+        recipient.signingPublicKey,
+        replacement.nullifierPublicKey,
+        replacement.viewingPublicKey,
+      );
+      const { client, assemble } = capturePrivateBuild();
+      const genesisHash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
+      const address = vi
+        .fn(async () => recipient)
+        .mockResolvedValueOnce(recipient)
+        .mockResolvedValueOnce(changed);
+      const input = {
+        client: { ...client, getGenesisHash: async () => genesisHash },
+        wallet,
+        keys: localKeys(keypair),
+        feePayer: keypair.shieldedAddress().solanaAddress(),
+        decryptionService: { address, genesisHash },
+      };
+      const payment = { recipient: recipient.solanaAddress(), amount: 25n };
+      const build = () =>
+        kind === "single"
+          ? buildTransferTransaction({ ...input, ...payment })
+          : buildMultiTransferTransaction({ ...input, payments: [payment, payment] });
+      await expect(build()).rejects.toMatchObject({
+        causeCode: "WALLET_DECRYPTION_RECIPIENT_MISMATCH",
+      });
+      expect(assemble).toHaveBeenCalledOnce();
+      expect(address).toHaveBeenCalledTimes(2);
+      await expect(build()).resolves.toBeDefined();
+    },
+  );
+
   it("applies split defaults without mutating the wallet", async () => {
     const keypair = spendingKeypair();
     const payer = keypair.shieldedAddress().solanaAddress();

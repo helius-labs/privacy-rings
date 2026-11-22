@@ -215,10 +215,17 @@ impl NitroDecryptionService {
     ) -> Result<ShieldedAddress, NitroDecryptionError> {
         wire::owner_key(owner)?;
         let result = retry_public_keys(async || {
-            let session = self.0.session().await?;
-            if accepts_payment && session.policy.checkpoint().recovery_only {
-                self.0.require_current(&session).await?;
-                return Err(NitroDecryptionError::RecoveryOnly);
+            let (session, cached) = self.0.session().await?;
+            if accepts_payment {
+                let published = if cached {
+                    Some(self.0.policies.read().await?)
+                } else {
+                    None
+                };
+                let policy = published.as_ref().unwrap_or(&session.policy);
+                if policy.checkpoint().recovery_only {
+                    return Err(NitroDecryptionError::RecoveryOnly);
+                }
             }
             self.0
                 .exchange(&session, Operation::public_keys(owner), None)
@@ -262,7 +269,7 @@ impl NitroDecryptionService {
         {
             return Err(NitroDecryptionError::RequestTooLarge);
         }
-        let session = self.0.session().await?;
+        let (session, _) = self.0.session().await?;
         let now = now_ms()?;
         let expires_at_ms = session.approval_expires_at(now);
         if expires_at_ms <= now {
@@ -361,11 +368,11 @@ async fn owner_call<T: Send + 'static>(
 mod owner_tests;
 
 impl Service {
-    async fn session(&self) -> Result<Arc<Session>, NitroDecryptionError> {
+    async fn session(&self) -> Result<(Arc<Session>, bool), NitroDecryptionError> {
         let mut cache = self.cache.lock().await;
         if let Some(session) = &cache.session {
             if self.require_current(session).await.is_ok() {
-                return Ok(session.clone());
+                return Ok((session.clone(), true));
             }
         }
 
@@ -379,7 +386,7 @@ impl Service {
             .map_err(|_| NitroDecryptionError::SessionExpired)??;
         cache.next_target = index + 1;
         cache.session = Some(session.clone());
-        Ok(session)
+        Ok((session, false))
     }
 
     async fn connect(

@@ -182,7 +182,7 @@ fn accepted_boot(
     endpoint: &str,
     now: u64,
     store: &UnixNitroCheckpointStore,
-) -> (Arc<NitroTrust>, Arc<Session>) {
+) -> (Arc<NitroTrust>, Arc<Session>, Vec<u8>) {
     let mut active = fixture["envelopes"]["genesis"].clone();
     active["policy"]["validFromMs"] = json!((now - 1000).to_string());
     active["policy"]["expiresAtMs"] = json!((now + 60_000).to_string());
@@ -207,7 +207,34 @@ fn accepted_boot(
             deadline: Instant::now() + Duration::from_millis(SESSION_MS),
         },
     });
-    (trust, session)
+    (trust, session, active)
+}
+
+#[tokio::test]
+async fn a_cached_boot_cannot_resolve_payments_under_a_new_recovery_policy() {
+    let fixture: Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(UnixNitroCheckpointStore::open(directory.path()).unwrap());
+    let now = now_ms().unwrap();
+    let (trust, session, old) = accepted_boot(&fixture, "http://127.0.0.1/", now, &store);
+    let service = NitroDecryptionService::new(trust.clone(), store.clone()).unwrap();
+    let mut recovery: Value = serde_json::from_slice(&old).unwrap();
+    recovery["policy"]["sequence"] = json!("2");
+    recovery["policy"]["previousPolicyDigest"] =
+        json!(hex::encode(session.policy.checkpoint().digest));
+    recovery["policy"]["recoveryOnly"] = json!(true);
+    sign_policy(&mut recovery);
+    *service.0.policies.test_heads.lock().unwrap() = Some([json(&recovery).unwrap(), old]);
+    service.0.cache.lock().await.session = Some(session.clone());
+    let owner = Keypair::new_from_array([21; 32]).pubkey();
+
+    assert!(matches!(
+        service.address(owner).await,
+        Err(NitroDecryptionError::RecoveryOnly)
+    ));
+    let checkpoint = store.current(&trust).unwrap().unwrap();
+    assert_eq!(checkpoint.sequence, 2);
+    assert!(checkpoint.recovery_only);
 }
 
 #[tokio::test(start_paused = true)]
@@ -215,7 +242,8 @@ async fn cached_policy_expires_by_monotonic_time_even_if_wall_time_remains_valid
     let fixture: Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(UnixNitroCheckpointStore::open(directory.path()).unwrap());
-    let (trust, session) = accepted_boot(&fixture, "http://127.0.0.1/", now_ms().unwrap(), &store);
+    let (trust, session, _) =
+        accepted_boot(&fixture, "http://127.0.0.1/", now_ms().unwrap(), &store);
     let service = NitroDecryptionService::new(trust, store).unwrap();
     tokio::time::advance(Duration::from_millis(SESSION_MS - 1)).await;
     service.0.require_current(&session).await.unwrap();
@@ -262,7 +290,7 @@ async fn checkpoint_wait_cannot_dispatch_a_probe_after_the_freshness_deadline() 
     let fixture: Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
     let directory = tempfile::tempdir().unwrap();
     let store = UnixNitroCheckpointStore::open(directory.path()).unwrap();
-    let (trust, session) = accepted_boot(&fixture, &endpoint, now_ms().unwrap(), &store);
+    let (trust, session, _) = accepted_boot(&fixture, &endpoint, now_ms().unwrap(), &store);
     let (entered, waiting) = tokio::sync::oneshot::channel();
     let (release, released) = mpsc::channel();
     let store = Arc::new(StalledCheckpoint {
@@ -330,8 +358,9 @@ async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(UnixNitroCheckpointStore::open(directory.path()).unwrap());
     let now = now_ms().unwrap();
-    let (trust, session) = accepted_boot(&fixture, &endpoint, now, &store);
+    let (trust, session, active) = accepted_boot(&fixture, &endpoint, now, &store);
     let service = NitroDecryptionService::new(trust.clone(), store.clone()).unwrap();
+    *service.0.policies.test_heads.lock().unwrap() = Some([active.clone(), active]);
     let mut revocation = fixture["envelopes"]["genesis"].clone();
     revocation["policy"]["sequence"] = json!("2");
     revocation["policy"]["previousPolicyDigest"] =
@@ -493,7 +522,7 @@ async fn completed_exchange_evicts_failed_boot_and_keeps_rate_limited_boot() {
     let fixture: Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(UnixNitroCheckpointStore::open(directory.path()).unwrap());
-    let (trust, session) = accepted_boot(&fixture, &endpoint, now_ms().unwrap(), &store);
+    let (trust, session, _) = accepted_boot(&fixture, &endpoint, now_ms().unwrap(), &store);
     let service = NitroDecryptionService::new(trust, store).unwrap();
     service.0.cache.lock().await.session = Some(session.clone());
 

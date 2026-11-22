@@ -126,6 +126,35 @@ it("builds the same SOL deposit with a service-resolved recipient as with explic
   expect(getAccount).toHaveBeenCalledTimes(2);
   expect(getGenesisHash).toHaveBeenCalledOnce();
   expect(address).toHaveBeenCalledWith(recipient.solanaAddress(), undefined);
+  expect(address).toHaveBeenCalledTimes(2);
+});
+
+it("refuses to return a deposit when payment lookup closes after preparation", async () => {
+  const recipient = ShieldedKeypair.generate().shieldedAddress();
+  const genesisHash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
+  const base = depositClient();
+  let prepared = false;
+  const address = vi.fn(async () => {
+    if (prepared) throw new Error("recovery-only policy");
+    return recipient;
+  });
+  await expect(
+    buildDepositTransaction({
+      client: {
+        ...base,
+        getGenesisHash: async () => genesisHash,
+        getLatestBlockhash: async () => {
+          prepared = true;
+          return base.getLatestBlockhash();
+        },
+      },
+      recipient: recipient.solanaAddress(),
+      feePayer: PAYER,
+      amount: 5n,
+      decryptionService: { address, genesisHash },
+    }),
+  ).rejects.toMatchObject({ code: "WALLET_BUILD_DEPOSIT" });
+  expect(address).toHaveBeenCalledTimes(2);
 });
 
 it("refuses service keys for another chain before building a deposit", async () => {

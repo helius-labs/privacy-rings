@@ -100,7 +100,13 @@ export async function buildTransferTransaction(
       },
       context,
     );
-    return await buildAuthorizedTransaction(input, created.transaction, [], context);
+    return await buildAuthorizedTransaction(
+      input,
+      created.transaction,
+      [],
+      context,
+      created.revalidateRecipients,
+    );
   } catch (cause) {
     throw wrapWalletError("WALLET_BUILD_TRANSFER", cause);
   }
@@ -126,7 +132,13 @@ export async function buildMultiTransferTransaction(
       },
       context,
     );
-    return await buildAuthorizedTransaction(input, created.transaction, [], context);
+    return await buildAuthorizedTransaction(
+      input,
+      created.transaction,
+      [],
+      context,
+      created.revalidateRecipients,
+    );
   } catch (cause) {
     throw wrapWalletError("WALLET_BUILD_TRANSFER", cause);
   }
@@ -181,6 +193,7 @@ async function buildAuthorizedTransaction(
   transaction: Parameters<typeof authorizePrivateTransaction>[0],
   setupInstructions: readonly Instruction[],
   context: RequestContext | undefined,
+  revalidateRecipients?: () => Promise<void>,
 ): Promise<Transaction> {
   try {
     const authorized = await authorizePrivateTransaction(
@@ -192,7 +205,7 @@ async function buildAuthorizedTransaction(
       context,
       input.owner !== undefined,
     );
-    return await withProofDataRetry(
+    const assembled = await withProofDataRetry(
       input.client.proofDataSource,
       (attempt) =>
         input.client.assembleAuthorizedPrivateTransaction(
@@ -206,6 +219,8 @@ async function buildAuthorizedTransaction(
         ),
       context,
     );
+    await revalidateRecipients?.();
+    return assembled;
   } catch (cause) {
     const reservationId = transaction._reservationId();
     if (reservationId !== undefined) input.wallet._releaseReservation(reservationId);

@@ -154,6 +154,7 @@ export type TransferRecipient =
 export interface CreatedTransfer {
   readonly transaction: UnsignedPrivateTransaction;
   readonly recipient: TransferRecipient;
+  readonly revalidateRecipients: () => Promise<void>;
 }
 
 export type MultiTransferParams = RecipientLookup<Pick<ChainReader, "getAccount">> & {
@@ -167,6 +168,7 @@ export interface CreatedMultiTransfer {
   readonly transaction: UnsignedPrivateTransaction;
   /** In payment order. */
   readonly recipients: readonly TransferRecipient[];
+  readonly revalidateRecipients: () => Promise<void>;
 }
 
 export interface CreatedWithdrawal {
@@ -327,11 +329,12 @@ export async function createTransfer(
 ): Promise<CreatedTransfer> {
   u64Amount(params.amount);
   try {
-    const resolveRecipient = paymentRecipientResolver(params, context);
-    const recipient = await resolveRecipient(params.recipient);
+    const { resolve, revalidate } = paymentRecipientResolver(params, context);
+    const recipient = await resolve(params.recipient);
     return Object.freeze({
       transaction: createPayments(params, [{ recipient, amount: params.amount }]),
       recipient,
+      revalidateRecipients: revalidate,
     });
   } catch (cause) {
     throw wrapWalletError("WALLET_CREATE_TRANSFER", cause);
@@ -369,16 +372,17 @@ export async function createMultiTransfer(
     });
     u64Amount(total);
     // Every lookup finishes before a UTXO is reserved, so a refusal reserves nothing.
-    const resolveRecipient = paymentRecipientResolver(params, context);
+    const { resolve, revalidate } = paymentRecipientResolver(params, context);
     const resolved = await Promise.all(
       params.payments.map(async (payment) => ({
-        recipient: await resolveRecipient(payment.recipient),
+        recipient: await resolve(payment.recipient),
         amount: payment.amount,
       })),
     );
     return Object.freeze({
       transaction: createPayments(params, resolved),
       recipients: Object.freeze(resolved.map((payment) => payment.recipient)),
+      revalidateRecipients: revalidate,
     });
   } catch (cause) {
     throw wrapWalletError("WALLET_CREATE_TRANSFER", cause);

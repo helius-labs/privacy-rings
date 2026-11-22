@@ -334,6 +334,8 @@ export function paymentRecipientResolver(
   context?: RequestContext,
 ) {
   let genesis: Promise<string> | undefined;
+  const service = input.decryptionService;
+  const fallbacks = new Map<Address, ShieldedAddress>();
   const networkMismatch = () => new WalletError("WALLET_DECRYPTION_NETWORK_MISMATCH");
   function requireActive(): void {
     if (context?.signal?.aborted) throw new WalletError("WALLET_RECIPIENT_LOOKUP_ABORTED");
@@ -349,10 +351,9 @@ export function paymentRecipientResolver(
     }
     const registered = await readRegistration(client);
     if (registered) return registered;
-    if (input.decryptionService === undefined) {
+    if (service === undefined) {
       throw new WalletError("WALLET_RECIPIENT_NOT_REGISTERED", { details: { recipient } });
     }
-    const service = input.decryptionService;
     const hash = await (genesis ??= input.client.getGenesisHash(context));
     requireActive();
     if (wireDecoder(networkMismatch).address(hash, "getGenesisHash") !== service.genesisHash) {
@@ -367,16 +368,13 @@ export function paymentRecipientResolver(
     ) {
       throw new WalletError("WALLET_DECRYPTION_RECIPIENT_MISMATCH");
     }
-    return (
-      (await readRegistration(client)) ?? {
-        kind: "shielded" as const,
-        address,
-        viewTag: address.confidentialViewTag(),
-      }
-    );
+    const latestRegistration = await readRegistration(client);
+    if (latestRegistration) return latestRegistration;
+    fallbacks.set(recipient, address);
+    return { kind: "shielded" as const, address, viewTag: address.confidentialViewTag() };
   }
   const lookups = new Map<Address, ReturnType<typeof resolveOwner>>();
-  return async (recipient: Address | ShieldedAddress) => {
+  async function resolve(recipient: Address | ShieldedAddress) {
     if (recipient instanceof ShieldedAddress) {
       return {
         kind: "shielded" as const,
@@ -390,7 +388,24 @@ export function paymentRecipientResolver(
       lookups.set(recipient, lookup);
     }
     return lookup;
-  };
+  }
+  async function revalidate(): Promise<void> {
+    if (service === undefined || fallbacks.size === 0) return;
+    requireActive();
+    await Promise.all(
+      [...fallbacks].map(async ([owner, original]) => {
+        const current = await service.address(owner, context);
+        requireActive();
+        if (
+          !(current instanceof ShieldedAddress) ||
+          !equalBytes(current.toBytes(), original.toBytes())
+        ) {
+          throw new WalletError("WALLET_DECRYPTION_RECIPIENT_MISMATCH");
+        }
+      }),
+    );
+  }
+  return { resolve, revalidate };
 }
 
 export async function resolveRegisteredAddress(
