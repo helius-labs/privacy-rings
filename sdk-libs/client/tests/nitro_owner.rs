@@ -1,4 +1,4 @@
-use std::{pin::pin, sync::mpsc};
+use std::{cell::Cell, future::ready, pin::pin, sync::mpsc};
 
 use super::*;
 
@@ -18,7 +18,7 @@ fn timed_out_signer_holds_its_slot_without_blocking_runtime_shutdown() {
                 .unwrap();
             runtime.block_on(async {
                 let (started, entered) = mpsc::channel();
-                let mut running = pin!(owner_call(&worker, budget, move || {
+                let mut running = pin!(owner_call(&worker, budget, ready(Ok(())), move || {
                     started.send(()).unwrap();
                     wait.recv().unwrap();
                     Ok(())
@@ -31,7 +31,7 @@ fn timed_out_signer_holds_its_slot_without_blocking_runtime_shutdown() {
                     Err(NitroDecryptionError::OwnerTimeout)
                 ));
 
-                let mut blocked = pin!(owner_call::<()>(&worker, budget, || {
+                let mut blocked = pin!(owner_call::<()>(&worker, budget, ready(Ok(())), || {
                     panic!("a stalled signer still owns the permit")
                 }));
                 assert!(futures::poll!(&mut blocked).is_pending());
@@ -55,8 +55,39 @@ fn timed_out_signer_holds_its_slot_without_blocking_runtime_shutdown() {
         .unwrap();
     assert_eq!(
         runtime
-            .block_on(owner_call(&worker, Duration::from_secs(5), || Ok(42)))
+            .block_on(owner_call(
+                &worker,
+                Duration::from_secs(5),
+                ready(Ok(())),
+                || Ok(42)
+            ))
             .unwrap(),
         42
     );
+}
+
+#[tokio::test]
+async fn queued_signer_checks_policy_after_acquiring_its_slot() {
+    let worker = Arc::new(Semaphore::new(1));
+    let previous = worker.acquire().await.unwrap();
+    let revoked = Cell::new(false);
+    let mut approval = pin!(owner_call::<()>(
+        &worker,
+        Duration::from_secs(5),
+        async {
+            if revoked.get() {
+                return Err(NitroPolicyError::Rollback.into());
+            }
+            Ok(())
+        },
+        || panic!("the queued approval must never reach the signer"),
+    ));
+    assert!(futures::poll!(&mut approval).is_pending());
+    revoked.set(true);
+    drop(previous);
+    assert!(matches!(
+        approval.await,
+        Err(NitroDecryptionError::Policy(NitroPolicyError::Rollback))
+    ));
+    assert_eq!(worker.available_permits(), 1);
 }

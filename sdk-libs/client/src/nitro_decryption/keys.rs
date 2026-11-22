@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{future::ready, sync::Arc};
 
 use p256::elliptic_curve::subtle::ConstantTimeEq;
 use solana_pubkey::Pubkey;
@@ -23,11 +23,16 @@ impl NitroDecryptionService {
     ) -> Result<NitroDecryptionKeys, NitroDecryptionError> {
         let owner = {
             let signer = signer.clone();
-            owner_call(&self.0.owner_work, OWNER_TIMEOUT, move || {
-                signer
-                    .try_pubkey()
-                    .map_err(|_| NitroDecryptionError::InvalidOwner)
-            })
+            owner_call(
+                &self.0.owner_work,
+                OWNER_TIMEOUT,
+                ready(Ok(())),
+                move || {
+                    signer
+                        .try_pubkey()
+                        .map_err(|_| NitroDecryptionError::InvalidOwner)
+                },
+            )
             .await?
         };
         let address = self.address_with_retry(owner, false).await?;

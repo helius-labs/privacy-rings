@@ -5,6 +5,7 @@ mod keys;
 mod wire;
 
 use std::{
+    future::Future,
     sync::{Arc, OnceLock},
     time::Duration,
 };
@@ -287,6 +288,7 @@ fn recoverable(error: &NitroDecryptionError) -> bool {
 async fn owner_call<T: Send + 'static>(
     worker: &Arc<Semaphore>,
     timeout: Duration,
+    check: impl Future<Output = Result<(), NitroDecryptionError>>,
     call: impl FnOnce() -> Result<T, NitroDecryptionError> + Send + 'static,
 ) -> Result<T, NitroDecryptionError> {
     let deadline = Instant::now() + timeout;
@@ -294,6 +296,9 @@ async fn owner_call<T: Send + 'static>(
         .await
         .map_err(|_| NitroDecryptionError::OwnerTimeout)?
         .map_err(|_| NitroDecryptionError::Signature)?;
+    timeout_at(deadline, check)
+        .await
+        .map_err(|_| NitroDecryptionError::OwnerTimeout)??;
     let (reply, result) = oneshot::channel();
     // Keep a stalled device off Tokio's blocking pool so it cannot hold up runtime shutdown.
     let runtime = tokio::runtime::Handle::current();
@@ -438,14 +443,19 @@ impl Service {
                 .min(session.policy.expires_at_ms())
                 .min(session.replica.valid_through_ms.saturating_add(1));
             let timeout = Duration::from_millis(expires_at.saturating_sub(now_ms()?));
-            let signature = owner_call(&self.owner_work, timeout, move || {
-                let signature: [u8; 64] = signer
-                    .try_sign_message(&message)
-                    .map_err(|_| NitroDecryptionError::Signature)?
-                    .into();
-                wire::verify_owner(&key, &message, &signature)?;
-                Ok(signature)
-            })
+            let signature = owner_call(
+                &self.owner_work,
+                timeout,
+                self.require_current(session),
+                move || {
+                    let signature: [u8; 64] = signer
+                        .try_sign_message(&message)
+                        .map_err(|_| NitroDecryptionError::Signature)?
+                        .into();
+                    wire::verify_owner(&key, &message, &signature)?;
+                    Ok(signature)
+                },
+            )
             .await?;
             request.set_signature(&signature);
         }
