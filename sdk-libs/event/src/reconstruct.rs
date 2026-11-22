@@ -20,6 +20,12 @@ use spr_interface::instruction::instruction_data::{
 
 use crate::{instruction::ParsedInstruction, EventDecodeError};
 
+/// `input_queue_seq` of an input whose nullifier was never queued: a transact
+/// with a payer-funded circuit gives each input a permanent nullifier PDA
+/// instead. No queue sequence reaches this value, so an indexer can tell such
+/// an input apart and must not treat it as a queue element.
+pub const NOT_QUEUED: u64 = u64::MAX;
+
 /// Rebuild the [`GeneralEvent`] of one `EMIT_EVENT` self-CPI. `source` is the
 /// instruction that emitted it (its data and account list are the second input
 /// of the reconstruction); `emit_event_data` starts with [`tag::EMIT_EVENT`].
@@ -88,7 +94,11 @@ pub fn transact_general_event(
             .ok_or(EventDecodeError::MissingSettlementAccount)?,
     )?;
 
-    let inputs = inputs_from_tree_indexes(&event.input_trees, &ix.inputs)?;
+    let inputs = inputs_from_tree_indexes(
+        &event.input_trees,
+        &ix.inputs,
+        ix.circuit.payer_funds_nullifiers(),
+    )?;
 
     let outputs = ix
         .outputs
@@ -243,10 +253,12 @@ fn single_input_tree(
 /// `tree_index` selects the emitted entry, which the program wrote in
 /// `tree_contexts` order; its sequence is that entry's `first_input_queue_seq`
 /// plus the number of earlier inputs on the same tree. Inputs from different
-/// trees may interleave, so the running counters count per tree.
+/// trees may interleave, so the running counters count per tree. A payer-funded
+/// transact queued nothing, so each of its inputs gets [`NOT_QUEUED`].
 fn inputs_from_tree_indexes(
     input_trees: &[InputTreeSequence],
     inputs: &[InputUtxo],
+    payer_funded: bool,
 ) -> Result<Vec<Input>, EventDecodeError> {
     if input_trees.is_empty() {
         return Err(EventDecodeError::UnsupportedInputTreeCount(0));
@@ -260,13 +272,18 @@ fn inputs_from_tree_indexes(
                 .get(position)
                 .zip(spent_per_tree.get_mut(position))
                 .ok_or(EventDecodeError::InputTreeIndexOutOfRange(input.tree_index))?;
-            let input_queue_seq = tree
-                .first_input_queue_seq
-                .checked_add(*spent)
-                .ok_or(EventDecodeError::IndexOverflow)?;
-            *spent = spent
-                .checked_add(1)
-                .ok_or(EventDecodeError::IndexOverflow)?;
+            let input_queue_seq = if payer_funded {
+                NOT_QUEUED
+            } else {
+                let input_queue_seq = tree
+                    .first_input_queue_seq
+                    .checked_add(*spent)
+                    .ok_or(EventDecodeError::IndexOverflow)?;
+                *spent = spent
+                    .checked_add(1)
+                    .ok_or(EventDecodeError::IndexOverflow)?;
+                input_queue_seq
+            };
             Ok(Input {
                 tree: tree.tree,
                 input_queue_seq,

@@ -287,6 +287,10 @@ pub enum OutputOwnerMode {
 /// authority has no twin: its circuit binds no cache selection. The twins are
 /// appended last so no existing tag encoding moves, and a transact that uses no
 /// cache is byte-identical to one built before caches existed.
+///
+/// Every variant above has a payer-funded twin ([`CircuitId::payer_funds_nullifiers`]),
+/// appended last: the same circuit, key and payload, resolved through
+/// [`CircuitId::tree_funded`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
 #[wincode(tag_encoding = "u16")]
 pub enum CircuitId {
@@ -300,11 +304,50 @@ pub enum CircuitId {
     AnonymousRingEddsaCached(u8, u8, u8, AnonymousRingEddsaProofData, CacheAccess),
     ConfidentialEddsa(u8, u8, u8, EddsaProofData),
     ConfidentialEddsaCached(u8, u8, u8, EddsaProofData, CacheAccess),
+    ConfidentialSignerPayerFunded(u8, u8, u8),
+    ConfidentialRingEddsaPayerFunded(u8, u8, u8),
+    RingAuthorityPayerFunded(u8, u8, u8),
+    AnonymousRingEddsaPayerFunded(u8, u8, u8, AnonymousRingEddsaProofData),
+    ConfidentialSignerCachedPayerFunded(u8, u8, u8, CacheAccess),
+    ConfidentialRingEddsaCachedPayerFunded(u8, u8, u8, CacheAccess),
+    AnonymousRingEddsaCachedPayerFunded(u8, u8, u8, AnonymousRingEddsaProofData, CacheAccess),
+    ConfidentialEddsaPayerFunded(u8, u8, u8, EddsaProofData),
+    ConfidentialEddsaCachedPayerFunded(u8, u8, u8, EddsaProofData, CacheAccess),
 }
 
 impl CircuitId {
-    pub const fn cache_access(self) -> Option<CacheAccess> {
+    /// Whether the payer funds a permanent nullifier PDA for every input and the
+    /// inputs' nullifiers stay out of the nullifier queue.
+    pub fn payer_funds_nullifiers(self) -> bool {
+        self != self.tree_funded()
+    }
+
+    /// The selector with its payer-funded declaration dropped.
+    pub const fn tree_funded(self) -> Self {
         match self {
+            Self::ConfidentialSignerPayerFunded(i, o, s) => Self::ConfidentialSigner(i, o, s),
+            Self::ConfidentialRingEddsaPayerFunded(i, o, s) => Self::ConfidentialRingEddsa(i, o, s),
+            Self::RingAuthorityPayerFunded(i, o, s) => Self::RingAuthority(i, o, s),
+            Self::AnonymousRingEddsaPayerFunded(i, o, s, d) => Self::AnonymousRingEddsa(i, o, s, d),
+            Self::ConfidentialSignerCachedPayerFunded(i, o, s, c) => {
+                Self::ConfidentialSignerCached(i, o, s, c)
+            }
+            Self::ConfidentialRingEddsaCachedPayerFunded(i, o, s, c) => {
+                Self::ConfidentialRingEddsaCached(i, o, s, c)
+            }
+            Self::AnonymousRingEddsaCachedPayerFunded(i, o, s, d, c) => {
+                Self::AnonymousRingEddsaCached(i, o, s, d, c)
+            }
+            Self::ConfidentialEddsaPayerFunded(i, o, s, d) => Self::ConfidentialEddsa(i, o, s, d),
+            Self::ConfidentialEddsaCachedPayerFunded(i, o, s, d, c) => {
+                Self::ConfidentialEddsaCached(i, o, s, d, c)
+            }
+            other => other,
+        }
+    }
+
+    pub const fn cache_access(self) -> Option<CacheAccess> {
+        match self.tree_funded() {
             Self::ConfidentialSignerCached(_, _, _, selection)
             | Self::ConfidentialRingEddsaCached(_, _, _, selection)
             | Self::AnonymousRingEddsaCached(_, _, _, _, selection)
@@ -317,7 +360,7 @@ impl CircuitId {
     /// selector differs from its rail only in the cache it declares, so every
     /// shape, rail and key accessor answers through this.
     pub const fn uncached(self) -> Self {
-        match self {
+        match self.tree_funded() {
             Self::ConfidentialSignerCached(n_in, n_out, slots, _) => {
                 Self::ConfidentialSigner(n_in, n_out, slots)
             }
@@ -344,7 +387,16 @@ impl CircuitId {
             | Self::ConfidentialRingEddsaCached(n, _, _, _)
             | Self::AnonymousRingEddsaCached(n, _, _, _, _)
             | Self::ConfidentialEddsa(n, _, _, _)
-            | Self::ConfidentialEddsaCached(n, _, _, _, _) => n,
+            | Self::ConfidentialEddsaCached(n, _, _, _, _)
+            | Self::ConfidentialSignerPayerFunded(n, _, _)
+            | Self::ConfidentialRingEddsaPayerFunded(n, _, _)
+            | Self::RingAuthorityPayerFunded(n, _, _)
+            | Self::AnonymousRingEddsaPayerFunded(n, _, _, _)
+            | Self::ConfidentialSignerCachedPayerFunded(n, _, _, _)
+            | Self::ConfidentialRingEddsaCachedPayerFunded(n, _, _, _)
+            | Self::AnonymousRingEddsaCachedPayerFunded(n, _, _, _, _)
+            | Self::ConfidentialEddsaPayerFunded(n, _, _, _)
+            | Self::ConfidentialEddsaCachedPayerFunded(n, _, _, _, _) => n,
         }
     }
 
@@ -358,7 +410,16 @@ impl CircuitId {
             | Self::ConfidentialRingEddsaCached(_, n, _, _)
             | Self::AnonymousRingEddsaCached(_, n, _, _, _)
             | Self::ConfidentialEddsa(_, n, _, _)
-            | Self::ConfidentialEddsaCached(_, n, _, _, _) => n,
+            | Self::ConfidentialEddsaCached(_, n, _, _, _)
+            | Self::ConfidentialSignerPayerFunded(_, n, _)
+            | Self::ConfidentialRingEddsaPayerFunded(_, n, _)
+            | Self::RingAuthorityPayerFunded(_, n, _)
+            | Self::AnonymousRingEddsaPayerFunded(_, n, _, _)
+            | Self::ConfidentialSignerCachedPayerFunded(_, n, _, _)
+            | Self::ConfidentialRingEddsaCachedPayerFunded(_, n, _, _)
+            | Self::AnonymousRingEddsaCachedPayerFunded(_, n, _, _, _)
+            | Self::ConfidentialEddsaPayerFunded(_, n, _, _)
+            | Self::ConfidentialEddsaCachedPayerFunded(_, n, _, _, _) => n,
         }
     }
 
@@ -372,7 +433,16 @@ impl CircuitId {
             | Self::ConfidentialRingEddsaCached(_, _, n, _)
             | Self::AnonymousRingEddsaCached(_, _, n, _, _)
             | Self::ConfidentialEddsa(_, _, n, _)
-            | Self::ConfidentialEddsaCached(_, _, n, _, _) => n,
+            | Self::ConfidentialEddsaCached(_, _, n, _, _)
+            | Self::ConfidentialSignerPayerFunded(_, _, n)
+            | Self::ConfidentialRingEddsaPayerFunded(_, _, n)
+            | Self::RingAuthorityPayerFunded(_, _, n)
+            | Self::AnonymousRingEddsaPayerFunded(_, _, n, _)
+            | Self::ConfidentialSignerCachedPayerFunded(_, _, n, _)
+            | Self::ConfidentialRingEddsaCachedPayerFunded(_, _, n, _)
+            | Self::AnonymousRingEddsaCachedPayerFunded(_, _, n, _, _)
+            | Self::ConfidentialEddsaPayerFunded(_, _, n, _)
+            | Self::ConfidentialEddsaCachedPayerFunded(_, _, n, _, _) => n,
         }
     }
 
@@ -404,7 +474,7 @@ impl CircuitId {
     }
 
     pub const fn is_authority(self) -> bool {
-        matches!(self, Self::RingAuthority(..))
+        matches!(self.tree_funded(), Self::RingAuthority(..))
     }
 
     pub const fn is_anonymous(self) -> bool {
@@ -423,11 +493,15 @@ impl CircuitId {
     pub const fn bsb22_commitment(&self) -> Option<&Bsb22Commitment> {
         match self {
             Self::AnonymousRingEddsa(_, _, _, proof_data)
-            | Self::AnonymousRingEddsaCached(_, _, _, proof_data, _) => {
+            | Self::AnonymousRingEddsaCached(_, _, _, proof_data, _)
+            | Self::AnonymousRingEddsaPayerFunded(_, _, _, proof_data)
+            | Self::AnonymousRingEddsaCachedPayerFunded(_, _, _, proof_data, _) => {
                 Some(&proof_data.bsb22_commitment)
             }
             Self::ConfidentialEddsa(_, _, _, proof_data)
-            | Self::ConfidentialEddsaCached(_, _, _, proof_data, _) => {
+            | Self::ConfidentialEddsaCached(_, _, _, proof_data, _)
+            | Self::ConfidentialEddsaPayerFunded(_, _, _, proof_data)
+            | Self::ConfidentialEddsaCachedPayerFunded(_, _, _, proof_data, _) => {
                 Some(&proof_data.bsb22_commitment)
             }
             _ => None,
@@ -439,7 +513,11 @@ impl CircuitId {
     pub const fn eddsa_owner_pk(&self) -> Option<&[u8; 32]> {
         match self {
             Self::ConfidentialEddsa(_, _, _, proof_data)
-            | Self::ConfidentialEddsaCached(_, _, _, proof_data, _) => Some(&proof_data.owner_pk),
+            | Self::ConfidentialEddsaCached(_, _, _, proof_data, _)
+            | Self::ConfidentialEddsaPayerFunded(_, _, _, proof_data)
+            | Self::ConfidentialEddsaCachedPayerFunded(_, _, _, proof_data, _) => {
+                Some(&proof_data.owner_pk)
+            }
             _ => None,
         }
     }
@@ -447,7 +525,9 @@ impl CircuitId {
     pub const fn default_owner_tag(&self) -> Option<&[u8; 32]> {
         match self {
             Self::AnonymousRingEddsa(_, _, _, proof_data)
-            | Self::AnonymousRingEddsaCached(_, _, _, proof_data, _) => {
+            | Self::AnonymousRingEddsaCached(_, _, _, proof_data, _)
+            | Self::AnonymousRingEddsaPayerFunded(_, _, _, proof_data)
+            | Self::AnonymousRingEddsaCachedPayerFunded(_, _, _, proof_data, _) => {
                 proof_data.default_owner_tag.as_ref()
             }
             _ => None,
@@ -463,12 +543,20 @@ impl CircuitId {
             Self::ConfidentialSigner(..)
             | Self::ConfidentialSignerCached(..)
             | Self::ConfidentialEddsa(..)
-            | Self::ConfidentialEddsaCached(..) => OutputOwnerMode::All,
+            | Self::ConfidentialEddsaCached(..)
+            | Self::ConfidentialSignerPayerFunded(..)
+            | Self::ConfidentialSignerCachedPayerFunded(..)
+            | Self::ConfidentialEddsaPayerFunded(..)
+            | Self::ConfidentialEddsaCachedPayerFunded(..) => OutputOwnerMode::All,
             Self::ConfidentialRingEddsa(..)
             | Self::AnonymousRingEddsa(..)
             | Self::ConfidentialRingEddsaCached(..)
-            | Self::AnonymousRingEddsaCached(..) => OutputOwnerMode::ConfidentialMarked,
-            Self::RingAuthority(..) => OutputOwnerMode::None,
+            | Self::AnonymousRingEddsaCached(..)
+            | Self::ConfidentialRingEddsaPayerFunded(..)
+            | Self::AnonymousRingEddsaPayerFunded(..)
+            | Self::ConfidentialRingEddsaCachedPayerFunded(..)
+            | Self::AnonymousRingEddsaCachedPayerFunded(..) => OutputOwnerMode::ConfidentialMarked,
+            Self::RingAuthority(..) | Self::RingAuthorityPayerFunded(..) => OutputOwnerMode::None,
         }
     }
 
@@ -485,11 +573,20 @@ impl CircuitId {
             | Self::AnonymousRingEddsa(..)
             | Self::ConfidentialSignerCached(..)
             | Self::ConfidentialRingEddsaCached(..)
-            | Self::AnonymousRingEddsaCached(..) => shape.is_supported(),
-            Self::RingAuthority(..) => shape.is_ring_authority(),
-            Self::ConfidentialEddsa(..) | Self::ConfidentialEddsaCached(..) => {
-                shape.is_confidential_eddsa()
+            | Self::AnonymousRingEddsaCached(..)
+            | Self::ConfidentialSignerPayerFunded(..)
+            | Self::ConfidentialRingEddsaPayerFunded(..)
+            | Self::AnonymousRingEddsaPayerFunded(..)
+            | Self::ConfidentialSignerCachedPayerFunded(..)
+            | Self::ConfidentialRingEddsaCachedPayerFunded(..)
+            | Self::AnonymousRingEddsaCachedPayerFunded(..) => shape.is_supported(),
+            Self::RingAuthority(..) | Self::RingAuthorityPayerFunded(..) => {
+                shape.is_ring_authority()
             }
+            Self::ConfidentialEddsa(..)
+            | Self::ConfidentialEddsaCached(..)
+            | Self::ConfidentialEddsaPayerFunded(..)
+            | Self::ConfidentialEddsaCachedPayerFunded(..) => shape.is_confidential_eddsa(),
         }
     }
 

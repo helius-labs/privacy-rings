@@ -11,7 +11,8 @@ use spr_interface::pda;
 /// Version 4: `transact`/`merge` emit a minimal body and the `GeneralEvent` is
 /// rebuilt from it plus the emitting instruction, so `raw_event` holds that
 /// minimal body rather than a full `GeneralEvent`.
-const RINGS_PARSE_VERSION: i16 = 4;
+/// Version 5: a payer-funded transact's nullifiers are stored unqueued.
+const RINGS_PARSE_VERSION: i16 = 5;
 
 pub fn parse_rings_events(
     tx: &TransactionInfo,

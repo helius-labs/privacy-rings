@@ -157,7 +157,7 @@ fn parses_proofless_shield_event_with_photon_parser() {
         parse_rings_update(proofless_shield_transaction_info(), PROOFLESS_SHIELD_SLOT);
 
     let rings_tx = only(&state_update.rings_transactions, "Rings transaction");
-    assert_eq!(rings_tx.parse_version, 4);
+    assert_eq!(rings_tx.parse_version, 5);
     assert_eq!(rings_tx.source_instruction_tag, tag::DEPOSIT as i16);
     assert_eq!(rings_tx.first_output_leaf_index, 0);
     assert!(rings_tx.tx_viewing_pk.is_none());
@@ -177,7 +177,7 @@ fn parses_shielded_transfer_event_with_photon_parser() {
         parse_rings_update(shielded_transfer_transaction_info(), SHIELDED_TRANSFER_SLOT);
 
     let rings_tx = only(&state_update.rings_transactions, "Rings transaction");
-    assert_eq!(rings_tx.parse_version, 4);
+    assert_eq!(rings_tx.parse_version, 5);
     assert_eq!(rings_tx.source_instruction_tag, tag::TRANSACT as i16);
     assert_eq!(rings_tx.first_output_leaf_index, 1);
     assert!(rings_tx.tx_viewing_pk.is_none());
@@ -219,6 +219,52 @@ fn parses_a_transact_spending_two_input_trees() {
     assert_eq!(rings_tx.output_tree, TEST_TREE);
 }
 
+/// A payer-funded transact queues no nullifier: its rows still record every
+/// spent input but carry `NOT_QUEUED` instead of a queue sequence, so the
+/// persisted rows never become queue elements.
+#[test]
+fn parses_a_payer_funded_transact_as_unqueued_nullifiers() {
+    let expected = GeneralEvent {
+        inputs: vec![test_input(4, 25), test_input(5, 26)],
+        outputs: vec![test_output(8, 18, Vec::new())],
+        messages: Vec::new(),
+        tx_viewing_pk: [5; 33],
+        salt: [6; 16],
+        first_output_leaf_index: 2,
+        output_tree: TEST_TREE,
+        spl_transfers: Vec::new(),
+    };
+    let source_data = transact_source_data(
+        tag::TRANSACT,
+        &expected,
+        inline_outputs(&expected),
+        Vec::new(),
+    );
+    let (source_tag, ix_bytes) = source_data.split_first().expect("source tag");
+    let mut ix = TransactIxData::deserialize(ix_bytes).expect("deserialize transact");
+    ix.circuit = CircuitId::ConfidentialSignerPayerFunded(2, 1, 0);
+    let mut payer_funded_data = vec![*source_tag];
+    payer_funded_data.extend_from_slice(&ix.serialize().expect("serialize transact"));
+    let tx = rings_transaction_info(
+        0x51,
+        payer_funded_data,
+        Vec::new(),
+        EventKind::Transact,
+        transact_event_for(&expected),
+    );
+
+    let state_update = parse_rings_update(tx, ENCRYPTED_TRANSFER_SLOT);
+
+    let rings_tx = only(&state_update.rings_transactions, "Rings transaction");
+    assert_eq!(
+        rings_tx.nullifiers,
+        vec![
+            expected_nullifier(0, spr_event_parser::NOT_QUEUED, 25),
+            expected_nullifier(1, spr_event_parser::NOT_QUEUED, 26),
+        ]
+    );
+}
+
 #[test]
 fn parses_encrypted_transfer_event_with_photon_parser() {
     let state_update = parse_rings_update(
@@ -227,7 +273,7 @@ fn parses_encrypted_transfer_event_with_photon_parser() {
     );
 
     let rings_tx = only(&state_update.rings_transactions, "Rings transaction");
-    assert_eq!(rings_tx.parse_version, 4);
+    assert_eq!(rings_tx.parse_version, 5);
     assert_eq!(rings_tx.source_instruction_tag, tag::TRANSACT as i16);
     assert_eq!(rings_tx.first_output_leaf_index, 2);
     let tx_viewing_pk = rings_tx
@@ -289,7 +335,7 @@ fn parses_ring_transact_event_against_the_spp_inner_instruction() {
     );
 
     let rings_tx = only(&state_update.rings_transactions, "Rings transaction");
-    assert_eq!(rings_tx.parse_version, 4);
+    assert_eq!(rings_tx.parse_version, 5);
     assert_eq!(rings_tx.source_instruction_tag, tag::RING_TRANSACT as i16);
     assert_eq!(rings_tx.ring_config, Some(ring_config.to_bytes()));
     assert_eq!(rings_tx.first_output_leaf_index, 7);
@@ -315,7 +361,7 @@ fn parses_merge_event_with_photon_parser() {
     let state_update = parse_rings_update(merge_transaction_info(), 60);
 
     let rings_tx = only(&state_update.rings_transactions, "Rings transaction");
-    assert_eq!(rings_tx.parse_version, 4);
+    assert_eq!(rings_tx.parse_version, 5);
     assert_eq!(rings_tx.source_instruction_tag, tag::MERGE_TRANSACT as i16);
     assert!(rings_tx.tx_viewing_pk.is_none());
     assert!(rings_tx.salt.is_none());
@@ -355,7 +401,7 @@ fn parses_unshield_event_with_photon_parser() {
     let state_update = parse_rings_update(unshield_transaction_info(), UNSHIELD_SLOT);
 
     let rings_tx = only(&state_update.rings_transactions, "Rings transaction");
-    assert_eq!(rings_tx.parse_version, 4);
+    assert_eq!(rings_tx.parse_version, 5);
     assert_eq!(rings_tx.source_instruction_tag, tag::TRANSACT as i16);
     assert_eq!(rings_tx.first_output_leaf_index, 4);
     assert!(rings_tx.tx_viewing_pk.is_none());

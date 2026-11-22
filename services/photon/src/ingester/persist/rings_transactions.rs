@@ -140,10 +140,7 @@ pub(super) async fn persist_rings_transactions(
                 )?),
                 input_index: Set(nullifier.input_index),
                 nullifier_tree: Set(nullifier.nullifier_tree.to_vec()),
-                input_queue_seq: Set(leaf_node::i64_from_u64(
-                    nullifier.input_queue_seq,
-                    "input queue sequence",
-                )?),
+                input_queue_seq: Set(input_queue_seq_column(nullifier.input_queue_seq)?),
                 nullifier: Set(nullifier.nullifier.to_vec()),
             });
         }
@@ -270,4 +267,31 @@ pub(super) async fn persist_rings_transactions(
     }
 
     Ok(())
+}
+
+/// `input_queue_seq` of a nullifier a payer-funded transact never queued. Every
+/// queue reader filters `input_queue_seq >= start` with a non-negative start, so
+/// such a row records the spend without ever becoming a queue element.
+pub(crate) const NOT_QUEUED_INPUT_QUEUE_SEQ: i64 = -1;
+
+fn input_queue_seq_column(input_queue_seq: u64) -> Result<i64, IngesterError> {
+    if input_queue_seq == spr_event_parser::NOT_QUEUED {
+        return Ok(NOT_QUEUED_INPUT_QUEUE_SEQ);
+    }
+    leaf_node::i64_from_u64(input_queue_seq, "input queue sequence")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unqueued_nullifier_stores_the_sentinel_and_a_queued_one_its_sequence() {
+        assert_eq!(
+            input_queue_seq_column(spr_event_parser::NOT_QUEUED),
+            Ok(NOT_QUEUED_INPUT_QUEUE_SEQ)
+        );
+        assert_eq!(input_queue_seq_column(7), Ok(7));
+        assert!(input_queue_seq_column(u64::MAX - 1).is_err());
+    }
 }

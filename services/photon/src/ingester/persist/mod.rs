@@ -36,6 +36,8 @@ mod leaf_node_proof;
 mod merkle_proof_with_context;
 mod ring_configs;
 mod rings_transactions;
+#[cfg(test)]
+pub(crate) use rings_transactions::NOT_QUEUED_INPUT_QUEUE_SEQ;
 
 pub use self::leaf_node::{persist_leaf_nodes, LeafNode};
 pub use self::leaf_node_proof::{

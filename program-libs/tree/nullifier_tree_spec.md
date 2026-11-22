@@ -152,6 +152,22 @@ struct NullifierPda {
 The queued nullifier and the PDA seed use the same canonical 32-byte field
 encoding. Values outside the field are rejected, not reduced modulo the field.
 
+A transact with a payer-funded `CircuitId` does not queue its nullifiers.
+Instead it creates a permanent nullifier PDA at the same address, funded by the
+payer, holding only the discriminator:
+
+```rust
+// Fixed 1-byte layout.
+struct PayerFundedNullifierPda {
+    discriminator: u8, // 9, `discriminator::PAYER_FUNDED_NULLIFIER_PDA`
+}
+```
+
+Its nullifier never reaches the queue or the Merkle tree, so the PDA is its
+only double-spend guard: no instruction closes it, and both kinds require the
+address unused, so a nullifier holds at most one PDA of either kind. It is not
+counted in `live_nullifier_pdas`.
+
 ## Initialization
 
 **Description.** `create_tree` allocates the account across several steps and
@@ -240,12 +256,17 @@ The instruction also receives the writable PDA.
    require the supplied address to match. An initialized PDA fails with
    `ShieldedPoolError::NullifierAlreadyQueued` (7043).
 9. Accept an unused PDA that is System-owned and empty, prefunded or not.
-   Assign it to the program signed with the PDA seeds, then resize it to ten
-   bytes. Store `{ q, tree_id }` with the tree header's `tree_id`, then
+   Assign it to the program signed with the PDA seeds, then resize it to
+   eleven bytes. Store `{ q, tree_id }` with the tree header's `tree_id`, then
    transfer only the missing rent-exempt balance from the tree.
 
 PDA creation, fee collection, and queue mutation are atomic. Failure changes
 none of them.
+
+A payer-funded transact runs step 1, skips steps 2 to 6 and the PDA count,
+still charges the tree fee (step 7), and replaces step 9: after the step 8
+address checks, the payer funds the missing rent-exempt balance of a 1-byte
+account holding only the permanent discriminator.
 
 **Property — pending non-inclusion.** A successful insertion makes every later
 queue insertion of the same nullifier fail while its PDA exists. The check
@@ -473,7 +494,8 @@ For every PDA account:
    `queue_index` then `tree_id`, with `PDA.queue_index >= 1`
    (`ShieldedPoolError::InvalidNullifierPda`, 7046). Close does not re-derive
    the address, so without the discriminator it would close any other
-   program-owned account of the same length.
+   program-owned account of the same length. A permanent payer-funded PDA has
+   another length and discriminator, so it is never closed.
    Queue sequences start at 1, so an all-zero record is an account the
    program never wrote, such as a system-allocated account assigned to the
    program.

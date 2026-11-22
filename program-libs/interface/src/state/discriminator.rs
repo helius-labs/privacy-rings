@@ -5,3 +5,4 @@ pub const SPL_ASSET_REGISTRY: u8 = 5;
 pub const SPL_ASSET_COUNTER: u8 = 6;
 pub const CACHE: u8 = 7;
 pub const NULLIFIER_PDA: u8 = 8;
+pub const PAYER_FUNDED_NULLIFIER_PDA: u8 = 9;

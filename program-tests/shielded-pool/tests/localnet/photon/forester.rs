@@ -5,8 +5,9 @@ use spr_client::ClientError;
 use spr_interface::error::ShieldedPoolError;
 use spr_program_test::Rejection;
 use spr_test_utils::nullifier_pda::{
-    assert_nullifier_pda, assert_nullifier_pdas, assert_tree_lamports_after_spend,
-    nullifier_queue_next_index, tree_close_before_index, tree_fees,
+    assert_nullifier_pda, assert_nullifier_pdas, assert_payer_funded_nullifier_pdas,
+    assert_tree_lamports_after_spend, nullifier_queue_next_index, payer_funded,
+    tree_close_before_index, tree_fee_for_spend, tree_fees,
 };
 
 /// Plumbing smoke for `forester run --dry-run`: stand up the validator + Photon,
@@ -108,10 +109,11 @@ fn forester_dry_run_reconstructs_from_photon() -> TestResult {
 #[serial]
 fn nullifier_test_forester_batches_queued_nullifiers_with_photon_indexer() -> TestResult {
     let mut env = phase_bootstrap()?;
-    let queued_nullifiers = phase_queue_nullifiers(&mut env)?;
+    let (queued_nullifiers, payer_funded_nullifiers) = phase_queue_nullifiers(&mut env)?;
     phase_run_forester_batches(&mut env, &queued_nullifiers)?;
     phase_assert_forested_nullifiers(&env, &queued_nullifiers)?;
     phase_assert_nullifier_pda_cleanup(&mut env, &queued_nullifiers)?;
+    phase_assert_payer_funded_nullifiers(&env, &payer_funded_nullifiers)?;
 
     println!(
         "localnet Photon nullifier forester test passed via rpc={} indexer={}",
@@ -179,12 +181,17 @@ struct QueueContext {
     sender_address: ShieldedAddress,
     spendable_utxos: VecDeque<RealSpendUtxo>,
     queued_nullifiers: Vec<[u8; 32]>,
+    /// Spent by the payer-funded self-transfer: permanent PDAs, never queued.
+    payer_funded_nullifiers: Vec<[u8; 32]>,
 }
 
 /// Fill the tree's nullifier queue: seed two spendable UTXOs, then run the
-/// queue loop whose self-transfers each contribute two nullifiers. Returns
-/// the nullifiers in queue order.
-fn phase_queue_nullifiers(env: &mut ForesterEnv) -> TestResult<Vec<[u8; 32]>> {
+/// queue loop whose self-transfers each contribute two nullifiers. One extra
+/// self-transfer in the middle is payer-funded: it spends two UTXOs without
+/// queueing their nullifiers, so the queued ones around it must stay
+/// contiguous for Photon and the forester. Returns the queued nullifiers in
+/// queue order and the payer-funded ones.
+fn phase_queue_nullifiers(env: &mut ForesterEnv) -> TestResult<(Vec<[u8; 32]>, Vec<[u8; 32]>)> {
     let zero = [0u8; 32];
     let sender = shielded_ed25519_from_solana(&env.payer)?;
     let payer_public_key = sender.signing_pubkey();
@@ -208,6 +215,7 @@ fn phase_queue_nullifiers(env: &mut ForesterEnv) -> TestResult<Vec<[u8; 32]>> {
         queued_nullifiers: Vec::with_capacity(
             (queue_tx_count * LOCALNET_NULLIFIERS_PER_QUEUE_TX) as usize,
         ),
+        payer_funded_nullifiers: Vec::new(),
     };
 
     for deposit_index in 0..2 {
@@ -258,16 +266,24 @@ fn phase_queue_nullifiers(env: &mut ForesterEnv) -> TestResult<Vec<[u8; 32]>> {
         ctx.spendable_utxos.push_back(spendable_utxo);
     }
 
-    for i in 0..queue_tx_count {
-        queue_nullifiers_once(env, &mut ctx, i)?;
+    let payer_funded_tx = queue_tx_count / 2;
+    for i in 0..=queue_tx_count {
+        queue_nullifiers_once(env, &mut ctx, i, i == payer_funded_tx)?;
     }
-    Ok(ctx.queued_nullifiers)
+    Ok((ctx.queued_nullifiers, ctx.payer_funded_nullifiers))
 }
 
 /// Queue one transaction's worth of nullifiers: pop two spendable UTXOs, gate
 /// Photon's roots against the chain, then build, prove, send, and decrypt a
-/// self-transfer whose change/recipient outputs refill the pool.
-fn queue_nullifiers_once(env: &mut ForesterEnv, ctx: &mut QueueContext, i: u64) -> TestResult {
+/// self-transfer whose change/recipient outputs refill the pool. A
+/// payer-funded self-transfer queues nothing and gives each input a permanent
+/// nullifier PDA instead.
+fn queue_nullifiers_once(
+    env: &mut ForesterEnv,
+    ctx: &mut QueueContext,
+    i: u64,
+    payer_funded_spend: bool,
+) -> TestResult {
     let zero = [0u8; 32];
     let roots = latest_tree_roots(&env.rpc, &env.tree_pubkey)?;
     assert_eq!(
@@ -283,8 +299,13 @@ fn queue_nullifiers_once(env: &mut ForesterEnv, ctx: &mut QueueContext, i: u64) 
         .spendable_utxos
         .pop_front()
         .ok_or_else(|| anyhow!("missing second spendable UTXO for queue tx {i}"))?;
-    ctx.queued_nullifiers.push(first_utxo.nullifier);
-    ctx.queued_nullifiers.push(second_utxo.nullifier);
+    let spent_nullifiers = if payer_funded_spend {
+        &mut ctx.payer_funded_nullifiers
+    } else {
+        &mut ctx.queued_nullifiers
+    };
+    spent_nullifiers.push(first_utxo.nullifier);
+    spent_nullifiers.push(second_utxo.nullifier);
 
     let first_state_proof = wait_for_merkle_proof(&env.indexer, env.tree_address, first_utxo.hash);
     let second_state_proof =
@@ -378,7 +399,11 @@ fn queue_nullifiers_once(env: &mut ForesterEnv, ctx: &mut QueueContext, i: u64) 
         &[],
     )?;
     let proof = assembled.prove(&ProverClient::local(), &ctx.sender)?;
-    let ix_data = assembled.with_proof(proof);
+    let mut ix_data = assembled.with_proof(proof);
+    if payer_funded_spend {
+        // The circuit tag is not a public input, so the proof stays valid.
+        ix_data.circuit = payer_funded(ix_data.circuit);
+    }
 
     let tx_ix = Transact {
         payer: env.payer.pubkey(),
@@ -394,24 +419,42 @@ fn queue_nullifiers_once(env: &mut ForesterEnv, ctx: &mut QueueContext, i: u64) 
     let sig = send_transaction(&mut env.rpc, &[tx_ix], &env.payer.pubkey(), &[&env.payer])?;
     print_signature(&format!("queue_nullifiers_{i}"), &sig);
 
-    assert_nullifier_pda(
-        &env.rpc,
-        &env.tree_pubkey,
-        &first_utxo.nullifier,
-        queue_next_before,
-    )?;
-    assert_nullifier_pda(
-        &env.rpc,
-        &env.tree_pubkey,
-        &second_utxo.nullifier,
-        queue_next_before + 1,
-    )?;
-    assert_tree_lamports_after_spend(
-        &env.rpc,
-        &env.tree_pubkey,
-        &tree_before,
-        LOCALNET_NULLIFIERS_PER_QUEUE_TX,
-    )?;
+    if payer_funded_spend {
+        assert_payer_funded_nullifier_pdas(
+            &env.rpc,
+            &env.tree_pubkey,
+            &[first_utxo.nullifier, second_utxo.nullifier],
+        )?;
+        assert_eq!(
+            nullifier_queue_next_index(&env.rpc, &env.tree_pubkey)?,
+            queue_next_before,
+            "a payer-funded spend queues nothing"
+        );
+        assert_eq!(
+            fetch_tree_account(env)?.lamports,
+            tree_before.lamports + tree_fee_for_spend(&tree_before, &env.tree_pubkey)?,
+            "the tree collects its fee and funds no nullifier PDA"
+        );
+    } else {
+        assert_nullifier_pda(
+            &env.rpc,
+            &env.tree_pubkey,
+            &first_utxo.nullifier,
+            queue_next_before,
+        )?;
+        assert_nullifier_pda(
+            &env.rpc,
+            &env.tree_pubkey,
+            &second_utxo.nullifier,
+            queue_next_before + 1,
+        )?;
+        assert_tree_lamports_after_spend(
+            &env.rpc,
+            &env.tree_pubkey,
+            &tree_before,
+            LOCALNET_NULLIFIERS_PER_QUEUE_TX,
+        )?;
+    }
 
     let indexed = wait_for_indexed_transaction(&env.indexer, wait_tag, sig);
     assert_eq!(
@@ -767,6 +810,40 @@ fn phase_assert_forested_nullifiers(
                 Err(_) => Ok(Some(())),
             },
         )?;
+    }
+    Ok(())
+}
+
+/// The payer-funded spend's nullifiers after the drain: their permanent PDAs
+/// survive, Photon serves none of them as queue elements, and Photon still
+/// knows them as spent, so it refuses a non-inclusion proof for either.
+fn phase_assert_payer_funded_nullifiers(
+    env: &ForesterEnv,
+    payer_funded_nullifiers: &[[u8; 32]],
+) -> TestResult {
+    assert_eq!(payer_funded_nullifiers.len(), 2);
+    assert_payer_funded_nullifier_pdas(&env.rpc, &env.tree_pubkey, payer_funded_nullifiers)?;
+    let queued = ::forester::photon::PhotonClient::new(env.indexer_url.clone())?
+        .get_nullifier_queue_elements(env.tree_address, None, ::forester::photon::PAGE_LIMIT)?
+        .elements;
+    assert!(
+        queued
+            .windows(2)
+            .all(|pair| matches!(pair, [a, b] if b.seq == a.seq + 1)),
+        "the queued nullifiers stay contiguous around the payer-funded spend"
+    );
+    for nullifier in payer_funded_nullifiers {
+        assert!(
+            !queued.iter().any(|element| element.value.0 == *nullifier),
+            "Photon must not serve a payer-funded nullifier as a queue element"
+        );
+        let response =
+            env.indexer
+                .get_non_inclusion_proofs(env.tree_address, vec![*nullifier], None);
+        assert!(
+            response.map_or(true, |response| response.proofs.is_empty()),
+            "Photon must treat a payer-funded nullifier as spent"
+        );
     }
     Ok(())
 }

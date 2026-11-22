@@ -100,6 +100,20 @@ fn every_confidential_eddsa_key_follows_the_compile_feature_including_cached_sel
             "{shape:?}"
         );
     }
+    // The payer-funded twins resolve the same keys, so the same gate holds.
+    for shape in CONFIDENTIAL_EDDSA_SHAPES {
+        let (n_inputs, n_outputs) = (shape.n_inputs() as u8, shape.n_outputs() as u8);
+        for circuit in [
+            CircuitId::ConfidentialEddsaPayerFunded(n_inputs, n_outputs, 3, proof),
+            CircuitId::ConfidentialEddsaCachedPayerFunded(n_inputs, n_outputs, 3, proof, cache),
+        ] {
+            assert_eq!(
+                circuit_enabled(circuit),
+                cfg!(feature = "confidential-eddsa"),
+                "{circuit:?}"
+            );
+        }
+    }
     assert!(!CONFIDENTIAL_EDDSA.allows(&[0; 32]));
     assert!(!circuit_enabled(CircuitId::ConfidentialEddsa(
         1, 2, 3, proof
