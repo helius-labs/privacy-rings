@@ -30,6 +30,7 @@ fn decrypt_operation(owner: Pubkey) -> Operation {
             tx_viewing_pubkey: viewing_key,
             viewing_pubkey: X25519Pubkey::from_u([9; 32]).unwrap(),
         }],
+        1_795_290_720_000,
     )
 }
 
@@ -105,6 +106,20 @@ fn signs_the_same_request_and_owner_message_as_the_service_sdk() {
     )
     .unwrap();
     verify_owner(&key, &message, &signature).unwrap();
+    let mut extended = decrypt_operation(owner);
+    let Operation::Decrypt { expires_at_ms, .. } = &mut extended else {
+        unreachable!()
+    };
+    *expires_at_ms += 1;
+    let changed = request(&fixture, &replica.info, extended)
+        .unsigned_digest()
+        .unwrap();
+    assert!(verify_owner(
+        &key,
+        &owner_message(&key, NitroNetwork::Devnet, &changed),
+        &signature
+    )
+    .is_err());
     assert!(verify_owner(
         &key,
         &owner_message(&key, NitroNetwork::Mainnet, &digest),

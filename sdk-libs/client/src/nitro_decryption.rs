@@ -131,6 +131,15 @@ impl SessionWindow {
     }
 }
 
+impl Session {
+    fn approval_expires_at(&self, now: u64) -> u64 {
+        let remaining_ms = self.window.remaining(now).as_millis() as u64;
+        now.saturating_add(remaining_ms)
+            .min(self.policy.expires_at_ms())
+            .min(self.replica.valid_through_ms.saturating_add(1))
+    }
+}
+
 impl NitroDecryptionService {
     pub fn new(
         trust: Arc<NitroTrust>,
@@ -254,11 +263,16 @@ impl NitroDecryptionService {
             return Err(NitroDecryptionError::RequestTooLarge);
         }
         let session = self.0.session().await?;
+        let now = now_ms()?;
+        let expires_at_ms = session.approval_expires_at(now);
+        if expires_at_ms <= now {
+            return Err(NitroDecryptionError::SessionExpired);
+        }
         let result = self
             .0
             .exchange(
                 &session,
-                Operation::decrypt(owner, items),
+                Operation::decrypt(owner, items, expires_at_ms),
                 Some((owner, signer)),
             )
             .await;
@@ -499,6 +513,7 @@ impl Service {
         signer: Option<(Pubkey, Arc<Owner>)>,
     ) -> Result<OperationResult, NitroDecryptionError> {
         self.require_current(session).await?;
+        let approval_expires_at_ms = operation.approval_expires_at_ms();
         let response_secret = response_secret()?;
         let request_id = random_bytes()?;
         let mut request = Request::new(
@@ -516,15 +531,11 @@ impl Service {
         if envelope_overhead + 2 * size > MAX_CIPHERTEXT {
             return Err(NitroDecryptionError::RequestTooLarge);
         }
-        if let Some((owner, signer)) = signer {
+        if let (Some((owner, signer)), Some(expires_at_ms)) = (signer, approval_expires_at_ms) {
             let key = wire::owner_key(owner)?;
             let message = wire::owner_message(&key, self.trust.network(), &digest);
-            let expires_at = session
-                .policy
-                .expires_at_ms()
-                .min(session.replica.valid_through_ms.saturating_add(1));
             let now = now_ms()?;
-            let timeout = Duration::from_millis(expires_at.saturating_sub(now))
+            let timeout = Duration::from_millis(expires_at_ms.saturating_sub(now))
                 .min(session.window.remaining(now));
             let signature = owner_call(
                 &self.owner_work,
@@ -549,6 +560,7 @@ impl Service {
             return Err(NitroDecryptionError::RequestTooLarge);
         }
         self.require_current(session).await?;
+        require_unexpired_approval(approval_expires_at_ms, now_ms()?)?;
         let response = self
             .http
             .post(route(&session.endpoint, &["v1", "operations"])?)
@@ -561,9 +573,20 @@ impl Service {
             .map_err(|_| NitroDecryptionError::Protocol)?;
         let ciphertext = request.verify_response(&session.replica, response, &digest)?;
         self.require_current(session).await?;
+        require_unexpired_approval(approval_expires_at_ms, now_ms()?)?;
         let plaintext = crypto::open(&response_secret, &ciphertext)?;
         serde_json::from_slice(&plaintext).map_err(|_| NitroDecryptionError::Protocol)
     }
+}
+
+fn require_unexpired_approval(
+    expires_at_ms: Option<u64>,
+    now: u64,
+) -> Result<(), NitroDecryptionError> {
+    if expires_at_ms.is_some_and(|expires_at_ms| now >= expires_at_ms) {
+        return Err(NitroDecryptionError::SessionExpired);
+    }
+    Ok(())
 }
 
 async fn body(response: reqwest::Response, limit: usize) -> Result<Vec<u8>, NitroDecryptionError> {

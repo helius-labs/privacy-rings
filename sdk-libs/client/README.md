@@ -83,10 +83,11 @@ under the service keys. The returned handle implements `ShieldedKeys` for
 The client checks the current checkpoint before each attestation probe and
 before caching the verified boot. It attests with a fresh challenge and encrypts
 the request to its attested transport key. A decrypt signature binds the
-Solana network, release, batch and one-time response key. The client checks
+Solana network, release, batch, one-time response key and an exclusive deadline
+within the verified session. The enclave checks that deadline before returning
+a reply. The client checks
 the reply's boot signature, request and ciphertext digests, and current
-checkpoint before opening it. Owner approval must finish within the session's
-remaining validity. The 60-second session window starts with the policy fetch
+checkpoint and deadline before opening it. The 60-second session window starts with the policy fetch
 and ends when either elapsed or wall time reaches the deadline. A stalled
 checkpoint read cannot start a probe beyond that window. Policy or certificate
 expiry can end it earlier. A stalled synchronous signer holds the client's

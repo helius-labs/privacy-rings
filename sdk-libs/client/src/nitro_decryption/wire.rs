@@ -3,7 +3,7 @@ use p256::{
     ecdsa::{signature::Verifier, Signature, VerifyingKey},
     elliptic_curve::sec1::ToSec1Point,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 use solana_pubkey::Pubkey;
 use spr_prover_tee::{verify_nitro_serving_boot, NitroServingPins};
@@ -255,6 +255,8 @@ pub(super) enum Operation {
         r#type: &'static str,
     },
     Decrypt {
+        #[serde(serialize_with = "decimal")]
+        expires_at_ms: u64,
         items: Vec<Item>,
         #[serde(skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
@@ -271,12 +273,24 @@ impl Operation {
         }
     }
 
-    pub(super) fn decrypt(owner: Pubkey, inputs: &[DecryptRequest<'_>]) -> Self {
+    pub(super) fn decrypt(
+        owner: Pubkey,
+        inputs: &[DecryptRequest<'_>],
+        expires_at_ms: u64,
+    ) -> Self {
         Self::Decrypt {
+            expires_at_ms,
             items: inputs.iter().map(Item::from).collect(),
             signature: None,
             signer: owner.to_string(),
             r#type: "Decrypt",
+        }
+    }
+
+    pub(super) fn approval_expires_at_ms(&self) -> Option<u64> {
+        match self {
+            Self::PublicKeys { .. } => None,
+            Self::Decrypt { expires_at_ms, .. } => Some(*expires_at_ms),
         }
     }
 
@@ -286,6 +300,10 @@ impl Operation {
             Self::Decrypt { .. } => Kind::ServiceDecrypt,
         }
     }
+}
+
+fn decimal<S: Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(value)
 }
 
 #[derive(Serialize)]

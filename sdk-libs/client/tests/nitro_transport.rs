@@ -84,7 +84,7 @@ fn read_http(stream: &TcpStream) -> Vec<u8> {
     body
 }
 
-fn reply_for(body: &[u8], owner: Pubkey, result: Value) -> Value {
+fn reply_for(body: &[u8], owner: Pubkey, result: Value, session_expires_at_ms: u64) -> Value {
     let envelope: Value = serde_json::from_slice(body).unwrap();
     let request = lower_hex(envelope["ciphertext"].as_str().unwrap()).unwrap();
     let server_secret = SecretKey::from_slice(&[11; 32]).unwrap();
@@ -93,6 +93,12 @@ fn reply_for(body: &[u8], owner: Pubkey, result: Value) -> Value {
     let operation = &mut request["operation"];
     let kind = if operation["type"] == "Decrypt" {
         assert_eq!(operation["signer"], owner.to_string());
+        let deadline = operation["expires_at_ms"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        assert!((now_ms().unwrap() + 1..=session_expires_at_ms).contains(&deadline));
         let signature = operation
             .as_object_mut()
             .unwrap()
@@ -352,6 +358,7 @@ async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
         json!({"type":"Decrypt", "nullifier_secret":"44".repeat(31), "plaintexts":[]});
     let note_response =
         json!({"type":"Decrypt", "nullifier_secret":"44".repeat(31), "plaintexts":["abcdef"]});
+    let session_expires_at_ms = session.window.expires_at_ms;
     let server = tokio::spawn(async move {
         for (i, result) in [
             owner_response.clone(),
@@ -383,7 +390,7 @@ async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
                 assert!(!body
                     .windows(owner.to_string().len())
                     .any(|w| w == owner.to_string().as_bytes()));
-                let reply = json(&reply_for(&body, owner, result)).unwrap();
+                let reply = json(&reply_for(&body, owner, result, session_expires_at_ms)).unwrap();
                 if i == 4 {
                     assert!(matches!(
                         accept_published_nitro_policy(
