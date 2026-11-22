@@ -3,7 +3,9 @@ import { DEFAULT_COMPUTE_UNIT_LIMIT, checkedAddress } from "../flows/internal.js
 import type {
   BlockhashProvider,
   ChainReader,
-  RecipientLookup,
+  PaymentBuildResult,
+  PaymentLookup,
+  PreparedPayment,
   TreeContext,
 } from "../client/ports.js";
 import type {
@@ -31,6 +33,7 @@ import { SOL_MINT } from "../transaction/asset.js";
 import { resolveDepositSettlement } from "../flows/settlement.js";
 
 import { WalletError, wrapWalletError } from "./error.js";
+import { prepareServicePayment } from "./payment.js";
 import { paymentRecipientResolver } from "./registry.js";
 
 /** @internal */
@@ -130,7 +133,7 @@ export async function createDeposit(params: DepositParams): Promise<Deposit> {
 
 export type DepositClient = TreeContext & BlockhashProvider & Pick<ChainReader, "getAccount">;
 
-export type DepositTransactionParams = RecipientLookup<DepositClient> & {
+export type DepositTransactionParams = PaymentLookup<DepositClient> & {
   readonly client: DepositClient;
   readonly feePayer: Address;
   readonly depositor?: Address;
@@ -196,10 +199,14 @@ function checkedSetupInstruction(instruction: Instruction, index: number): void 
   );
 }
 
+export function buildDepositTransaction<Input extends DepositTransactionParams>(
+  input: Input,
+  context?: RequestContext,
+): Promise<PaymentBuildResult<Input>>;
 export async function buildDepositTransaction(
   input: DepositTransactionParams,
   context?: RequestContext,
-): Promise<Transaction> {
+): Promise<Transaction | PreparedPayment> {
   try {
     input.setupInstructions?.forEach(checkedSetupInstruction);
     const { resolve, revalidate } = paymentRecipientResolver(input, context);
@@ -235,8 +242,7 @@ export async function buildDepositTransaction(
       await deposit.instruction(tree, depositor),
     ];
     const lifetime = await input.client.getLatestBlockhash(context);
-    await revalidate();
-    return compileUnsignedTransaction({
+    const transaction = compileUnsignedTransaction({
       feePayer: input.feePayer,
       lifetime,
       computeUnitLimit: DEFAULT_COMPUTE_UNIT_LIMIT,
@@ -245,6 +251,9 @@ export async function buildDepositTransaction(
         : { setupInstructions: input.setupInstructions }),
       instructions,
     });
+    if (input.decryptionService === undefined) return transaction;
+    await revalidate();
+    return prepareServicePayment(transaction, input.client, revalidate);
   } catch (cause) {
     throw wrapWalletError("WALLET_BUILD_DEPOSIT", cause);
   }

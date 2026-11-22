@@ -19,7 +19,7 @@ import { parseJsonWithBigInts, stringifyJsonWithBigInts } from "@solana/rpc-spec
 import type { RequestContext } from "../interface/types.js";
 
 import { ClientError, isClientError } from "./error.js";
-import { composeSignal, type ComposedSignal } from "./internal.js";
+import { composeSignal, requestError, untilAborted, type ComposedSignal } from "./internal.js";
 
 export type SolanaRpc = Rpc<SolanaRpcApi>;
 export type SolanaRpcSubscriptions = RpcSubscriptions<SolanaRpcSubscriptionsApi>;
@@ -97,6 +97,20 @@ export async function runKitRpc<T>(
     throw operationError(method, signal, cause);
   } finally {
     signal.cleanup();
+  }
+}
+
+/** Bound a flow that includes callbacks outside the SDK's RPC transport. */
+export async function withRequestSignal<T>(
+  method: string,
+  context: RequestContext | undefined,
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const scope = composeSignal(context, method);
+  try {
+    return await untilAborted(operation(scope.signal), scope, () => requestError(method, scope));
+  } finally {
+    scope.cleanup();
   }
 }
 

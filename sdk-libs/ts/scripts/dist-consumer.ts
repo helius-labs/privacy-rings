@@ -20,6 +20,14 @@ export { ed25519DerivationMessage, X25519PublicKey, X25519Keypair } from "@heliu
 export { ShieldedPda } from "@heliuslabs/spr/program";
 export type { DecryptionRecipientProvider } from "@heliuslabs/spr";
 export type { TransferTransactionParams } from "@heliuslabs/spr/wallet";
+import { buildTransferTransaction, type PreparedPayment } from "@heliuslabs/spr";
+import type { TransferTransactionParams } from "@heliuslabs/spr/wallet";
+
+export function prepareServiceTransfer(
+  input: Extract<TransferTransactionParams, { decryptionService: object }>,
+): Promise<PreparedPayment> {
+  return buildTransferTransaction(input);
+}
 /** Named exports the changelog promises, resolved through the package exports map. */
 export {
   MAX_INPUT_TREES,

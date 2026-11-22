@@ -57,6 +57,7 @@ import {
   signSendAndConfirm,
   sync,
   tokenBalance,
+  waitForSignature,
   type Actor,
   type LiveHarness,
 } from "./live-helpers.js";
@@ -800,6 +801,47 @@ describe("live SDK lifecycle", { concurrent: false }, () => {
         .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0)),
     ).toEqual([10_000_000n, 10_000_000n, 10_000_000n, 10_000_000n, 10_000_000n, 30_000_000n]);
     assertHistory(owner, { kind: "merge", direction: "selfTransfer", amount: 30_000_000n });
+  }, 1_200_000);
+
+  it("submits a guarded payment to an unregistered recipient", async () => {
+    const { client } = harness;
+    const sender = await actor(client, 141);
+    const recipient = await actor(client, 142);
+    await fund(client, sender);
+    await register(client, sender);
+    await deposit({
+      client,
+      feePayer: sender.signer,
+      recipient: sender.signer.address,
+      amount: 50_000_000n,
+    });
+    await sync(client, sender);
+    let lookups = 0;
+    const payment = await buildTransferTransaction({
+      client,
+      wallet: sender.wallet,
+      keys: sender.keys,
+      feePayer: sender.signer.address,
+      recipient: recipient.signer.address,
+      amount: 10_000_000n,
+      decryptionService: {
+        genesisHash: await client.getGenesisHash(),
+        async address(owner) {
+          expect(owner).toBe(recipient.signer.address);
+          lookups += 1;
+          return recipient.keypair.shieldedAddress();
+        },
+      },
+    });
+    const signature = await payment.send((transaction, abortSignal) =>
+      signTransactionWithSigners([sender.signer], transaction, { abortSignal }),
+    );
+    await waitForSignature(client.solanaRpc, signature);
+    await sync(client, recipient);
+    expect(lookups).toBe(3);
+    expect(recipient.wallet.balance(SOL_MINT).amount).toBe(10_000_000n);
+    expect(await fetchUserRecord({ rpc: client, owner: recipient.signer.address })).toBeUndefined();
+    expect(await client.getBalance(recipient.signer.address)).toBe(0n);
   }, 1_200_000);
 
   it("keeps wallet spend state unchanged across build and signing failures", async () => {

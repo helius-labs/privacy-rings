@@ -3,6 +3,9 @@ import {
   decompileTransactionMessage,
   getAddressEncoder,
   getCompiledTransactionMessageDecoder,
+  generateKeyPairSigner,
+  getSignatureFromTransaction,
+  signTransactionWithSigners,
   type Address,
 } from "@solana/kit";
 import { describe, expect, it, vi } from "vitest";
@@ -75,7 +78,7 @@ async function chain(accounts: Readonly<{ config?: RpcAccount; registry?: RpcAcc
 function splDepositParams(
   client: Partial<DepositClient>,
   overrides: Partial<Omit<DepositTransactionParams, "client" | "decryptionService">> = {},
-): DepositTransactionParams {
+): Extract<DepositTransactionParams, { decryptionService?: undefined }> {
   return {
     client: depositClient(client),
     feePayer: PAYER,
@@ -106,14 +109,18 @@ function tagsOf(transaction: Transaction): number[] {
 const CREATE_THEN_DEPOSIT = [InstructionTag.createSplInterface, InstructionTag.deposit];
 
 it("builds the same SOL deposit with a service-resolved recipient as with explicit keys", async () => {
+  const payer = await generateKeyPairSigner();
   const recipient = ShieldedKeypair.generate().shieldedAddress();
   const getAccount = vi.fn(async () => undefined);
   const address = vi.fn(async () => recipient);
   const genesisHash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
   const getGenesisHash = vi.fn(async () => genesisHash);
+  const broadcastTransaction = vi.fn(async (transaction: Transaction) =>
+    getSignatureFromTransaction(transaction),
+  );
   const input = {
-    client: { ...depositClient({ getAccount }), getGenesisHash },
-    feePayer: PAYER,
+    client: { ...depositClient({ getAccount, broadcastTransaction }), getGenesisHash },
+    feePayer: payer.address,
     amount: 5n,
   };
   const explicit = await buildDepositTransaction({ ...input, recipient });
@@ -122,11 +129,17 @@ it("builds the same SOL deposit with a service-resolved recipient as with explic
     recipient: recipient.solanaAddress(),
     decryptionService: { address, genesisHash },
   });
-  expect(resolved.messageBytes).toEqual(explicit.messageBytes);
   expect(getAccount).toHaveBeenCalledTimes(4);
   expect(getGenesisHash).toHaveBeenCalledTimes(2);
   expect(address).toHaveBeenCalledWith(recipient.solanaAddress(), undefined);
   expect(address).toHaveBeenCalledTimes(2);
+  expect(broadcastTransaction).not.toHaveBeenCalled();
+  await resolved.send(async (transaction) => {
+    expect(transaction.messageBytes).toEqual(explicit.messageBytes);
+    return signTransactionWithSigners([payer], transaction);
+  });
+  expect(address).toHaveBeenCalledTimes(3);
+  expect(broadcastTransaction).toHaveBeenCalledOnce();
 });
 
 it("refuses to return a deposit when payment lookup closes after preparation", async () => {

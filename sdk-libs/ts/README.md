@@ -343,6 +343,30 @@ the chain or recipient keys during preparation fails the build. Open the
 service identity through the verified client to recover a note sent before
 registration.
 
+With a `decryptionService`, the builder returns a `PreparedPayment`. Pass a
+sign-only callback to `send`. The SDK verifies the message and every required
+signature, then resolves each Solana recipient again and submits through the
+same payment client. Explicit shielded addresses keep their original keys.
+Each prepared payment can be sent once. `cancel()`
+releases a transfer's reserved inputs before signing starts. A failure
+before broadcast also releases them. Once broadcast starts, the wallet
+keeps the reservation for its normal confirmation and expiry rules.
+
+```ts
+const payment = await buildTransferTransaction({
+  client,
+  wallet,
+  keys,
+  feePayer: feePayer.address,
+  recipient: recipientSolanaAddress,
+  amount: 25_000_000n,
+  decryptionService,
+});
+const signature = await payment.send((transaction, abortSignal) =>
+  signTransactionWithSigners([feePayer], transaction, { abortSignal }),
+);
+```
+
 ```ts
 import { buildTransferTransaction } from "@heliuslabs/spr";
 

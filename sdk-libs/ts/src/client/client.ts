@@ -3,11 +3,14 @@ import { prepareTransfer, checkedTransferCache } from "./prover/assembly.js";
 import { checkedContextSlot, proveThroughAuthority } from "./prover/indexed.js";
 import {
   assertIsAddress,
+  assertIsSendableTransaction,
   assertIsSignature,
   getBase64Encoder,
+  getBase64EncodedWireTransaction,
   type Address,
   type Commitment,
   type Instruction,
+  type SendableTransaction,
   type Signature,
   type Transaction,
 } from "@solana/kit";
@@ -64,6 +67,7 @@ import {
   type ProvenRingTransact,
   type Prover,
   type TransactionAssembler,
+  type TransactionBroadcaster,
   type TransactionConfirmer,
   type TreeContext,
   type RingProvingConfig,
@@ -212,6 +216,7 @@ export class SprClient
     ProofReader,
     Prover,
     TransactionConfirmer,
+    TransactionBroadcaster,
     KitRpcAccess,
     TreeContext,
     TransactionAssembler,
@@ -427,6 +432,24 @@ export class SprClient
       this.solanaRpc.getLatestBlockhash({ commitment: this.commitment }).send({ abortSignal }),
     );
     return value;
+  }
+
+  broadcastTransaction(
+    transaction: Transaction & SendableTransaction,
+    context?: RequestContext,
+  ): Promise<Signature> {
+    return runKitRpc("sendTransaction", context, async (abortSignal) => {
+      assertIsSendableTransaction(transaction);
+      const signature: unknown = await this.solanaRpc
+        .sendTransaction(getBase64EncodedWireTransaction(transaction), {
+          encoding: "base64",
+          preflightCommitment: this.commitment,
+        })
+        .send({ abortSignal });
+      return wireDecoder(
+        () => new ClientError("CLIENT_RPC", { details: { method: "sendTransaction" } }),
+      ).signature(signature, "sendTransaction");
+    });
   }
 
   async getSlot(context?: RequestContext): Promise<bigint> {

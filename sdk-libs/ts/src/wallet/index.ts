@@ -13,7 +13,11 @@ export { LocalKeys } from "../client/keys.js";
 export type {
   DecryptionRecipientProvider,
   GenesisHashReader,
+  PaymentBuildResult,
+  PaymentLookup,
+  PreparedPayment,
   RecipientLookup,
+  TransactionBroadcaster,
   ProofAuthority,
   ProofService,
   WalletKeys,

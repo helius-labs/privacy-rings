@@ -1,5 +1,5 @@
 import type { X25519PublicKey } from "../keypair/x25519.js";
-import type { Address, Commitment, Signature } from "@solana/kit";
+import type { Address, Commitment, SendableTransaction, Signature } from "@solana/kit";
 
 import { equalBytes } from "../interface/bytes.js";
 import type {
@@ -80,6 +80,34 @@ export type RecipientLookup<Client> =
       client: Client & GenesisHashReader;
       decryptionService: DecryptionRecipientProvider;
     }>;
+
+export interface TransactionBroadcaster {
+  broadcastTransaction(
+    transaction: Transaction & SendableTransaction,
+    context?: RequestContext,
+  ): Promise<Signature>;
+}
+
+export type PaymentLookup<Client> =
+  | Readonly<{ decryptionService?: undefined }>
+  | Readonly<{
+      client: Client & GenesisHashReader & TransactionBroadcaster;
+      decryptionService: DecryptionRecipientProvider;
+    }>;
+
+/** A sign-only callback and an SDK-owned submission to the payment RPC. */
+export interface PreparedPayment {
+  send(
+    sign: (transaction: Transaction, signal: AbortSignal) => Promise<Transaction>,
+    context?: RequestContext,
+  ): Promise<Signature>;
+  cancel(): void;
+}
+
+export type PaymentBuildResult<Input> =
+  Input extends Readonly<{ decryptionService: DecryptionRecipientProvider }>
+    ? PreparedPayment
+    : Transaction;
 
 export interface BlockhashProvider {
   getLatestBlockhash(context?: RequestContext): Promise<LatestBlockhash>;

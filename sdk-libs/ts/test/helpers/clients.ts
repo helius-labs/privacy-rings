@@ -15,6 +15,7 @@ import type {
   DepositClient,
   PrivateTransactionClient,
   SyncClient,
+  TransactionBroadcaster,
   WalletStateCipher,
 } from "../../src/wallet/index.js";
 
@@ -91,12 +92,15 @@ export function signatureReads(
   return reads;
 }
 
-export function depositClient(overrides: Partial<DepositClient> = {}): DepositClient {
+export function depositClient(
+  overrides: Partial<DepositClient & TransactionBroadcaster> = {},
+): DepositClient & TransactionBroadcaster {
   return {
     tree: TREE,
     treeId: TREE_ID,
     getLatestBlockhash: async () => BLOCKHASH,
     getAccount: async () => undefined,
+    broadcastTransaction: notImplemented("broadcastTransaction"),
     ...overrides,
   };
 }

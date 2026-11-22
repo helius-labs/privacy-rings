@@ -6,6 +6,7 @@ import {
   signTransactionWithSigners,
   type Address,
   type Blockhash,
+  type Transaction,
 } from "@solana/kit";
 import { describe, expect, it, vi } from "vitest";
 
@@ -19,6 +20,7 @@ import {
   type AuthorizedPrivateTransaction,
   type ProofDataSource,
   type ProofService,
+  type TransactionBroadcaster,
 } from "../src/client/ports.js";
 import type { DepositClient, PrivateTransactionClient } from "../src/wallet/index.js";
 import {
@@ -179,18 +181,23 @@ function latestBlockhashClient(feeTree = TREE): DepositClient {
   });
 }
 
-function capturePrivateBuild(): Readonly<{
-  client: PrivateTransactionClient;
+function capturePrivateBuild(transaction = TRANSACTION): Readonly<{
+  client: PrivateTransactionClient & TransactionBroadcaster;
   assemble: ReturnType<typeof vi.fn>;
 }> {
   const assemble = vi.fn(
-    async (_input: Readonly<{ authorized: AuthorizedPrivateTransaction }>) => TRANSACTION,
+    async (_input: Readonly<{ authorized: AuthorizedPrivateTransaction }>) => transaction,
   );
   return {
-    client: privateTransactionClient({
-      getAccount: vi.fn(async () => undefined),
-      assembleAuthorizedPrivateTransaction: assemble,
-    }),
+    client: {
+      ...privateTransactionClient({
+        getAccount: vi.fn(async () => undefined),
+        assembleAuthorizedPrivateTransaction: assemble,
+      }),
+      async broadcastTransaction() {
+        throw new Error("unexpected RPC broadcast");
+      },
+    },
     assemble,
   };
 }
@@ -1151,6 +1158,91 @@ describe("unsigned public transaction builders", () => {
     expect(address).toHaveBeenCalledOnce();
     expect(serializeWallet(wallet)).toEqual(before);
   });
+
+  it.each(["recipient changed", "registry changed", "broadcast uncertain", "cancelled"] as const)(
+    "keeps spend reservations consistent when a prepared payment is %s",
+    async (outcome) => {
+      const keypair = spendingKeypair();
+      const payer = await generateKeyPairSigner();
+      const wallet = fundedWallet(keypair, [100n]);
+      const recipient = ShieldedKeypair.generate().shieldedAddress();
+      const replacement = ShieldedKeypair.generate().shieldedAddress();
+      const changed = ShieldedAddress.fromPublicKeys(
+        recipient.signingPublicKey,
+        replacement.nullifierPublicKey,
+        replacement.viewingPublicKey,
+      );
+      const { client } = capturePrivateBuild(emptyTransaction(payer.address));
+      const genesisHash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
+      let approved = false;
+      const owner = recipient.solanaAddress();
+      const pda = await internalUserRecordPda(owner);
+      const getAccount = async () =>
+        outcome === "registry changed"
+          ? {
+              owner: USER_REGISTRY_PROGRAM_ID,
+              lamports: 1n,
+              data: Uint8Array.of(
+                1,
+                ...getAddressEncoder().encode(owner),
+                pda.bump,
+                ...recipient.nullifierPublicKey,
+                ...(approved ? changed : recipient).viewingPublicKey.toBytes(),
+                0,
+              ),
+            }
+          : undefined;
+      const address = vi.fn(async () =>
+        approved && outcome === "recipient changed" ? changed : recipient,
+      );
+      const broadcastTransaction = vi.fn(async () => {
+        throw new ClientError("CLIENT_RPC", { details: { method: "sendTransaction" } });
+      });
+      const before = serializeWallet(wallet);
+      const payment = await buildTransferTransaction({
+        client: {
+          ...client,
+          getAccount,
+          getGenesisHash: async () => genesisHash,
+          broadcastTransaction,
+        },
+        wallet,
+        keys: localKeys(keypair),
+        feePayer: payer.address,
+        recipient: owner,
+        amount: 25n,
+        decryptionService: { address, genesisHash },
+      });
+      const sign = vi.fn(async (transaction: Transaction) => {
+        approved = true;
+        return signTransactionWithSigners([payer], transaction);
+      });
+      expect(serializeWallet(wallet)).not.toEqual(before);
+      if (outcome === "cancelled") payment.cancel();
+      const causeCode =
+        outcome === "cancelled"
+          ? "WALLET_PAYMENT_ALREADY_USED"
+          : outcome === "recipient changed" || outcome === "registry changed"
+            ? "WALLET_DECRYPTION_RECIPIENT_MISMATCH"
+            : "CLIENT_RPC";
+      await expect(payment.send(sign)).rejects.toMatchObject({
+        code: "WALLET_SUBMIT_PAYMENT",
+        causeCode,
+      });
+      payment.cancel();
+      expect(sign).toHaveBeenCalledTimes(outcome === "cancelled" ? 0 : 1);
+      expect(broadcastTransaction).toHaveBeenCalledTimes(outcome === "broadcast uncertain" ? 1 : 0);
+      if (outcome === "registry changed") expect(address).not.toHaveBeenCalled();
+      if (outcome === "broadcast uncertain") {
+        expect(serializeWallet(wallet)).not.toEqual(before);
+        await expect(payment.send(sign)).rejects.toMatchObject({
+          causeCode: "WALLET_PAYMENT_ALREADY_USED",
+        });
+      } else {
+        expect(serializeWallet(wallet)).toEqual(before);
+      }
+    },
+  );
 
   it("applies split defaults without mutating the wallet", async () => {
     const keypair = spendingKeypair();

@@ -1,8 +1,11 @@
 import type {
   ChainReader,
-  RecipientLookup,
+  PaymentBuildResult,
+  PaymentLookup,
+  PreparedPayment,
   ProofDataSourceContext,
   TransactionAssembler,
+  TransactionBroadcaster,
   WalletKeys,
 } from "../client/ports.js";
 import type { TransactOwnerSigner } from "../client/prover/types.js";
@@ -25,7 +28,8 @@ import {
   createWithdrawal,
   type TransferDestination,
 } from "./actions.js";
-import { wrapWalletError } from "./error.js";
+import { WalletError, wrapWalletError } from "./error.js";
+import { prepareServicePayment } from "./payment.js";
 import { authorizePrivateTransaction } from "./private-transaction.js";
 import { withdrawalSetupInstructions } from "../flows/settlement.js";
 
@@ -55,7 +59,7 @@ export interface PrivateTransactionParams {
 }
 
 export type TransferTransactionParams = PrivateTransactionParams &
-  RecipientLookup<PrivateTransactionClient> & {
+  PaymentLookup<PrivateTransactionClient> & {
     readonly recipient: TransferDestination;
     readonly asset?: Address;
     readonly amount: bigint;
@@ -68,7 +72,7 @@ export interface TransferPayment {
 }
 
 export type MultiTransferTransactionParams = PrivateTransactionParams &
-  RecipientLookup<PrivateTransactionClient> & {
+  PaymentLookup<PrivateTransactionClient> & {
     /** Each paid as its own private output, in this order; one to fifteen of them. */
     readonly payments: readonly TransferPayment[];
     readonly asset?: Address;
@@ -87,10 +91,14 @@ export interface SplitTransactionParams extends PrivateTransactionParams {
   readonly input?: Bytes32;
 }
 
+export function buildTransferTransaction<Input extends TransferTransactionParams>(
+  input: Input,
+  context?: RequestContext,
+): Promise<PaymentBuildResult<Input>>;
 export async function buildTransferTransaction(
   input: TransferTransactionParams,
   context?: RequestContext,
-): Promise<Transaction> {
+): Promise<Transaction | PreparedPayment> {
   try {
     const created = await createTransfer(
       {
@@ -105,7 +113,9 @@ export async function buildTransferTransaction(
       created.transaction,
       [],
       context,
-      created.revalidateRecipients,
+      input.decryptionService === undefined
+        ? undefined
+        : { client: input.client, revalidate: created.revalidateRecipients },
     );
   } catch (cause) {
     throw wrapWalletError("WALLET_BUILD_TRANSFER", cause);
@@ -119,10 +129,14 @@ export async function buildTransferTransaction(
  * `transfer` intent for a single payment). UTXOs beyond the input count the
  * wider proof allows fail with `WALLET_TOO_MANY_INPUTS`; merge first.
  */
+export function buildMultiTransferTransaction<Input extends MultiTransferTransactionParams>(
+  input: Input,
+  context?: RequestContext,
+): Promise<PaymentBuildResult<Input>>;
 export async function buildMultiTransferTransaction(
   input: MultiTransferTransactionParams,
   context?: RequestContext,
-): Promise<Transaction> {
+): Promise<Transaction | PreparedPayment> {
   try {
     const created = await createMultiTransfer(
       {
@@ -137,7 +151,9 @@ export async function buildMultiTransferTransaction(
       created.transaction,
       [],
       context,
-      created.revalidateRecipients,
+      input.decryptionService === undefined
+        ? undefined
+        : { client: input.client, revalidate: created.revalidateRecipients },
     );
   } catch (cause) {
     throw wrapWalletError("WALLET_BUILD_TRANSFER", cause);
@@ -188,13 +204,32 @@ export async function buildSplitTransaction(
   }
 }
 
+type PaymentChecks = Readonly<{
+  client: TransactionBroadcaster;
+  revalidate(context?: RequestContext): Promise<void>;
+}>;
+
+function buildAuthorizedTransaction(
+  input: PrivateTransactionParams,
+  transaction: Parameters<typeof authorizePrivateTransaction>[0],
+  setupInstructions: readonly Instruction[],
+  context: RequestContext | undefined,
+): Promise<Transaction>;
+function buildAuthorizedTransaction(
+  input: PrivateTransactionParams,
+  transaction: Parameters<typeof authorizePrivateTransaction>[0],
+  setupInstructions: readonly Instruction[],
+  context: RequestContext | undefined,
+  payment: PaymentChecks | undefined,
+): Promise<Transaction | PreparedPayment>;
 async function buildAuthorizedTransaction(
   input: PrivateTransactionParams,
   transaction: Parameters<typeof authorizePrivateTransaction>[0],
   setupInstructions: readonly Instruction[],
   context: RequestContext | undefined,
-  revalidateRecipients?: () => Promise<void>,
-): Promise<Transaction> {
+  payment?: PaymentChecks,
+): Promise<Transaction | PreparedPayment> {
+  const reservationId = transaction._reservationId();
   try {
     const authorized = await authorizePrivateTransaction(
       transaction,
@@ -219,10 +254,30 @@ async function buildAuthorizedTransaction(
         ),
       context,
     );
-    await revalidateRecipients?.();
-    return assembled;
+    if (payment === undefined) return assembled;
+    await payment.revalidate();
+    return prepareServicePayment(
+      assembled,
+      payment.client,
+      payment.revalidate,
+      reservationId === undefined
+        ? undefined
+        : {
+            assertActive() {
+              if (
+                !input.wallet
+                  ._activeReservations(BigInt(Date.now()))
+                  .some(({ id }) => id === reservationId)
+              ) {
+                throw new WalletError("WALLET_UNSIGNED_INPUT_UNAVAILABLE");
+              }
+            },
+            release() {
+              input.wallet._releaseReservation(reservationId);
+            },
+          },
+    );
   } catch (cause) {
-    const reservationId = transaction._reservationId();
     if (reservationId !== undefined) input.wallet._releaseReservation(reservationId);
     throw cause;
   }

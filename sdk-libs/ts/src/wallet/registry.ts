@@ -334,16 +334,16 @@ export function paymentRecipientResolver(
   context?: RequestContext,
 ) {
   const service = input.decryptionService;
-  const fallbacks = new Map<Address, ShieldedAddress>();
+  const paymentAddresses = new Map<Address, ShieldedAddress>();
   const networkMismatch = () => new WalletError("WALLET_DECRYPTION_NETWORK_MISMATCH");
-  function requireActive(): void {
-    if (context?.signal?.aborted) throw new WalletError("WALLET_RECIPIENT_LOOKUP_ABORTED");
+  function requireActive(request?: RequestContext): void {
+    if (request?.signal?.aborted) throw new WalletError("WALLET_RECIPIENT_LOOKUP_ABORTED");
   }
-  async function checkServiceChain(): Promise<void> {
+  async function checkServiceChain(request?: RequestContext): Promise<void> {
     if (input.decryptionService === undefined) return;
-    requireActive();
-    const hash = await input.client.getGenesisHash(context);
-    requireActive();
+    requireActive(request);
+    const hash = await input.client.getGenesisHash(request);
+    requireActive(request);
     if (
       wireDecoder(networkMismatch).address(hash, "getGenesisHash") !==
       input.decryptionService.genesisHash
@@ -351,17 +351,21 @@ export function paymentRecipientResolver(
       throw networkMismatch();
     }
   }
-  function chainCheckForBatch(): () => Promise<void> {
+  function chainCheckForBatch(request?: RequestContext): () => Promise<void> {
     let checked: Promise<void> | undefined;
-    return () => (checked ??= checkServiceChain());
+    return () => (checked ??= checkServiceChain(request));
   }
-  async function resolveOwner(recipient: Address, requireServiceChain: () => Promise<void>) {
-    requireActive();
+  async function resolveOwner(
+    recipient: Address,
+    requireServiceChain: () => Promise<void>,
+    request?: RequestContext,
+  ) {
+    requireActive(request);
     const client = input.client;
     if (client === undefined) throw new WalletError("WALLET_RECIPIENT_CLIENT_REQUIRED");
     async function readRegistration(rpc: AccountReader) {
-      const record = await resolveRegisteredAddress({ rpc, owner: recipient }, context);
-      requireActive();
+      const record = await resolveRegisteredAddress({ rpc, owner: recipient }, request);
+      requireActive(request);
       return record && { kind: "registered" as const, ...record };
     }
     const registered = await readRegistration(client);
@@ -370,8 +374,8 @@ export function paymentRecipientResolver(
       throw new WalletError("WALLET_RECIPIENT_NOT_REGISTERED", { details: { recipient } });
     }
     await requireServiceChain();
-    const address = await service.address(recipient, context);
-    requireActive();
+    const address = await service.address(recipient, request);
+    requireActive(request);
     if (
       !(address instanceof ShieldedAddress) ||
       address.signingPublicKey.signatureType() !== "ed25519" ||
@@ -383,7 +387,7 @@ export function paymentRecipientResolver(
     if (latestRegistration) return latestRegistration;
     return { kind: "shielded" as const, address, viewTag: address.confidentialViewTag() };
   }
-  const requireServiceChain = chainCheckForBatch();
+  const requireServiceChain = chainCheckForBatch(context);
   const lookups = new Map<Address, ReturnType<typeof resolveOwner>>();
   async function resolve(recipient: Address | ShieldedAddress) {
     if (recipient instanceof ShieldedAddress) {
@@ -395,21 +399,21 @@ export function paymentRecipientResolver(
     }
     let lookup = lookups.get(recipient);
     if (!lookup) {
-      lookup = resolveOwner(recipient, requireServiceChain).then((resolved) => {
-        if (resolved.kind === "shielded") fallbacks.set(recipient, resolved.address);
+      lookup = resolveOwner(recipient, requireServiceChain, context).then((resolved) => {
+        if (service !== undefined) paymentAddresses.set(recipient, resolved.address);
         return resolved;
       });
       lookups.set(recipient, lookup);
     }
     return lookup;
   }
-  async function revalidate(): Promise<void> {
-    if (fallbacks.size === 0) return;
-    const requireCurrentServiceChain = chainCheckForBatch();
+  async function revalidate(request = context): Promise<void> {
+    if (paymentAddresses.size === 0) return;
+    const requireCurrentServiceChain = chainCheckForBatch(request);
     await requireCurrentServiceChain();
     await Promise.all(
-      [...fallbacks].map(async ([owner, original]) => {
-        const { address: current } = await resolveOwner(owner, requireCurrentServiceChain);
+      [...paymentAddresses].map(async ([owner, original]) => {
+        const { address: current } = await resolveOwner(owner, requireCurrentServiceChain, request);
         if (!equalBytes(current.toBytes(), original.toBytes())) {
           throw new WalletError("WALLET_DECRYPTION_RECIPIENT_MISMATCH");
         }
