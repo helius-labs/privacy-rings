@@ -480,6 +480,45 @@ pub fn try_resolve_registered_address<R: Rpc>(
     )?))
 }
 
+/// Uses the registry record, then the decryption service if the record is absent.
+pub fn resolve_shielded_recipient<R: Rpc>(
+    rpc: &R,
+    owner: Pubkey,
+    service: impl FnOnce(Pubkey) -> Result<ShieldedAddress, ClientError>,
+) -> Result<ShieldedAddress, ClientError> {
+    if let Some(record) = try_resolve_registered_address(rpc, owner)? {
+        return Ok(record.address);
+    }
+    check_service_recipient(owner, service(owner)?)
+}
+
+/// Resolves a recipient with an asynchronous verified decryption client.
+pub async fn resolve_shielded_recipient_async<R: AsyncRpc, F>(
+    rpc: &R,
+    owner: Pubkey,
+    service: impl FnOnce(Pubkey) -> F,
+) -> Result<ShieldedAddress, ClientError>
+where
+    F: std::future::Future<Output = Result<ShieldedAddress, ClientError>>,
+{
+    if let Some(record) = try_resolve_registered_address_async(rpc, owner).await? {
+        return Ok(record.address);
+    }
+    check_service_recipient(owner, service(owner).await?)
+}
+
+fn check_service_recipient(
+    owner: Pubkey,
+    address: ShieldedAddress,
+) -> Result<ShieldedAddress, ClientError> {
+    if address.signing_pubkey.as_ed25519()? != owner.to_bytes() {
+        return Err(ClientError::AddressResolution(
+            "the decryption service returned another owner".into(),
+        ));
+    }
+    Ok(address)
+}
+
 pub async fn try_resolve_registered_address_async<R: AsyncRpc>(
     rpc: &R,
     owner: Pubkey,
@@ -901,6 +940,73 @@ mod tests {
 
         let tag = recipient_confidential_view_tag_sync(&rpc, owner).expect("tag");
         assert_eq!(tag, [0u8; 32]);
+    }
+
+    #[test]
+    fn decryption_resolution_uses_only_a_successful_registry_miss() {
+        let keys = ShieldedKeypair::new_ed25519().unwrap();
+        let owner = keys.pubkey();
+        let address = keys.shielded_address().unwrap();
+        let registered = registry_holding(owner, fields(&address));
+        let resolved = resolve_shielded_recipient(&registered, owner, |_| {
+            panic!("the registered owner must use its registry keys")
+        })
+        .unwrap();
+        assert_eq!(resolved, address);
+
+        let missing = MockRpc::default();
+        assert_eq!(
+            resolve_shielded_recipient(&missing, owner, |requested| {
+                assert_eq!(requested, owner);
+                Ok(address)
+            })
+            .unwrap(),
+            address
+        );
+        let wrong_address = ed25519_address(19);
+        assert!(resolve_shielded_recipient(&missing, owner, |_| Ok(wrong_address)).is_err());
+    }
+
+    #[tokio::test]
+    async fn async_decryption_resolution_rejects_malformed_registry_and_wrong_owner() {
+        let keys = ShieldedKeypair::new_ed25519().unwrap();
+        let owner = keys.pubkey();
+        let address = keys.shielded_address().unwrap();
+        let mut registered = registry_holding(owner, fields(&address));
+        assert_eq!(
+            resolve_shielded_recipient_async(&registered, owner, |_| async {
+                panic!("a registered recipient must use its registry keys");
+            })
+            .await
+            .unwrap(),
+            address
+        );
+        registered.account.as_mut().unwrap().1.data.clear();
+        assert!(
+            resolve_shielded_recipient_async(&registered, owner, |_| async {
+                panic!("a malformed record must not use the decryption service");
+            })
+            .await
+            .is_err()
+        );
+
+        let missing = MockRpc::default();
+        assert_eq!(
+            resolve_shielded_recipient_async(&missing, owner, |requested| async move {
+                assert_eq!(requested, owner);
+                Ok(address)
+            })
+            .await
+            .unwrap(),
+            address
+        );
+        assert!(
+            resolve_shielded_recipient_async(&missing, owner, |_| async {
+                Ok(ed25519_address(19))
+            })
+            .await
+            .is_err()
+        );
     }
 
     #[tokio::test]

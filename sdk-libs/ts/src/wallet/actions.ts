@@ -1,4 +1,4 @@
-import type { ChainReader } from "../client/ports.js";
+import type { ChainReader, DecryptionRecipientProvider } from "../client/ports.js";
 import { equalBytes, bytesKey } from "../interface/bytes.js";
 import {
   type Address,
@@ -24,7 +24,7 @@ import {
 } from "../flows/select.js";
 import { WalletError, wrapWalletError } from "./error.js";
 import { reserveWalletEntries } from "./internal.js";
-import { resolveRegisteredAddress } from "./registry.js";
+import { resolvePaymentRecipient } from "./registry.js";
 
 export { resolveWithdrawalSettlement as resolveWithdrawal };
 
@@ -121,6 +121,7 @@ export class UnsignedPrivateTransaction {
 
 export interface TransferParams {
   readonly client?: Pick<ChainReader, "getAccount">;
+  readonly decryptionService?: DecryptionRecipientProvider;
   readonly wallet: Wallet;
   readonly payer: Address;
   readonly recipient: TransferDestination;
@@ -159,6 +160,7 @@ export interface CreatedTransfer {
 
 export interface MultiTransferParams {
   readonly client?: Pick<ChainReader, "getAccount">;
+  readonly decryptionService?: DecryptionRecipientProvider;
   readonly wallet: Wallet;
   readonly payer: Address;
   readonly asset: Address;
@@ -329,7 +331,12 @@ export async function createTransfer(
 ): Promise<CreatedTransfer> {
   u64Amount(params.amount);
   try {
-    const recipient = await resolveTransferRecipient(params.recipient, params.client, context);
+    const recipient = await resolveTransferRecipient(
+      params.recipient,
+      params.client,
+      params.decryptionService,
+      context,
+    );
     return Object.freeze({
       transaction: createPayments(params, [{ recipient, amount: params.amount }]),
       recipient,
@@ -372,7 +379,12 @@ export async function createMultiTransfer(
     // Every lookup finishes before a UTXO is reserved, so a refusal reserves nothing.
     const resolved = await Promise.all(
       params.payments.map(async (payment) => ({
-        recipient: await resolveTransferRecipient(payment.recipient, params.client, context),
+        recipient: await resolveTransferRecipient(
+          payment.recipient,
+          params.client,
+          params.decryptionService,
+          context,
+        ),
         amount: payment.amount,
       })),
     );
@@ -431,17 +443,20 @@ function createPayments(
 async function resolveTransferRecipient(
   recipient: TransferDestination,
   client: Pick<ChainReader, "getAccount"> | undefined,
+  decryptionService: DecryptionRecipientProvider | undefined,
   context: RequestContext | undefined,
 ): Promise<TransferRecipient> {
   if (recipient instanceof ShieldedAddress) {
     return { kind: "shielded", address: recipient, viewTag: recipient.confidentialViewTag() };
   }
   if (client === undefined) throw new WalletError("WALLET_RECIPIENT_CLIENT_REQUIRED");
-  const registered = await resolveRegisteredAddress({ rpc: client, owner: recipient }, context);
-  if (registered === undefined) {
-    throw new WalletError("WALLET_RECIPIENT_NOT_REGISTERED", { details: { recipient } });
-  }
-  return { kind: "registered", ...registered };
+  return resolvePaymentRecipient(
+    { rpc: client, ...(decryptionService === undefined ? {} : { decryptionService }) },
+    recipient,
+    (owner) =>
+      new WalletError("WALLET_RECIPIENT_NOT_REGISTERED", { details: { recipient: owner } }),
+    context,
+  );
 }
 
 export function createSplit(params: SplitParams): CreatedSplit {

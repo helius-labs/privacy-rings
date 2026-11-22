@@ -315,8 +315,7 @@ the record's rent and pays the transaction fee. The owner still signs but needs
 no SOL, so the transaction carries two signatures.
 
 `buildRegistrationTransaction` returns `undefined` when that owner is already
-registered with the same keys. A recipient that never submitted this
-transaction fails a transfer with `WALLET_RECIPIENT_NOT_REGISTERED`.
+registered with the same keys.
 
 A registration never replaces keys that are already published. When the owner's
 record holds other keys, `buildRegistrationTransaction` rejects with
@@ -327,10 +326,18 @@ another nullifier key registers under a new owner.
 
 ### Private transfer
 
-A private transfer is sent to a Solana wallet address. The SDK looks up that
-address in the onchain registry. If it is not registered, the call fails with
-`WALLET_RECIPIENT_NOT_REGISTERED`. It does not withdraw. Use
-`buildWithdrawalTransaction` for a public recipient.
+A private transfer looks up the recipient's Solana address in the onchain
+registry. To pay an unregistered owner, pass a verified
+`decryptionService` that implements `DecryptionRecipientProvider`. The SDK
+uses it only after a successful registry lookup finds no record and checks
+that it returns the original Ed25519 owner. A missing record without a
+provider returns `WALLET_RECIPIENT_NOT_REGISTERED`. Use
+`buildWithdrawalTransaction` for a public payment.
+
+The same provider works with deposits and multi-recipient transfers. Later
+registration directs new payments to the onchain keys. Open the service
+identity through the verified client to recover a note sent before
+registration.
 
 ```ts
 import { buildTransferTransaction } from "@heliuslabs/spr";

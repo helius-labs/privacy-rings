@@ -18,6 +18,8 @@ export function structuredProgramBuilder(
 }
 export { ed25519DerivationMessage, X25519PublicKey, X25519Keypair } from "@heliuslabs/spr/keypair";
 export { ShieldedPda } from "@heliuslabs/spr/program";
+export type { DecryptionRecipientProvider } from "@heliuslabs/spr";
+export type { TransferTransactionParams } from "@heliuslabs/spr/wallet";
 /** Named exports the changelog promises, resolved through the package exports map. */
 export {
   MAX_INPUT_TREES,

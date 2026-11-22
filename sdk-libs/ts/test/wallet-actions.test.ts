@@ -342,6 +342,126 @@ describe("private transaction construction", () => {
     });
   });
 
+  it("uses verified service keys after a successful registry miss", async () => {
+    const recipient = ShieldedKeypair.generate().shieldedAddress();
+    const address = vi.fn(async () => recipient);
+    const context = { signal: new AbortController().signal };
+    const created = await createTransfer(
+      {
+        client: { getAccount: async () => undefined },
+        decryptionService: { address },
+        wallet: fundedWallet(ShieldedKeypair.generate(), [100n]),
+        payer: PAYER,
+        recipient: recipient.solanaAddress(),
+        asset: SOL_MINT,
+        amount: 10n,
+      },
+      context,
+    );
+    expect(created.recipient.address).toBe(recipient);
+    expect(address).toHaveBeenCalledWith(recipient.solanaAddress(), context);
+  });
+
+  it("uses the registered wallet before invoking a decryption provider", async () => {
+    const recipient = ShieldedKeypair.generate().shieldedAddress();
+    const owner = recipient.solanaAddress();
+    const pda = await internalUserRecordPda(owner);
+    const record = Uint8Array.of(
+      1,
+      ...getAddressEncoder().encode(owner),
+      pda.bump,
+      ...recipient.nullifierPublicKey,
+      ...recipient.viewingPublicKey.toBytes(),
+      0,
+    );
+    const address = vi.fn(async () => ShieldedKeypair.generate().shieldedAddress());
+    const result = await createTransfer({
+      wallet: fundedWallet(ShieldedKeypair.generate(), [100n]),
+      client: {
+        getAccount: async () => ({ owner: USER_REGISTRY_PROGRAM_ID, data: record, lamports: 1n }),
+      },
+      decryptionService: { address },
+      recipient: owner,
+      payer: PAYER,
+      asset: SOL_MINT,
+      amount: 10n,
+    });
+    expect(result.recipient.kind).toBe("registered");
+    expect(result.recipient.address.toBytes()).toEqual(recipient.toBytes());
+    expect(address).not.toHaveBeenCalled();
+  });
+
+  it("leaves spend state intact on registry failure or a mismatched service address", async () => {
+    const wallet = fundedWallet(ShieldedKeypair.generate(), [100n]);
+    const before = serializeWallet(wallet);
+    const address = vi.fn(async () => ShieldedKeypair.generate().shieldedAddress());
+    const input = {
+      decryptionService: { address },
+      wallet,
+      payer: PAYER,
+      recipient: RECIPIENT,
+      asset: SOL_MINT,
+      amount: 10n,
+    };
+    await expect(
+      createTransfer({
+        ...input,
+        client: {
+          getAccount: async () => {
+            throw new Error("RPC unavailable");
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "WALLET_CREATE_TRANSFER" });
+    expect(address).not.toHaveBeenCalled();
+    await expect(
+      createTransfer({
+        ...input,
+        client: { getAccount: async () => undefined },
+      }),
+    ).rejects.toMatchObject({
+      code: "WALLET_CREATE_TRANSFER",
+      causeCode: "WALLET_DECRYPTION_RECIPIENT_MISMATCH",
+    });
+    expect(serializeWallet(wallet)).toEqual(before);
+  });
+
+  it("keeps the reservation state unchanged when registry or service lookup is cancelled", async () => {
+    const recipient = ShieldedKeypair.generate().shieldedAddress();
+    const wallet = fundedWallet(ShieldedKeypair.generate(), [100n]);
+    const before = serializeWallet(wallet);
+    for (const cancelAt of ["registry", "service"] as const) {
+      const controller = new AbortController();
+      const getAccount = vi.fn(async () => {
+        if (cancelAt === "registry") controller.abort();
+        return undefined;
+      });
+      const address = vi.fn(async () => {
+        controller.abort();
+        return recipient;
+      });
+      await expect(
+        createTransfer(
+          {
+            client: { getAccount },
+            decryptionService: { address },
+            wallet,
+            payer: PAYER,
+            recipient: recipient.solanaAddress(),
+            asset: SOL_MINT,
+            amount: 10n,
+          },
+          { signal: controller.signal },
+        ),
+      ).rejects.toMatchObject({
+        code: "WALLET_CREATE_TRANSFER",
+        causeCode: "WALLET_RECIPIENT_LOOKUP_ABORTED",
+      });
+      expect(address).toHaveBeenCalledTimes(cancelAt === "registry" ? 0 : 1);
+      expect(serializeWallet(wallet)).toEqual(before);
+    }
+  });
+
   it("keeps split and merge conservation in their internal intent models", async () => {
     const keypair = ShieldedKeypair.generate();
     const wallet = fundedWallet(keypair, [20n, 30n, 100n]);

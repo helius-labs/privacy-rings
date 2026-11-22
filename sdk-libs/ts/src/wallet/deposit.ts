@@ -1,6 +1,11 @@
 import { compileUnsignedTransaction } from "../flows/compile.js";
 import { DEFAULT_COMPUTE_UNIT_LIMIT, checkedAddress } from "../flows/internal.js";
-import type { BlockhashProvider, ChainReader, TreeContext } from "../client/ports.js";
+import type {
+  BlockhashProvider,
+  ChainReader,
+  DecryptionRecipientProvider,
+  TreeContext,
+} from "../client/ports.js";
 import type {
   Address,
   AssetDeposit,
@@ -131,6 +136,8 @@ export interface DepositTransactionParams {
   readonly depositor?: Address;
   readonly tree?: Address;
   readonly recipient: Address | ShieldedAddress;
+  /** Used when the registry confirms the recipient has no record. */
+  readonly decryptionService?: DecryptionRecipientProvider;
   readonly asset?: Address;
   readonly amount: bigint;
   readonly splTokenAccount?: Address;
@@ -198,7 +205,13 @@ export async function buildDepositTransaction(
   try {
     input.setupInstructions?.forEach(checkedSetupInstruction);
     const recipient = await resolveShieldedRecipient(
-      { rpc: input.client, recipient: input.recipient },
+      {
+        rpc: input.client,
+        recipient: input.recipient,
+        ...(input.decryptionService === undefined
+          ? {}
+          : { decryptionService: input.decryptionService }),
+      },
       (unregistered) =>
         new WalletError("WALLET_RECIPIENT_NOT_REGISTERED", {
           details: { recipient: unregistered },

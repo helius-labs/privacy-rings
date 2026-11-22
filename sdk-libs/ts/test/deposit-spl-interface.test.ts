@@ -105,6 +105,22 @@ function tagsOf(transaction: Transaction): number[] {
 
 const CREATE_THEN_DEPOSIT = [InstructionTag.createSplInterface, InstructionTag.deposit];
 
+it("builds the same SOL deposit with a service-resolved recipient as with explicit keys", async () => {
+  const recipient = ShieldedKeypair.generate().shieldedAddress();
+  const getAccount = vi.fn(async () => undefined);
+  const address = vi.fn(async () => recipient);
+  const input = { client: depositClient({ getAccount }), feePayer: PAYER, amount: 5n };
+  const explicit = await buildDepositTransaction({ ...input, recipient });
+  const resolved = await buildDepositTransaction({
+    ...input,
+    recipient: recipient.solanaAddress(),
+    decryptionService: { address },
+  });
+  expect(resolved.messageBytes).toEqual(explicit.messageBytes);
+  expect(getAccount).toHaveBeenCalledOnce();
+  expect(address).toHaveBeenCalledWith(recipient.solanaAddress(), undefined);
+});
+
 describe("deposit SPL interface setup", () => {
   it("prepends the interface creation when the mint has no registry entry", async () => {
     const transaction = await splDeposit(await chain({ config: protocolConfig(OTHER, true) }));

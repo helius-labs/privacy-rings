@@ -15,7 +15,11 @@ import {
 
 import { compileUnsignedTransaction } from "../flows/compile.js";
 import { DEFAULT_COMPUTE_UNIT_LIMIT } from "../flows/internal.js";
-import type { BlockhashProvider, ChainReader } from "../client/ports.js";
+import type {
+  BlockhashProvider,
+  ChainReader,
+  DecryptionRecipientProvider,
+} from "../client/ports.js";
 import type { RpcAccount } from "../client/rpc.js";
 import { equalBytes, bytesKey } from "../interface/bytes.js";
 import {
@@ -329,17 +333,43 @@ export function resolvedAddressFromRecord(owner: Address, record: UserRecord): R
 
 /** @internal A `ShieldedAddress` passes through, an owner address resolves or throws. */
 export async function resolveShieldedRecipient(
-  input: Readonly<{ rpc: AccountReader; recipient: Address | ShieldedAddress }>,
+  input: Readonly<{
+    rpc: AccountReader;
+    recipient: Address | ShieldedAddress;
+    decryptionService?: DecryptionRecipientProvider;
+  }>,
   notRegistered: (recipient: Address) => Error,
   context?: RequestContext,
 ): Promise<ShieldedAddress> {
   if (input.recipient instanceof ShieldedAddress) return input.recipient;
-  const registered = await resolveRegisteredAddress(
-    { rpc: input.rpc, owner: input.recipient },
-    context,
-  );
-  if (registered === undefined) throw notRegistered(input.recipient);
-  return registered.address;
+  return (await resolvePaymentRecipient(input, input.recipient, notRegistered, context)).address;
+}
+
+/** @internal Registry and service are the two resolution paths for an owner address. */
+export async function resolvePaymentRecipient(
+  input: Readonly<{ rpc: AccountReader; decryptionService?: DecryptionRecipientProvider }>,
+  owner: Address,
+  notRegistered: (recipient: Address) => Error,
+  context?: RequestContext,
+) {
+  function requireActive(): void {
+    if (context?.signal?.aborted) throw new WalletError("WALLET_RECIPIENT_LOOKUP_ABORTED");
+  }
+  requireActive();
+  const registered = await resolveRegisteredAddress({ rpc: input.rpc, owner }, context);
+  requireActive();
+  if (registered !== undefined) return { kind: "registered" as const, ...registered };
+  if (input.decryptionService === undefined) throw notRegistered(owner);
+  const address = await input.decryptionService.address(owner, context);
+  requireActive();
+  if (
+    !(address instanceof ShieldedAddress) ||
+    address.signingPublicKey.signatureType() !== "ed25519" ||
+    address.solanaAddress() !== owner
+  ) {
+    throw new WalletError("WALLET_DECRYPTION_RECIPIENT_MISMATCH");
+  }
+  return { kind: "shielded" as const, address, viewTag: address.confidentialViewTag() };
 }
 
 export async function resolveRegisteredAddress(
