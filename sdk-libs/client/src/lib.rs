@@ -21,6 +21,8 @@ pub mod authority;
 pub mod client;
 pub mod error;
 pub mod indexer;
+#[cfg(feature = "reqwest")]
+pub mod nitro_decryption;
 pub mod nitro_policy;
 pub mod prover;
 pub mod rpc;

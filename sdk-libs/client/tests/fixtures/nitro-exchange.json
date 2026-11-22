@@ -1,0 +1,109 @@
+{
+  "source": "spr-tvc #61 at 8bd307b8, TypeScript SDK, synthetic keys",
+  "info": {
+    "version": 1,
+    "network": "devnet",
+    "security_domain_id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "release_id": "first-release",
+    "manifest_digest": "0743e2715f2140b3a21485e412eafeb4b9a057395dc2ccaa2ed072fbee32b923",
+    "executable_digest": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "quorum_key_id": "23a20c2e8b9460a23da4d1bb0019c405cfb9639c1dffcd62457b082ff7a9008c",
+    "quorum_key_epoch": "1",
+    "proof_type": "spr.tvc.decryption_service.v1",
+    "supported_operations": [
+      "ServicePublicKeys",
+      "ServiceDecrypt"
+    ],
+    "max_encrypted_request_bytes": "262144",
+    "max_encrypted_response_bytes": "262144",
+    "quorum_public_key": "04209c317b637935dd3da1c54f63495dfb31f97d293df085710320595c9aacb83fdde4c69fc17a0c74c20cc692662f049892ba37a4ba47d2c70cd8a99986391f9b0442ad971d037d1ab2bedfce3f17f97dbad1205ea7cc75a04ff582ddca56a0bf381fdba5e5242d51ce760f27c03e12379d8372d9c1c9cf9baab1d558b117c7b901"
+  },
+  "boot": {
+    "info": {
+      "version": 1,
+      "network": "devnet",
+      "security_domain_id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "release_id": "first-release",
+      "manifest_digest": "0743e2715f2140b3a21485e412eafeb4b9a057395dc2ccaa2ed072fbee32b923",
+      "executable_digest": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+      "quorum_key_id": "23a20c2e8b9460a23da4d1bb0019c405cfb9639c1dffcd62457b082ff7a9008c",
+      "quorum_key_epoch": "1",
+      "proof_type": "spr.tvc.decryption_service.v1",
+      "supported_operations": [
+        "ServicePublicKeys",
+        "ServiceDecrypt"
+      ],
+      "max_encrypted_request_bytes": "262144",
+      "max_encrypted_response_bytes": "262144",
+      "quorum_public_key": "04209c317b637935dd3da1c54f63495dfb31f97d293df085710320595c9aacb83fdde4c69fc17a0c74c20cc692662f049892ba37a4ba47d2c70cd8a99986391f9b0442ad971d037d1ab2bedfce3f17f97dbad1205ea7cc75a04ff582ddca56a0bf381fdba5e5242d51ce760f27c03e12379d8372d9c1c9cf9baab1d558b117c7b901"
+    },
+    "bootedAtMs": "1795290719000",
+    "bootstrapSlots": [
+      1,
+      3,
+      6
+    ]
+  },
+  "bootDigest": "97d02b75140bc6f5b943b6944729b94c25d539930f7a38129662ac3382f9c6f8",
+  "publicKeys": {
+    "version": 1,
+    "request_id": "0303030303030303030303030303030303030303030303030303030303030303",
+    "target_release_id": "first-release",
+    "target_manifest_digest": "0743e2715f2140b3a21485e412eafeb4b9a057395dc2ccaa2ed072fbee32b923",
+    "target_executable_digest": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "quorum_key_id": "23a20c2e8b9460a23da4d1bb0019c405cfb9639c1dffcd62457b082ff7a9008c",
+    "quorum_key_epoch": "1",
+    "client_response_public_key": "048ffb7a2eaeaaf7931c1fb21192b737b39290fec6f055df4a35fd5e55c87a94ce656ced1ba84ae54ea9a3fb92122f3863c2448bd0719824d8d527615ce2a46d99",
+    "operation": {
+      "type": "PublicKeys",
+      "address": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV"
+    }
+  },
+  "publicDigest": "fa8fc7e7704d534474f721b2573bd66de93bb51252e98525395ffd20d093cef4",
+  "decrypt": {
+    "version": 1,
+    "request_id": "0303030303030303030303030303030303030303030303030303030303030303",
+    "target_release_id": "first-release",
+    "target_manifest_digest": "0743e2715f2140b3a21485e412eafeb4b9a057395dc2ccaa2ed072fbee32b923",
+    "target_executable_digest": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "quorum_key_id": "23a20c2e8b9460a23da4d1bb0019c405cfb9639c1dffcd62457b082ff7a9008c",
+    "quorum_key_epoch": "1",
+    "client_response_public_key": "048ffb7a2eaeaaf7931c1fb21192b737b39290fec6f055df4a35fd5e55c87a94ce656ced1ba84ae54ea9a3fb92122f3863c2448bd0719824d8d527615ce2a46d99",
+    "operation": {
+      "type": "Decrypt",
+      "signer": "FMUEmtxhU46GzhKF4FW9MLJdQWiLgjiXP9TYRWSrqTpV",
+      "signature": "c9e5b5c136b8b252d805a18ab44a433edc9caba2003f094a031c1280a114f04292ad0748f8aa11ca0a9a3a37318a156b7e84965d626dceff3484f49052543708",
+      "items": [
+        {
+          "label": "Transfer",
+          "ciphertext": "880022",
+          "ephemeral_viewing_public_key": "040707070707070707070707070707070707070707070707070707070707070707",
+          "salt": "55555555555555555555555555555555",
+          "slot_index": "11"
+        }
+      ]
+    }
+  },
+  "decryptDigest": "84d37fb683d4964859f43b85856984b87acd8da733cb40c16168820da0423f3d",
+  "ownerBytes": "d54207da194977dcf46adbfec2bc2e75b52d5a8a42184fedfdc00024f0e3e8da",
+  "ownerMessage": "ff736f6c616e61206f6666636861696e005be1ef179167714826436f2f8f69579bd2bd3f7b3ad3cf18e4a0b6a1a0700e270001d54207da194977dcf46adbfec2bc2e75b52d5a8a42184fedfdc00024f0e3e8da6a00545350502f64656372797074696f6e2d736572766963652f646563727970742f76312f6465766e65742f38346433376662363833643439363438353966343362383538353639383462383761636438646137333363623430633136313638383230646130343233663364",
+  "result": {
+    "type": "Decrypt",
+    "nullifier_secret": "44444444444444444444444444444444444444444444444444444444444444",
+    "plaintexts": [
+      "abcdef"
+    ]
+  },
+  "reply": {
+    "version": 1,
+    "request_id": "0303030303030303030303030303030303030303030303030303030303030303",
+    "encrypted_result": "11111111111111111111111104e8c6606dc8ddddae0eba2341debe10455a32aefcfd5da9226f310d38ea49ae5152fbf6971e1541d1c656ef6694e36e4114415caecb91b8548b1445a625774e9f8e000000d95d221328f0adc5b079ec3b7b6cd79e5d749f34d4de1e869e65c3cc8abfb5b82886af1d8afaf176356b1ff55b1c6292681e05deb37bec6f63160a7e11a917312dcc6ee5bbf9f0e10bf6aec899a389671adbd316334d6d013846bfda2b197b5c1286d8e9da4f1a7c889d413d30c892465e467fe0b9a4b4b25f1ab4e36795918d6e61b08e9641470d88fab865b15f",
+    "tvc_app_proof": {
+      "scheme": "SIGNATURE_SCHEME_EPHEMERAL_KEY_P256",
+      "public_key": "04f7f857f5162021d4e91f6584366e69b77dba79010605ac5c507b5138951fc242aad786e8b8f05fd7dc4d2f5cde13b88d8e6efd1424c4cdd7a6652c238095508b046d1385ffacc9bd4850b750da17c063432bcdb523d90ec9cf9250ba5a1bd306639bc89cbeb62959b428c88a6e9f88a553d689a1a15b2a26a8ba5f66d97fcd87b4",
+      "proof_payload": "{\"operation\":\"ServiceDecrypt\",\"request_digest\":\"84d37fb683d4964859f43b85856984b87acd8da733cb40c16168820da0423f3d\",\"request_id\":\"0303030303030303030303030303030303030303030303030303030303030303\",\"result_digest\":\"81db392f620c696f59db3a742d345b8ea9ca116c877516518ffcaaeed8f69b70\",\"type\":\"spr.tvc.decryption_service.v1\",\"version\":1}",
+      "signature": "d1eb34298049bf9492914755a6a51d56d1224cb3c984327b56bb2b48347b64d019d0257ba092a86d8f66dbc7d612ebccb4a1220f2ed6c3d71347a70b7b58216d"
+    }
+  },
+  "highSSignature": "d1eb34298049bf9492914755a6a51d56d1224cb3c984327b56bb2b48347b64d0e62fda835f6d57937099243829ed14330845d89e7840daade07223b7810b03e4"
+}

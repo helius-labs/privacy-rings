@@ -132,6 +132,10 @@ pub enum ClientError {
     #[error("address resolution error: {0}")]
     AddressResolution(String),
 
+    #[cfg(feature = "reqwest")]
+    #[error(transparent)]
+    NitroDecryption(#[from] crate::nitro_decryption::NitroDecryptionError),
+
     /// The pool has no protocol config account, so its tree count cannot be
     /// read and no tree id can be resolved.
     #[error("protocol config account {0} does not exist")]

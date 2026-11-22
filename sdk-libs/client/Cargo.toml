@@ -15,7 +15,10 @@ default = ["reqwest"]
 # and the local prover launcher. Without it a prover client is built with
 # `with_client` over the application's own transport. `solana-rpc` still
 # links reqwest through `solana-rpc-client`.
-reqwest = ["dep:reqwest", "spr-api/reqwest"]
+reqwest = [
+    "dep:aes-gcm", "dep:ed25519-dalek", "dep:hkdf", "dep:hmac",
+    "dep:reqwest", "p256/ecdh", "p256/getrandom", "spr-api/reqwest",
+]
 socks = ["reqwest", "reqwest/socks"]
 solana-rpc = ["dep:bs58", "dep:base64", "dep:solana-rpc-client", "dep:solana-commitment-config"]
 client = ["solana-rpc"]
@@ -24,6 +27,10 @@ client = ["solana-rpc"]
 proofs = ["reqwest"]
 
 [dependencies]
+aes-gcm = { workspace = true, features = ["zeroize"], optional = true }
+ed25519-dalek = { workspace = true, optional = true }
+hkdf = { workspace = true, optional = true }
+hmac = { version = "0.12", optional = true }
 spr-interface = { workspace = true }
 spr-instruction = { workspace = true }
 spr-indexer-api = { workspace = true }

@@ -18,6 +18,8 @@ pub use checkpoint::NitroCheckpointStore;
 pub use checkpoint::UnixNitroCheckpointStore;
 #[cfg(feature = "reqwest")]
 pub use publication::NitroPolicyReader;
+#[cfg(feature = "reqwest")]
+pub(crate) use publication::{now_ms, read_limited};
 
 const MAX_POLICY_BYTES: usize = 32_768;
 const MAX_AUTHORITIES: usize = 8;
@@ -51,7 +53,7 @@ pub enum NitroNetwork {
 }
 
 impl NitroNetwork {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Devnet => "devnet",
             Self::Mainnet => "mainnet",

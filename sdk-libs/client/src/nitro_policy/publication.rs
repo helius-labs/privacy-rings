@@ -55,8 +55,19 @@ impl NitroPolicyReader {
         .map_err(|_| NitroPolicyError::Storage)?
     }
 
+    pub(crate) async fn require_current(
+        &self,
+        policy: Arc<AcceptedNitroPolicy>,
+    ) -> Result<(), NitroPolicyError> {
+        let trust = self.trust.clone();
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || policy.require_current(&trust, &*store, now_ms()?))
+            .await
+            .map_err(|_| NitroPolicyError::Storage)?
+    }
+
     async fn fetch(&self, endpoint: &Url, owner: &str) -> Result<Vec<u8>, NitroPolicyError> {
-        let mut response = self
+        let response = self
             .client
             .get(endpoint.clone())
             .header(CACHE_CONTROL, "no-cache")
@@ -67,28 +78,35 @@ impl NitroPolicyReader {
         if !response.status().is_success() {
             return Err(NitroPolicyError::Unavailable);
         }
-        if response
-            .content_length()
-            .is_some_and(|bytes| bytes > MAX_POLICY_BYTES as u64)
-        {
-            return Err(NitroPolicyError::Invalid);
-        }
-        let mut body = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|_| NitroPolicyError::Unavailable)?
-        {
-            if chunk.len() > MAX_POLICY_BYTES - body.len() {
-                return Err(NitroPolicyError::Invalid);
-            }
-            body.extend_from_slice(&chunk);
-        }
-        Ok(body)
+        read_limited(response, MAX_POLICY_BYTES).await
     }
 }
 
-fn now_ms() -> Result<u64, NitroPolicyError> {
+pub(crate) async fn read_limited(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> Result<Vec<u8>, NitroPolicyError> {
+    if response
+        .content_length()
+        .is_some_and(|bytes| bytes > limit as u64)
+    {
+        return Err(NitroPolicyError::Invalid);
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| NitroPolicyError::Unavailable)?
+    {
+        if chunk.len() > limit - body.len() {
+            return Err(NitroPolicyError::Invalid);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+pub(crate) fn now_ms() -> Result<u64, NitroPolicyError> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()
