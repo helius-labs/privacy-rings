@@ -1,7 +1,10 @@
 use std::{
     io::{BufRead, BufReader, Read, Write},
     net::TcpStream,
-    sync::{mpsc, Arc, Mutex},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc, Arc, Mutex,
+    },
     time::Duration,
 };
 
@@ -12,7 +15,7 @@ use p256::{
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use solana_keypair::Keypair;
-use solana_signer::Signer;
+use solana_signer::{Signer, SignerError};
 use spr_keypair::{NullifierKey, X25519Pubkey};
 use tokio::time::Instant;
 
@@ -210,6 +213,83 @@ fn accepted_boot(
     (trust, session, active)
 }
 
+fn revoke(active: &[u8], session: &Session) -> Vec<u8> {
+    let mut revocation: Value = serde_json::from_slice(active).unwrap();
+    revocation["policy"]["sequence"] = json!("2");
+    revocation["policy"]["previousPolicyDigest"] =
+        json!(hex::encode(session.policy.checkpoint().digest));
+    revocation["policy"]["action"] = json!("revoke");
+    revocation["policy"]["targets"] = json!([]);
+    sign_policy(&mut revocation);
+    json(&revocation).unwrap()
+}
+
+struct PublishingSigner(Keypair, Box<dyn Fn() + Send + Sync>);
+
+impl Signer for PublishingSigner {
+    fn try_pubkey(&self) -> Result<Pubkey, SignerError> {
+        self.0.try_pubkey()
+    }
+
+    fn try_sign_message(&self, message: &[u8]) -> Result<solana_signature::Signature, SignerError> {
+        (self.1)();
+        self.0.try_sign_message(message)
+    }
+
+    fn is_interactive(&self) -> bool {
+        false
+    }
+}
+
+#[tokio::test]
+async fn a_revoked_cached_boot_cannot_collect_or_send_owner_approval() {
+    let fixture: Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
+    for during_signing in [false, true] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/nitro/", listener.local_addr().unwrap());
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(UnixNitroCheckpointStore::open(directory.path()).unwrap());
+        let (trust, session, active) =
+            accepted_boot(&fixture, &endpoint, now_ms().unwrap(), &store);
+        let revoked = revoke(&active, &session);
+        let service = NitroDecryptionService::new(trust.clone(), store.clone()).unwrap();
+        let initial = if during_signing {
+            active
+        } else {
+            revoked.clone()
+        };
+        *service.0.policies.test_heads.lock().unwrap() = Some([initial.clone(), initial]);
+        service.0.cache.lock().await.session = Some(session);
+        let approvals = Arc::new(AtomicUsize::default());
+        let signer = Arc::new(PublishingSigner(
+            Keypair::new_from_array([21; 32]),
+            Box::new({
+                let service = service.clone();
+                let approvals = approvals.clone();
+                move || {
+                    approvals.fetch_add(1, Ordering::SeqCst);
+                    *service.0.policies.test_heads.lock().unwrap() =
+                        Some([revoked.clone(), revoked.clone()]);
+                }
+            }),
+        ));
+        let owner = signer.pubkey();
+        let result = tokio::select! {
+            result = service.decrypt_batch(owner, signer, &[]) => result,
+            _ = listener.accept() => panic!("sent an owner approval to the revoked boot"),
+        };
+        assert!(matches!(
+            result,
+            Err(NitroDecryptionError::Policy(NitroPolicyError::Revoked))
+        ));
+        assert_eq!(
+            approvals.load(Ordering::SeqCst),
+            usize::from(during_signing)
+        );
+        assert_eq!(store.current(&trust).unwrap().unwrap().sequence, 2);
+    }
+}
+
 #[tokio::test]
 async fn a_cached_boot_cannot_resolve_payments_under_a_new_recovery_policy() {
     let fixture: Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
@@ -360,17 +440,8 @@ async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
     let now = now_ms().unwrap();
     let (trust, session, active) = accepted_boot(&fixture, &endpoint, now, &store);
     let service = NitroDecryptionService::new(trust.clone(), store.clone()).unwrap();
+    let revocation = revoke(&active, &session);
     *service.0.policies.test_heads.lock().unwrap() = Some([active.clone(), active]);
-    let mut revocation = fixture["envelopes"]["genesis"].clone();
-    revocation["policy"]["sequence"] = json!("2");
-    revocation["policy"]["previousPolicyDigest"] =
-        json!(hex::encode(session.policy.checkpoint().digest));
-    revocation["policy"]["action"] = json!("revoke");
-    revocation["policy"]["targets"] = json!([]);
-    revocation["policy"]["validFromMs"] = json!((now - 1000).to_string());
-    revocation["policy"]["expiresAtMs"] = json!((now + 60_000).to_string());
-    sign_policy(&mut revocation);
-    let revocation = json(&revocation).unwrap();
 
     service.0.cache.lock().await.session = Some(session.clone());
 
@@ -388,6 +459,7 @@ async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
     let note_response =
         json!({"type":"Decrypt", "nullifier_secret":"44".repeat(31), "plaintexts":["abcdef"]});
     let session_expires_at_ms = session.window.expires_at_ms;
+    let publisher = service.clone();
     let server = tokio::spawn(async move {
         for (i, result) in [
             owner_response.clone(),
@@ -411,8 +483,7 @@ async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
             socket
                 .set_write_timeout(Some(Duration::from_secs(4)))
                 .unwrap();
-            let store = store.clone();
-            let trust = trust.clone();
+            let publisher = publisher.clone();
             let revocation = revocation.clone();
             tokio::task::spawn_blocking(move || {
                 let body = read_http(&socket);
@@ -421,16 +492,8 @@ async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
                     .any(|w| w == owner.to_string().as_bytes()));
                 let reply = json(&reply_for(&body, owner, result, session_expires_at_ms)).unwrap();
                 if i == 4 {
-                    assert!(matches!(
-                        accept_published_nitro_policy(
-                            &trust,
-                            [&revocation; 2],
-                            &*store,
-                            now_ms().unwrap()
-                        ),
-                        Err(NitroPolicyError::Revoked)
-                    ));
-                    assert_eq!(store.current(&trust).unwrap().unwrap().sequence, 2);
+                    *publisher.0.policies.test_heads.lock().unwrap() =
+                        Some([revocation.clone(), revocation]);
                 }
                 write!(
                     socket,
@@ -499,8 +562,9 @@ async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
     );
     assert!(matches!(
         keys.decrypt_async(&[request]).await,
-        Err(NitroDecryptionError::Policy(NitroPolicyError::Superseded))
+        Err(NitroDecryptionError::Policy(NitroPolicyError::Revoked))
     ));
+    assert_eq!(store.current(&trust).unwrap().unwrap().sequence, 2);
     server.await.unwrap();
     assert!(matches!(
         service

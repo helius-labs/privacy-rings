@@ -94,11 +94,13 @@ The client checks the current checkpoint before each attestation probe and
 before caching the verified boot. It attests with a fresh challenge and encrypts
 the request to its attested transport key. A decrypt signature binds the
 Solana network, release, batch, one-time response key and an exclusive deadline
-within the verified session. The enclave checks that deadline before returning
-a reply. The client checks
-the reply's boot signature, request and ciphertext digests, and current
-checkpoint and deadline before opening it. The 60-second session window starts with the policy fetch
-and ends when either elapsed or wall time reaches the deadline. A stalled
+within the verified session. The client verifies both published heads before
+prompting the signer, before sending the signed request and before opening the
+authenticated reply. A revoked, superseded or unavailable policy stops the
+exchange. The enclave checks the deadline before returning a reply. The client
+verifies the boot signature, request and ciphertext digests, and deadline
+before opening it. The 60-second attestation window starts with the policy
+fetch and ends when either elapsed or wall time reaches its deadline. A stalled
 checkpoint read cannot start a probe beyond that window. Policy or certificate
 expiry can end it earlier. A stalled synchronous signer holds the client's
 signer slot until it returns. An unsigned lookup can refresh once if another

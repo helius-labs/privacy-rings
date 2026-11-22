@@ -21,7 +21,7 @@ use spr_transaction::DecryptRequest;
 use thiserror::Error;
 use tokio::{
     sync::{oneshot, Mutex, Semaphore},
-    time::{timeout_at, Instant},
+    time::{timeout, timeout_at, Instant},
 };
 use url::Url;
 use zeroize::Zeroizing;
@@ -483,6 +483,26 @@ impl Service {
         Ok(())
     }
 
+    async fn require_exchange_policy(
+        &self,
+        session: &Session,
+        approval_expires_at_ms: Option<u64>,
+    ) -> Result<(), NitroDecryptionError> {
+        self.require_current(session).await?;
+        if let Some(expires_at_ms) = approval_expires_at_ms {
+            let now = now_ms()?;
+            require_unexpired_approval(approval_expires_at_ms, now)?;
+            let remaining =
+                Duration::from_millis(expires_at_ms - now).min(session.window.remaining(now));
+            timeout(remaining, self.policies.read())
+                .await
+                .map_err(|_| NitroDecryptionError::SessionExpired)??;
+            self.require_current(session).await?;
+            require_unexpired_approval(approval_expires_at_ms, now_ms()?)?;
+        }
+        Ok(())
+    }
+
     async fn forget(&self, session: &Arc<Session>) {
         let mut cache = self.cache.lock().await;
         if cache
@@ -564,7 +584,7 @@ impl Service {
             let signature = owner_call(
                 &self.owner_work,
                 timeout,
-                self.require_current(session),
+                self.require_exchange_policy(session, approval_expires_at_ms),
                 move || {
                     let signature: [u8; 64] = signer
                         .try_sign_message(&message)
@@ -583,8 +603,8 @@ impl Service {
         if encrypted.len() > MAX_CIPHERTEXT {
             return Err(NitroDecryptionError::RequestTooLarge);
         }
-        self.require_current(session).await?;
-        require_unexpired_approval(approval_expires_at_ms, now_ms()?)?;
+        self.require_exchange_policy(session, approval_expires_at_ms)
+            .await?;
         let response = self
             .http
             .post(route(&session.endpoint, &["v1", "operations"])?)
@@ -596,8 +616,8 @@ impl Service {
         let response = serde_json::from_slice(&body(response, MAX_RESPONSE_BYTES).await?)
             .map_err(|_| NitroDecryptionError::Protocol)?;
         let ciphertext = request.verify_response(&session.replica, response, &digest)?;
-        self.require_current(session).await?;
-        require_unexpired_approval(approval_expires_at_ms, now_ms()?)?;
+        self.require_exchange_policy(session, approval_expires_at_ms)
+            .await?;
         let plaintext = crypto::open(&response_secret, &ciphertext)?;
         serde_json::from_slice(&plaintext).map_err(|_| NitroDecryptionError::Protocol)
     }
