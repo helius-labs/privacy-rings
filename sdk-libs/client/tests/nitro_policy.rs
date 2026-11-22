@@ -181,6 +181,8 @@ fn expiration_and_updated_trust_prevent_cached_use() {
     ));
 
     fixture.0["trust"]["minimumSequence"] = json!("2");
+    fixture.0["trust"]["minimumPolicyDigest"] =
+        fixture.0["envelopes"]["revoke"]["policy"]["previousPolicyDigest"].clone();
     fixture.0["trust"]["minimumCustodyEpoch"] = json!("2");
     let updated = fixture.trust();
     assert!(matches!(
@@ -193,6 +195,28 @@ fn expiration_and_updated_trust_prevent_cached_use() {
     ));
     fixture
         .accept(&updated, &store, "successor", "genesis")
+        .unwrap();
+}
+
+#[test]
+fn shipped_anchor_rejects_signed_forks_before_persisting() {
+    let fixture = Fixture::load();
+    let trust = fixture.trust();
+    let dir = tempfile::tempdir().unwrap();
+    let store = UnixNitroCheckpointStore::open(dir.path()).unwrap();
+    for (primary, mirror) in [
+        ("competingGenesis", "competingGenesis"),
+        ("fork", "fork"),
+        ("fork", "genesis"),
+    ] {
+        assert!(matches!(
+            fixture.accept(&trust, &store, primary, mirror),
+            Err(NitroPolicyError::Invalid)
+        ));
+        assert_eq!(store.current(&trust).unwrap(), None);
+    }
+    fixture
+        .accept(&trust, &store, "successor", "successor")
         .unwrap();
 }
 

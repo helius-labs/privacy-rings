@@ -174,16 +174,21 @@ async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
     listener.set_nonblocking(true).unwrap();
     let listener = tokio::net::TcpListener::from_std(listener).unwrap();
     let fixture: Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
-    let trust = Arc::new(NitroTrust::from_json(&json(&fixture["trust"]).unwrap()).unwrap());
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(UnixNitroCheckpointStore::open(directory.path()).unwrap());
-    let service = NitroDecryptionService::new(trust.clone(), store.clone()).unwrap();
     let now = now_ms().unwrap();
     let mut active = fixture["envelopes"]["genesis"].clone();
     active["policy"]["validFromMs"] = json!((now - 1000).to_string());
     active["policy"]["expiresAtMs"] = json!((now + 60_000).to_string());
     active["policy"]["targets"][0]["endpoint"] = json!(&endpoint);
     sign_policy(&mut active);
+    let mut pins = fixture["trust"].clone();
+    pins["minimumPolicyDigest"] = json!(hex::encode(digest(&[
+        b"SPR/native-nitro/release-policy/v1",
+        &canonical(&active["policy"])
+    ])));
+    let trust = Arc::new(NitroTrust::from_json(&json(&pins).unwrap()).unwrap());
+    let service = NitroDecryptionService::new(trust.clone(), store.clone()).unwrap();
     let active = json(&active).unwrap();
     let policy =
         Arc::new(accept_published_nitro_policy(&trust, [&active; 2], &*store, now).unwrap());

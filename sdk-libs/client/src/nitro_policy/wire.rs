@@ -11,6 +11,7 @@ pub(super) struct Trust {
     pub(super) note_seed_commitment: String,
     pub(super) minimum_custody_epoch: String,
     pub(super) minimum_sequence: String,
+    pub(super) minimum_policy_digest: String,
     #[serde(default)]
     pub(super) recovery_only: bool,
     pub(super) publications: [Publication; 2],

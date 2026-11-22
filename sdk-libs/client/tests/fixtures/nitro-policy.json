@@ -28,7 +28,8 @@
         "region": "eu-north-1",
         "account": "222222222222"
       }
-    ]
+    ],
+    "minimumPolicyDigest": "9d5fc55272c87581dfd8954dc74d0950521735c9c7d876f3c3576385bea68771"
   },
   "now": 1795290720000,
   "firstDigest": "9d5fc55272c87581dfd8954dc74d0950521735c9c7d876f3c3576385bea68771",
@@ -572,6 +573,57 @@
         {
           "key": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
           "signature": "2fee8e8a751e0c6d3bf4e124b7f740fee91685f673f79e5c038d3ea7c9e37c08357fd4a49e763107bf8cf55ba075660c5c6d3e951358c69846b2e2f193ba947e"
+        }
+      ]
+    },
+    "competingGenesis": {
+      "policy": {
+        "version": 1,
+        "action": "activate",
+        "network": "devnet",
+        "securityDomainId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "noteSeedCommitment": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "sequence": "1",
+        "previousPolicyDigest": null,
+        "validFromMs": "1795290719000",
+        "expiresAtMs": "1795290721000",
+        "targets": [
+          {
+            "endpoint": "https://replica.example.com/nitro/",
+            "releaseId": "same-sequence-other-image",
+            "custodyEpoch": "1",
+            "custodyDigest": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+            "executableSha256": "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+            "pcrs": {
+              "0": "111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111",
+              "1": "222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222",
+              "2": "333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333",
+              "3": "444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444",
+              "4": "555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555"
+            }
+          }
+        ],
+        "recoveryOnly": false,
+        "minimumCustodyEpoch": "1"
+      },
+      "signatures": [
+        {
+          "key": "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
+          "signature": "77958077f2fed1cf1ee07f300f0b1dfde96b9630eabf45fa4fdf13ae8d04e143716c02447642609c20d1b72dbbb150fb196320067666b4bdc6fb061d2771628c"
+        },
+        {
+          "key": "047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
+          "signature": "280b6d1985eca6ea7f71df0eb38ab141f7e8b6b863e56b0856a8767ef9c06b0650b0c4d116b7cc2000f02db73ae4a21486f14b8fca53a5042f1ea3763e8829c0"
+        }
+      ],
+      "custodySignatures": [
+        {
+          "key": "04e2534a3532d08fbba02dde659ee62bd0031fe2db785596ef509302446b030852e0f1575a4c633cc719dfee5fda862d764efc96c3f30ee0055c42c23f184ed8c6",
+          "signature": "4508c51c06f20b62ffad653ac306c440af8579cd981d3385c30299a63c996ff242f3d05dc003722e417b19438bdc0e6fe832c48da2b22ec3bffe6485bab21231"
+        },
+        {
+          "key": "0451590b7a515140d2d784c85608668fdfef8c82fd1f5be52421554a0dc3d033ede0c17da8904a727d8ae1bf36bf8a79260d012f00d4d80888d1d0bb44fda16da4",
+          "signature": "726e53316c79eb39e4e7f799d4ed3aabdd73ca2ee46deed982c724b8a98f978328c74192865009ce14e42e426c08f09bc5d921b984db7805113b9afd3b7001c2"
         }
       ]
     }

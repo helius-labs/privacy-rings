@@ -69,6 +69,7 @@ pub struct NitroTrust {
     note_seed_commitment: [u8; 32],
     minimum_custody_epoch: u64,
     minimum_sequence: u64,
+    minimum_policy_digest: [u8; 32],
     recovery_only: bool,
     publications: [Publication; 2],
     threshold: usize,
@@ -118,6 +119,7 @@ impl NitroTrust {
             note_seed_commitment: identifier(&trust.note_seed_commitment).map_err(invalid)?,
             minimum_custody_epoch: positive(&trust.minimum_custody_epoch).map_err(invalid)?,
             minimum_sequence: positive(&trust.minimum_sequence).map_err(invalid)?,
+            minimum_policy_digest: identifier(&trust.minimum_policy_digest).map_err(invalid)?,
             recovery_only: trust.recovery_only,
             publications: [endpoint(primary)?, endpoint(mirror)?],
             threshold: trust.threshold,
@@ -324,6 +326,12 @@ fn verify_head(trust: &NitroTrust, input: &[u8]) -> Result<Head, NitroPolicyErro
         &signing_digest(CUSTODY_DOMAIN, &canonical),
         &mut seen,
     )?;
+    if (sequence == trust.minimum_sequence && digest != trust.minimum_policy_digest)
+        || (trust.minimum_sequence.checked_add(1) == Some(sequence)
+            && previous != Some(trust.minimum_policy_digest))
+    {
+        return Err(NitroPolicyError::Invalid);
+    }
     Ok(Head {
         policy: AcceptedNitroPolicy {
             trust_fingerprint: trust.fingerprint,

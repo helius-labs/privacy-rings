@@ -52,7 +52,9 @@ Without the `reqwest` feature neither crate links reqwest and only
 independently owned S3 buckets named in the wallet's shipped trust pins. Both
 heads need the pinned release quorum and two of the three custody policy
 approvals. The mirror may hold the primary's exact predecessor during an
-update. Both heads are required before the SDK trusts the endpoint, executable
+update. The wallet pins the exact policy digest at its minimum sequence and
+requires the immediate successor to name that digest. Both heads are required
+before the SDK trusts the endpoint, executable
 hash, custody epoch and PCR0–4 for any replica.
 
 The reader commits the revision to a durable checkpoint before returning a

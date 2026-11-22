@@ -6,6 +6,7 @@ Run `cargo test -p spr-client --lib nitro_` and
 | Invariant | Coverage |
 | --- | --- |
 | Both signed feeds authorize the replica. Rollover accepts a lagging mirror only for the primary's immediate predecessor. | [Release policy](nitro_policy.rs) |
+| Installed trust pins one exact policy at its minimum sequence. A competing policy at that sequence or a successor that names a different digest fails before checkpoint storage. | [Release policy](nitro_policy.rs) |
 | The wallet commits its policy before contacting a replica. Reopening and concurrent writes preserve revocation, sequence, custody floor and recovery-only mode. | [Checkpoint](nitro_policy.rs) |
 | A fresh Nitro boot binds discovery, both boot points and PCR0–4. | [Discovery binding](nitro_exchange.rs) and the AWS evidence verifier tests in `spr-prover-tee` |
 | The owner signs the exact network, release, response key and ordered batch. The reply must come from that boot and bind this request and ciphertext. | [Proofs and owner message](nitro_exchange.rs) |
