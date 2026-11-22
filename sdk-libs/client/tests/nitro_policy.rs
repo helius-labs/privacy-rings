@@ -338,6 +338,64 @@ fn revocation_persists_across_restart() {
     ));
 }
 
+#[cfg(feature = "reqwest")]
+#[test]
+fn live_reader_remembers_revocation_after_checkpoint_file_is_lost_or_rolled_back() {
+    use std::sync::Mutex;
+
+    let fixture = Fixture::load();
+    let trust = fixture.trust();
+    let dir = tempfile::tempdir().unwrap();
+    let store = UnixNitroCheckpointStore::open(dir.path()).unwrap();
+    let path = dir.path().join(format!(
+        "devnet-{}.json",
+        hex::encode(trust.security_domain_id())
+    ));
+    let accept = |primary, mirror, latest: &mut Option<NitroCheckpoint>| {
+        accept_with_checkpoint(
+            &trust,
+            [&fixture.head(primary), &fixture.head(mirror)],
+            &store,
+            fixture.now(),
+            latest,
+        )
+    };
+    let mut latest = None;
+    let prior = accept("successor", "genesis", &mut latest).unwrap();
+    let backup = fs::read(&path).unwrap();
+    assert!(matches!(
+        accept("revoke", "successor", &mut latest),
+        Err(NitroPolicyError::Revoked)
+    ));
+    let remembered = latest.clone().unwrap();
+    assert_eq!(remembered.sequence, 3);
+
+    fs::remove_file(&path).unwrap();
+    assert!(matches!(
+        accept("successor", "successor", &mut latest),
+        Err(NitroPolicyError::Rollback)
+    ));
+    assert_eq!(store.current(&trust).unwrap(), None);
+
+    fs::write(&path, backup).unwrap();
+    assert!(prior.require_current(&trust, &store, fixture.now()).is_ok());
+    assert!(matches!(
+        publication::require_current(&prior, &trust, &store, &Mutex::new(latest.clone()), || Ok(
+            fixture.now()
+        )),
+        Err(NitroPolicyError::Superseded)
+    ));
+    assert!(matches!(
+        accept("successor", "successor", &mut latest),
+        Err(NitroPolicyError::Rollback)
+    ));
+    assert!(matches!(
+        accept("revoke", "revoke", &mut latest),
+        Err(NitroPolicyError::Revoked)
+    ));
+    assert_eq!(store.current(&trust).unwrap(), Some(remembered));
+}
+
 #[test]
 fn concurrent_clients_cannot_restore_or_replace_a_checkpoint() {
     let fixture = Fixture::load();

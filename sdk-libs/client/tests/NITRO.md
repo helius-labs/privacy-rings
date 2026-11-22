@@ -1,7 +1,6 @@
 # Nitro decryption invariants
 
-Run `cargo test -p spr-client --lib nitro_` and
-`cargo test -p spr-prover-tee --lib`.
+Run `cargo test --locked -p spr-client --features client -p spr-prover-tee`.
 
 | Invariant | Coverage |
 | --- | --- |
@@ -12,6 +11,7 @@ Run `cargo test -p spr-client --lib nitro_` and
 | A stalled checkpoint read cannot dispatch an attestation probe after the monotonic connection deadline. An unsigned lookup refreshes a superseded policy once, preserving the fresh result or revocation. A rollback stops the lookup. | [Wallet transport](nitro_transport.rs) |
 | A stalled file lock returns a storage error for reads and writes. After the lock is released, the last committed revision is still readable and its successor can commit. | [Lock contention](nitro_policy.rs) |
 | The wallet commits its policy before contacting a replica. Reopening and concurrent writes preserve revocation, sequence, custody floor and recovery-only mode. | [Checkpoint](nitro_policy.rs) |
+| A running reader remembers an accepted revocation after its checkpoint file is lost or restored to an older copy. Older heads and cached sessions fail. The authenticated current policy can repair the file. | [Checkpoint](nitro_policy.rs) |
 | A fresh Nitro boot binds discovery, both boot points and PCR0–4. | [Discovery binding](nitro_exchange.rs) and the AWS evidence verifier tests in `spr-prover-tee` |
 | The owner signs the exact network, release, response key and ordered batch. The reply must come from that boot and bind this request and ciphertext. | [Proofs and owner message](nitro_exchange.rs) |
 | Owner approval rechecks the checkpoint after waiting for the signer slot. The wallet stops waiting when the attested session expires. A stalled signer keeps its slot until it returns, and the async runtime can shut down while it is busy. | [Signer queue, deadline and shutdown](nitro_owner.rs) |

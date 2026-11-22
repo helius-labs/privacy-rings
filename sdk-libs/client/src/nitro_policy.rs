@@ -256,6 +256,16 @@ pub fn accept_published_nitro_policy(
     store: &dyn NitroCheckpointStore,
     now_ms: u64,
 ) -> Result<AcceptedNitroPolicy, NitroPolicyError> {
+    accept_with_checkpoint(trust, heads, store, now_ms, &mut None)
+}
+
+fn accept_with_checkpoint(
+    trust: &NitroTrust,
+    heads: [&[u8]; 2],
+    store: &dyn NitroCheckpointStore,
+    now_ms: u64,
+    latest: &mut Option<NitroCheckpoint>,
+) -> Result<AcceptedNitroPolicy, NitroPolicyError> {
     let [primary, mirror] = heads;
     let primary = verify_head(trust, primary)?;
     let mirror = verify_head(trust, mirror)?;
@@ -286,9 +296,10 @@ pub fn accept_published_nitro_policy(
         primary: &primary,
         mirror: &mirror,
     };
-    if !store.accept(trust, &update)? {
+    if !update.advances(latest.as_ref()) || !store.accept(trust, &update)? {
         return Err(NitroPolicyError::Rollback);
     }
+    *latest = Some(policy.checkpoint.clone());
     if policy.targets.is_empty() {
         return Err(NitroPolicyError::Revoked);
     }

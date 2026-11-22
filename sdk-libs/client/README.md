@@ -62,6 +62,9 @@ The reader commits the revision to a durable checkpoint before returning a
 replica. An observed head at the stored sequence must match its digest. An
 immediate successor must link to it. The custody floor can only rise and
 recovery-only mode is permanent. A signed revocation advances the checkpoint and returns no replica.
+The reader also keeps its latest accepted checkpoint in memory. Removing or
+restoring an older file during the reader's lifetime cannot reopen an older
+policy. A restarted reader uses the durable checkpoint and shipped pins.
 `UnixNitroCheckpointStore` uses an application-owned directory on a local
 filesystem. Reads and writes return a storage error if another process holds
 the lock for a second, or if the lock or checkpoint is a symbolic link or

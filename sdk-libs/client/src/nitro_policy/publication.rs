@@ -1,5 +1,5 @@
 use std::{
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -7,8 +7,8 @@ use reqwest::{header::CACHE_CONTROL, Client};
 use url::Url;
 
 use super::{
-    accept_published_nitro_policy, AcceptedNitroPolicy, NitroCheckpointStore, NitroPolicyError,
-    NitroTrust, MAX_POLICY_BYTES,
+    accept_with_checkpoint, AcceptedNitroPolicy, NitroCheckpoint, NitroCheckpointStore,
+    NitroPolicyError, NitroTrust, MAX_POLICY_BYTES,
 };
 
 /// Reads the two fixed S3 publications with one deadline and no redirects.
@@ -16,6 +16,7 @@ pub struct NitroPolicyReader {
     client: Client,
     trust: Arc<NitroTrust>,
     store: Arc<dyn NitroCheckpointStore>,
+    latest: Arc<Mutex<Option<NitroCheckpoint>>>,
 }
 
 impl NitroPolicyReader {
@@ -33,6 +34,7 @@ impl NitroPolicyReader {
             client,
             trust,
             store,
+            latest: Arc::default(),
         })
     }
 
@@ -45,10 +47,19 @@ impl NitroPolicyReader {
         )?;
         let trust = self.trust.clone();
         let store = self.store.clone();
+        let latest = self.latest.clone();
         let policy = tokio::task::spawn_blocking(move || {
-            let policy =
-                accept_published_nitro_policy(&trust, [&primary, &mirror], &*store, now_ms()?)?;
-            policy.require_current_with_clock(&trust, &*store, now_ms)?;
+            let policy = {
+                let mut latest = latest.lock().map_err(|_| NitroPolicyError::Storage)?;
+                accept_with_checkpoint(
+                    &trust,
+                    [&primary, &mirror],
+                    &*store,
+                    now_ms()?,
+                    &mut latest,
+                )?
+            };
+            require_current(&policy, &trust, &*store, &latest, now_ms)?;
             Ok(policy)
         })
         .await
@@ -63,8 +74,9 @@ impl NitroPolicyReader {
     ) -> Result<(), NitroPolicyError> {
         let trust = self.trust.clone();
         let store = self.store.clone();
+        let latest = self.latest.clone();
         tokio::task::spawn_blocking(move || {
-            policy.require_current_with_clock(&trust, &*store, now_ms)
+            require_current(&policy, &trust, &*store, &latest, now_ms)
         })
         .await
         .map_err(|_| NitroPolicyError::Storage)?
@@ -84,6 +96,26 @@ impl NitroPolicyReader {
         }
         read_limited(response, MAX_POLICY_BYTES).await
     }
+}
+
+pub(super) fn require_current(
+    policy: &AcceptedNitroPolicy,
+    trust: &NitroTrust,
+    store: &dyn NitroCheckpointStore,
+    latest: &Mutex<Option<NitroCheckpoint>>,
+    now: impl FnOnce() -> Result<u64, NitroPolicyError>,
+) -> Result<(), NitroPolicyError> {
+    policy.require_current_with_clock(trust, store, || {
+        if latest
+            .lock()
+            .map_err(|_| NitroPolicyError::Storage)?
+            .as_ref()
+            .is_some_and(|checkpoint| checkpoint != policy.checkpoint())
+        {
+            return Err(NitroPolicyError::Superseded);
+        }
+        now()
+    })
 }
 
 pub(crate) async fn read_limited(
