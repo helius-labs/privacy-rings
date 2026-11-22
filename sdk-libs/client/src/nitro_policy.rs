@@ -207,6 +207,11 @@ impl AcceptedNitroPolicy {
         &self.checkpoint
     }
 
+    #[cfg(feature = "reqwest")]
+    pub(crate) fn expires_at_ms(&self) -> u64 {
+        self.expires_at_ms
+    }
+
     /// Check again before using a cached replica or accepting its response.
     pub fn require_current(
         &self,

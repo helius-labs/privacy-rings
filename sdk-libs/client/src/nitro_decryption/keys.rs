@@ -11,7 +11,9 @@ use zeroize::Zeroizing;
 
 use crate::{ClientError, ProofAuthority, TransferInput};
 
-use super::{NitroDecryptionError, NitroDecryptionService, Owner, MAX_ITEMS};
+use super::{
+    owner_call, NitroDecryptionError, NitroDecryptionService, Owner, MAX_ITEMS, OWNER_TIMEOUT,
+};
 
 impl NitroDecryptionService {
     /// Authorize recovery for the owner and check the secret against its published key.
@@ -21,10 +23,12 @@ impl NitroDecryptionService {
     ) -> Result<NitroDecryptionKeys, NitroDecryptionError> {
         let owner = {
             let signer = signer.clone();
-            tokio::task::spawn_blocking(move || signer.try_pubkey())
-                .await
-                .map_err(|_| NitroDecryptionError::InvalidOwner)?
-                .map_err(|_| NitroDecryptionError::InvalidOwner)?
+            owner_call(&self.0.owner_work, OWNER_TIMEOUT, move || {
+                signer
+                    .try_pubkey()
+                    .map_err(|_| NitroDecryptionError::InvalidOwner)
+            })
+            .await?
         };
         let address = self.address_with_retry(owner, false).await?;
         let (nullifier, _) = self.decrypt_batch(owner, signer.clone(), &[]).await?;

@@ -18,7 +18,10 @@ use spr_hasher::primitives::is_canonical_bn254_scalar_be;
 use spr_keypair::{NullifierKey, PublicKey, ShieldedAddress, X25519Pubkey};
 use spr_transaction::DecryptRequest;
 use thiserror::Error;
-use tokio::sync::Mutex;
+use tokio::{
+    sync::{oneshot, Mutex, Semaphore},
+    time::{timeout_at, Instant},
+};
 use url::Url;
 use zeroize::Zeroizing;
 
@@ -42,6 +45,7 @@ const ATTESTATION_TIMEOUT: Duration = Duration::from_millis(3_500);
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(12);
 const PROBE_STAGGER_MS: u64 = 200;
 const SESSION_MS: u64 = 60_000;
+const OWNER_TIMEOUT: Duration = Duration::from_millis(SESSION_MS);
 const MAX_ATTESTATION_BYTES: usize = 49_152;
 const MAX_RESPONSE_BYTES: usize = 2 * MAX_CIPHERTEXT + 65_536;
 const MAX_ITEMS: usize = 256;
@@ -64,6 +68,8 @@ pub enum NitroDecryptionError {
     InvalidOwner,
     #[error("owner signature over the decryption request failed")]
     Signature,
+    #[error("wallet signer did not finish before the authorization deadline")]
+    OwnerTimeout,
     #[error("OS random generation failed")]
     Random,
     #[error("Nitro decryption only accepts recovery requests")]
@@ -85,6 +91,7 @@ struct Service {
     trust: Arc<NitroTrust>,
     policies: NitroPolicyReader,
     cache: Mutex<Cache>,
+    owner_work: Arc<Semaphore>,
     blocking: OnceLock<BlockingRuntime>,
 }
 
@@ -116,6 +123,7 @@ impl NitroDecryptionService {
             policies: NitroPolicyReader::new(trust.clone(), store)?,
             trust,
             cache: Mutex::default(),
+            owner_work: Arc::new(Semaphore::new(1)),
             blocking: OnceLock::new(),
         })))
     }
@@ -276,6 +284,37 @@ fn recoverable(error: &NitroDecryptionError) -> bool {
     }
 }
 
+async fn owner_call<T: Send + 'static>(
+    worker: &Arc<Semaphore>,
+    timeout: Duration,
+    call: impl FnOnce() -> Result<T, NitroDecryptionError> + Send + 'static,
+) -> Result<T, NitroDecryptionError> {
+    let deadline = Instant::now() + timeout;
+    let permit = timeout_at(deadline, worker.clone().acquire_owned())
+        .await
+        .map_err(|_| NitroDecryptionError::OwnerTimeout)?
+        .map_err(|_| NitroDecryptionError::Signature)?;
+    let (reply, result) = oneshot::channel();
+    tokio::task::spawn_blocking(move || {
+        // A synchronous signer can outlive its caller. Release the slot only when it returns.
+        let _permit = permit;
+        if !reply.is_closed() && Instant::now() < deadline {
+            let _ = reply.send(call());
+        }
+    });
+    let result = timeout_at(deadline, result)
+        .await
+        .map_err(|_| NitroDecryptionError::OwnerTimeout)?;
+    if Instant::now() >= deadline {
+        return Err(NitroDecryptionError::OwnerTimeout);
+    }
+    result.map_err(|_| NitroDecryptionError::Signature)?
+}
+
+#[cfg(test)]
+#[path = "../tests/nitro_owner.rs"]
+mod owner_tests;
+
 impl Service {
     async fn session(&self) -> Result<Arc<Session>, NitroDecryptionError> {
         let mut cache = self.cache.lock().await;
@@ -389,16 +428,20 @@ impl Service {
         if let Some((owner, signer)) = signer {
             let key = wire::owner_key(owner)?;
             let message = wire::owner_message(&key, self.trust.network(), &digest);
-            let signature = tokio::task::spawn_blocking(move || {
+            let expires_at = session
+                .expires_at_ms
+                .min(session.policy.expires_at_ms())
+                .min(session.replica.valid_through_ms.saturating_add(1));
+            let timeout = Duration::from_millis(expires_at.saturating_sub(now_ms()?));
+            let signature = owner_call(&self.owner_work, timeout, move || {
                 let signature: [u8; 64] = signer
                     .try_sign_message(&message)
                     .map_err(|_| NitroDecryptionError::Signature)?
                     .into();
                 wire::verify_owner(&key, &message, &signature)?;
-                Ok::<_, NitroDecryptionError>(signature)
+                Ok(signature)
             })
-            .await
-            .map_err(|_| NitroDecryptionError::Signature)??;
+            .await?;
             request.set_signature(&signature);
         }
         let plaintext = Zeroizing::new(wire::json(&request)?);

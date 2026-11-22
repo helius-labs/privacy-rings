@@ -79,8 +79,10 @@ The client attests the selected replica with a fresh challenge, then encrypts
 the request to its attested transport key. A decrypt signature binds the
 Solana network, release, batch and one-time response key. The client checks
 the reply's boot signature, request and ciphertext digests, and current
-checkpoint before opening it. A recovery-only release permits opening
-existing notes and rejects new payment lookups. [Test invariants](tests/NITRO.md)
+checkpoint before opening it. Owner approval must finish within the session's
+remaining validity. A stalled synchronous signer holds the client's signer slot
+until it returns. A recovery-only release permits opening existing notes and
+rejects new payment lookups. [Test invariants](tests/NITRO.md)
 
 ## Proving and submitting
 
