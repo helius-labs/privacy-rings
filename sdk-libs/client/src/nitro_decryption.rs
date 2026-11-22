@@ -234,19 +234,20 @@ impl NitroDecryptionService {
         let result = retry_public_keys(async || {
             let (session, cached) = self.0.session().await?;
             if accepts_payment {
-                let published = if cached {
-                    Some(self.0.policies.read().await?)
-                } else {
-                    None
-                };
-                let policy = published.as_ref().unwrap_or(&session.policy);
-                if policy.checkpoint().recovery_only {
+                if cached {
+                    self.0.require_payment_policy(&session).await?;
+                } else if session.policy.checkpoint().recovery_only {
                     return Err(NitroDecryptionError::RecoveryOnly);
                 }
             }
-            self.0
+            let result = self
+                .0
                 .exchange(&session, Operation::public_keys(owner), None)
-                .await
+                .await?;
+            if accepts_payment {
+                self.0.require_payment_policy(&session).await?;
+            }
+            Ok(result)
         })
         .await?;
         let OperationResult::PublicKeys {
@@ -481,6 +482,16 @@ impl Service {
             return Err(NitroDecryptionError::SessionExpired);
         }
         Ok(())
+    }
+
+    async fn require_payment_policy(&self, session: &Session) -> Result<(), NitroDecryptionError> {
+        let published = timeout_at(session.window.deadline, self.policies.read())
+            .await
+            .map_err(|_| NitroDecryptionError::SessionExpired)??;
+        if published.checkpoint().recovery_only {
+            return Err(NitroDecryptionError::RecoveryOnly);
+        }
+        self.require_current(session).await
     }
 
     async fn require_exchange_policy(

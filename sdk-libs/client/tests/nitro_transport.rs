@@ -368,6 +368,59 @@ async fn cached_policy_expires_by_monotonic_time_even_if_wall_time_remains_valid
     ));
 }
 
+#[tokio::test]
+async fn payment_lookup_discards_valid_reply_after_revocation() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/nitro/", listener.local_addr().unwrap());
+    let fixture: Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(UnixNitroCheckpointStore::open(directory.path()).unwrap());
+    let (trust, session, active) = accepted_boot(&fixture, &endpoint, now_ms().unwrap(), &store);
+    let service = NitroDecryptionService::new(trust.clone(), store.clone()).unwrap();
+    let revocation = revoke(&active, &session);
+    *service.0.policies.test_heads.lock().unwrap() = Some([active.clone(), active]);
+    service.0.cache.lock().await.session = Some(session.clone());
+
+    let owner = Keypair::new_from_array([21; 32]).pubkey();
+    let publisher = service.clone();
+    let reply = async move {
+        let (socket, _) = tokio::time::timeout(Duration::from_secs(4), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::task::spawn_blocking(move || {
+            let mut socket = socket.into_std().unwrap();
+            socket.set_nonblocking(false).unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(4))).unwrap();
+            let body = read_http(&socket);
+            let result = json!({
+                "type": "PublicKeys",
+                "viewing_public_key": hex::encode(X25519Pubkey::from_u([9; 32]).unwrap().as_bytes()),
+                "nullifier_public_key": "00".repeat(32),
+            });
+            let response =
+                json(&reply_for(&body, owner, result, session.window.expires_at_ms)).unwrap();
+            *publisher.0.policies.test_heads.lock().unwrap() =
+                Some([revocation.clone(), revocation]);
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                response.len()
+            )
+            .unwrap();
+            socket.write_all(&response).unwrap();
+        })
+        .await
+        .unwrap();
+    };
+    let (lookup, ()) = tokio::join!(service.address(owner), reply);
+    assert!(matches!(
+        lookup,
+        Err(NitroDecryptionError::Policy(NitroPolicyError::Revoked))
+    ));
+    assert_eq!(store.current(&trust).unwrap().unwrap().sequence, 2);
+}
+
 #[tokio::test(start_paused = true)]
 async fn checkpoint_wait_cannot_dispatch_a_probe_after_the_freshness_deadline() {
     struct StalledCheckpoint {

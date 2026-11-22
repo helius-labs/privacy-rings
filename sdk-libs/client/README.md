@@ -73,8 +73,10 @@ inside their store transaction and persist `checkpoint()` before returning succe
 
 Use `NitroDecryptionService::resolve_recipient` for sends. The resolver uses
 service keys after a successful registry miss and matching Solana genesis
-hash. It checks the registry again before returning those keys. Reusing an
-attested boot for a payment requires reading both signed policy heads.
+hash. It checks the registry again before returning those keys. The client reads
+both signed policy heads before reusing an attested boot and after verifying
+its reply. A revoked, superseded, recovery-only or unavailable policy blocks
+the payment lookup.
 
 Build each output with `recipient.address()` and pass the resolved recipients
 to `Submission::with_nitro_recipients`. It checks that every output to an
