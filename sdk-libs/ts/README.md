@@ -345,12 +345,18 @@ registration.
 
 With a `decryptionService`, the builder returns a `PreparedPayment`. Pass a
 sign-only callback to `send`. The SDK verifies the message and every required
-signature, then resolves each Solana recipient again and submits through the
-same payment client. Explicit shielded addresses keep their original keys.
+signature, checks that the blockhash is still valid, resolves each Solana
+recipient again, and submits through the same payment client. Explicit
+shielded addresses keep their original keys.
 Each prepared payment can be sent once. `cancel()`
 releases a transfer's reserved inputs before signing starts. A failure
-before broadcast also releases them. Once broadcast starts, the wallet
-keeps the reservation for its normal confirmation and expiry rules.
+before broadcast also releases them. Once broadcast starts, the wallet tracks
+the signature, genesis hash, and last valid block height in its snapshot.
+An uncertain send reports the original transaction ID in
+`WalletError.details.transactionId`. Wallet sync releases remaining inputs
+after finalized block height passes the transaction's last valid height
+and the indexer has checked each affected nullifier through that slot.
+Save the reservation-bearing wallet snapshot to carry this state across restarts.
 
 ```ts
 const payment = await buildTransferTransaction({

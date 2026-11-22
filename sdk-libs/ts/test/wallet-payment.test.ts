@@ -20,15 +20,19 @@ async function payment() {
   const broadcastTransaction = vi.fn(async (transaction: Transaction) =>
     getSignatureFromTransaction(transaction),
   );
+  const isBlockhashValid = vi.fn(async () => true);
   const prepared = await buildDepositTransaction({
-    client: { ...depositClient({ broadcastTransaction }), getGenesisHash: async () => GENESIS },
+    client: {
+      ...depositClient({ broadcastTransaction, isBlockhashValid }),
+      getGenesisHash: async () => GENESIS,
+    },
     decryptionService: { address, genesisHash: GENESIS },
     feePayer: payer.address,
     recipient: recipient.solanaAddress(),
     amount: 5n,
   });
   const sign = (transaction: Transaction) => signTransactionWithSigners([payer], transaction);
-  return { prepared, payer, recipient, sign, address, broadcastTransaction };
+  return { prepared, payer, recipient, sign, address, broadcastTransaction, isBlockhashValid };
 }
 
 it("refuses a different Solana message from the signing callback", async () => {
@@ -121,6 +125,46 @@ it("refuses an RPC acknowledgement for a different signature", async () => {
   await expect(prepared.send(sign)).rejects.toMatchObject({
     code: "WALLET_SUBMIT_PAYMENT",
     causeCode: "WALLET_INTENT_MISMATCH",
+    details: { transactionId: expect.any(String) },
   });
+  expect(broadcastTransaction).toHaveBeenCalledOnce();
+});
+
+it("refuses a blockhash that becomes invalid while the signer is open", async () => {
+  const { prepared, sign, address, isBlockhashValid, broadcastTransaction } = await payment();
+  await expect(
+    prepared.send(async (transaction) => {
+      isBlockhashValid.mockResolvedValueOnce(false);
+      return sign(transaction);
+    }),
+  ).rejects.toMatchObject({ causeCode: "WALLET_PAYMENT_BLOCKHASH" });
+  expect(isBlockhashValid).toHaveBeenCalledTimes(1);
+  expect(address).toHaveBeenCalledTimes(2);
+  expect(broadcastTransaction).not.toHaveBeenCalled();
+});
+
+it("keeps the managed submission path when the caller edits its builder arguments", async () => {
+  const payer = await generateKeyPairSigner();
+  const recipient = ShieldedKeypair.generate().shieldedAddress();
+  const broadcastTransaction = vi.fn(async (transaction: Transaction) =>
+    getSignatureFromTransaction(transaction),
+  );
+  const client = depositClient({ broadcastTransaction });
+  const parameters = {
+    client: {
+      ...client,
+      getGenesisHash: async () => GENESIS,
+      async getLatestBlockhash() {
+        Object.defineProperty(parameters, "decryptionService", { value: undefined });
+        return client.getLatestBlockhash();
+      },
+    },
+    decryptionService: { address: async () => recipient, genesisHash: GENESIS },
+    feePayer: payer.address,
+    recipient: recipient.solanaAddress(),
+    amount: 5n,
+  };
+  const prepared = await buildDepositTransaction(parameters);
+  await prepared.send((transaction) => signTransactionWithSigners([payer], transaction));
   expect(broadcastTransaction).toHaveBeenCalledOnce();
 });

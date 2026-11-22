@@ -16,6 +16,7 @@ import {
   type IndexerRpcConfig,
 } from "../client/retry.js";
 import { bytesKey } from "../interface/bytes.js";
+import { wireDecoder } from "../interface/decode.js";
 import { decodeSplAssetRegistry } from "../interface/accounts.js";
 import { SHIELDED_POOL_PROGRAM_ID } from "../interface/program.js";
 import { StateDiscriminator } from "../interface/state.js";
@@ -56,7 +57,7 @@ const addressEncoder = getAddressEncoder();
 const base64Decoder = getBase64Decoder();
 const base64Encoder = getBase64Encoder();
 
-/** Kit access is required only when the wallet holds a mint the registry cannot resolve. */
+/** Kit access resolves unknown mints and checks pending payment expiry. */
 export interface SyncClient extends Pick<
   IndexerReader,
   | "getEncryptedUtxosByTags"
@@ -533,7 +534,12 @@ async function runWalletSync(
     const decryptConfig = { syncedAt: BigInt(Math.floor(Date.now() / 1_000)) };
     const validatedPoll = Object.freeze({ ...poll, numRetries: Math.max(poll.numRetries, 1) });
     const ungated: IndexerRpcConfig = Object.freeze({ poll: validatedPoll });
-    const requireSlot = input.config?.requireSlot ?? clientConfig?.requireSlot;
+    const expired = await expiredPendingPayments(input.wallet, input.client, context);
+    const configuredSlot = input.config?.requireSlot ?? clientConfig?.requireSlot;
+    const requireSlot =
+      expired !== undefined && expired.slot > (configuredSlot ?? 0n)
+        ? expired.slot
+        : configuredSlot;
     // Freshness is established ONCE per sync, on the first indexer request, not on
     // every request. Applying it per request meant paying the wait per tag chunk,
     // per collector, per page.
@@ -685,11 +691,65 @@ async function runWalletSync(
         details: { unknownAssetIds: report.unknownAssetIds.map(String) },
       });
     }
-    input.wallet._commitSync(sealSyncDelta(session), session.baseRevision);
+    const settledIds = expired === undefined ? [] : settlementIds(session, expired);
+    input.wallet._commitSync(sealSyncDelta(session), session.baseRevision, settledIds);
     return report;
   } catch (cause) {
     throw wrapWalletError("WALLET_SYNC", cause);
   }
+}
+
+function settlementIds(
+  session: WalletSyncSession,
+  expired: NonNullable<Awaited<ReturnType<typeof expiredPendingPayments>>>,
+): string[] {
+  const byHash = new Map(
+    session.staging.utxos().map((entry) => [bytesKey(entry.outputContext.hash), entry]),
+  );
+  return expired.submissions
+    .filter(({ utxoHashes }) =>
+      utxoHashes.every((hash) => {
+        const entry = byHash.get(bytesKey(hash));
+        if (entry === undefined) return false;
+        const checkpoint = session.checkpoints.nullifiers.get(bytesKey(entry.nullifier));
+        return entry.spent || (checkpoint !== undefined && checkpoint >= expired.slot);
+      }),
+    )
+    .map(({ id }) => id);
+}
+
+async function expiredPendingPayments(
+  wallet: Wallet,
+  client: SyncClient,
+  context?: RequestContext,
+) {
+  const pending = wallet
+    .pendingSubmissions()
+    .filter(({ genesisHash }) => genesisHash !== undefined);
+  if (pending.length === 0) return undefined;
+  const rpc = client.solanaRpc;
+  if (rpc === undefined) {
+    throw new WalletError("WALLET_INVALID_SYNC_CONFIG", { details: { field: "solanaRpc" } });
+  }
+  const genesisHash = await runKitRpc("getGenesisHash", context, (abortSignal) =>
+    rpc.getGenesisHash().send({ abortSignal }),
+  );
+  const networkError = () => new WalletError("WALLET_DECRYPTION_NETWORK_MISMATCH");
+  const genesis = wireDecoder(networkError).address(genesisHash, "getGenesisHash");
+  if (pending.some((entry) => entry.genesisHash !== genesis)) throw networkError();
+  const { absoluteSlot, blockHeight } = await runKitRpc("getEpochInfo", context, (abortSignal) =>
+    rpc.getEpochInfo({ commitment: "finalized" }).send({ abortSignal }),
+  );
+  if (
+    typeof absoluteSlot !== "bigint" ||
+    absoluteSlot < 0n ||
+    typeof blockHeight !== "bigint" ||
+    blockHeight < 0n
+  ) {
+    throw new ClientError("CLIENT_RPC", { details: { method: "getEpochInfo" } });
+  }
+  const submissions = pending.filter((entry) => blockHeight > entry.lastValidBlockHeight);
+  return submissions.length > 0 ? { slot: absoluteSlot, submissions } : undefined;
 }
 
 async function backfillSessionRegistry(

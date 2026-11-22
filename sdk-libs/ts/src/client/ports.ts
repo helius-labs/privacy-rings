@@ -1,5 +1,5 @@
 import type { X25519PublicKey } from "../keypair/x25519.js";
-import type { Address, Commitment, SendableTransaction, Signature } from "@solana/kit";
+import type { Address, Blockhash, Commitment, SendableTransaction, Signature } from "@solana/kit";
 
 import { equalBytes } from "../interface/bytes.js";
 import type {
@@ -82,6 +82,7 @@ export type RecipientLookup<Client> =
     }>;
 
 export interface TransactionBroadcaster {
+  isBlockhashValid(blockhash: Blockhash, context?: RequestContext): Promise<boolean>;
   broadcastTransaction(
     transaction: Transaction & SendableTransaction,
     context?: RequestContext,

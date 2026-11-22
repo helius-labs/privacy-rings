@@ -84,6 +84,7 @@ export interface PendingWalletSubmission {
   readonly attempts: number;
   readonly signature: Signature;
   readonly lastValidBlockHeight: bigint;
+  readonly genesisHash?: Address;
 }
 
 /** @internal */
@@ -479,6 +480,21 @@ export class Wallet {
     this.#reservations = this.#reservations.filter((reservation) => reservation.id !== id);
   }
 
+  /** @internal Replace a live preparation lease with an on-chain submission. */
+  _beginSubmission(
+    pending: Omit<PendingWalletSubmission, "attempts" | "utxoHashes"> & { genesisHash: Address },
+    nowMs: bigint,
+  ): boolean {
+    const index = this.#reservations.findIndex(
+      ({ id, expiresAtMs }) => id === pending.id && expiresAtMs !== null && expiresAtMs > nowMs,
+    );
+    const reservation = this.#reservations[index];
+    if (reservation === undefined) return false;
+    this.#reservations[index] = Object.freeze({ ...reservation, expiresAtMs: null });
+    this._setPendingSubmission({ ...pending, attempts: 1, utxoHashes: reservation.utxoHashes });
+    return true;
+  }
+
   /** @internal */
   _activeReservations(nowMs: bigint): readonly UtxoReservation[] {
     return this.#reservations.filter(
@@ -586,7 +602,11 @@ export class Wallet {
    * revision moved by another writer since the snapshot refuses the commit.
    * @internal
    */
-  _commitSync(delta: SyncDelta, expectedRevision: number): void {
+  _commitSync(
+    delta: SyncDelta,
+    expectedRevision: number,
+    expiredSubmissions: readonly string[] = [],
+  ): void {
     if (this.#revision !== expectedRevision) {
       throw new TransactionError("TRANSACTION_WALLET_STATE_STALE");
     }
@@ -621,6 +641,10 @@ export class Wallet {
       viewingKeyHistory: delta.viewingKeyHistory,
       lastSynced: delta.lastSynced,
     });
+    for (const id of expiredSubmissions) {
+      this._releaseReservation(id);
+      this._removePendingSubmission(id);
+    }
   }
 }
 

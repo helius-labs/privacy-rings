@@ -334,20 +334,25 @@ export function paymentRecipientResolver(
   context?: RequestContext,
 ) {
   const service = input.decryptionService;
+  const client = input.client;
+  const network =
+    input.decryptionService === undefined
+      ? undefined
+      : {
+          read: input.client.getGenesisHash.bind(input.client),
+          genesisHash: input.decryptionService.genesisHash,
+        };
   const paymentAddresses = new Map<Address, ShieldedAddress>();
   const networkMismatch = () => new WalletError("WALLET_DECRYPTION_NETWORK_MISMATCH");
   function requireActive(request?: RequestContext): void {
     if (request?.signal?.aborted) throw new WalletError("WALLET_RECIPIENT_LOOKUP_ABORTED");
   }
   async function checkServiceChain(request?: RequestContext): Promise<void> {
-    if (input.decryptionService === undefined) return;
+    if (network === undefined) return;
     requireActive(request);
-    const hash = await input.client.getGenesisHash(request);
+    const hash = await network.read(request);
     requireActive(request);
-    if (
-      wireDecoder(networkMismatch).address(hash, "getGenesisHash") !==
-      input.decryptionService.genesisHash
-    ) {
+    if (wireDecoder(networkMismatch).address(hash, "getGenesisHash") !== network.genesisHash) {
       throw networkMismatch();
     }
   }
@@ -361,7 +366,6 @@ export function paymentRecipientResolver(
     request?: RequestContext,
   ) {
     requireActive(request);
-    const client = input.client;
     if (client === undefined) throw new WalletError("WALLET_RECIPIENT_CLIENT_REQUIRED");
     async function readRegistration(rpc: AccountReader) {
       const record = await resolveRegisteredAddress({ rpc, owner: recipient }, request);
@@ -408,7 +412,7 @@ export function paymentRecipientResolver(
     return lookup;
   }
   async function revalidate(request = context): Promise<void> {
-    if (paymentAddresses.size === 0) return;
+    if (network === undefined) return;
     const requireCurrentServiceChain = chainCheckForBatch(request);
     await requireCurrentServiceChain();
     await Promise.all(

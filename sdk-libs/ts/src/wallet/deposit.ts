@@ -204,10 +204,11 @@ export function buildDepositTransaction<Input extends DepositTransactionParams>(
   context?: RequestContext,
 ): Promise<PaymentBuildResult<Input>>;
 export async function buildDepositTransaction(
-  input: DepositTransactionParams,
+  parameters: DepositTransactionParams,
   context?: RequestContext,
 ): Promise<Transaction | PreparedPayment> {
   try {
+    const input = { ...parameters };
     input.setupInstructions?.forEach(checkedSetupInstruction);
     const { resolve, revalidate } = paymentRecipientResolver(input, context);
     const { address: recipient } = await resolve(input.recipient);

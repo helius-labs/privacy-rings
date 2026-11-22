@@ -8,6 +8,7 @@ import {
   getBase64Encoder,
   getBase64EncodedWireTransaction,
   type Address,
+  type Blockhash,
   type Commitment,
   type Instruction,
   type SendableTransaction,
@@ -432,6 +433,17 @@ export class SprClient
       this.solanaRpc.getLatestBlockhash({ commitment: this.commitment }).send({ abortSignal }),
     );
     return value;
+  }
+
+  isBlockhashValid(blockhash: Blockhash, context?: RequestContext): Promise<boolean> {
+    return runKitRpc("isBlockhashValid", context, async (abortSignal) => {
+      const { value } = await this.solanaRpc
+        .isBlockhashValid(blockhash, { commitment: this.commitment })
+        .send({ abortSignal });
+      return wireDecoder(
+        () => new ClientError("CLIENT_RPC", { details: { method: "isBlockhashValid" } }),
+      ).boolean(value, "isBlockhashValid");
+    });
   }
 
   broadcastTransaction(

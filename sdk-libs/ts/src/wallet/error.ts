@@ -42,6 +42,7 @@ export const WALLET_ERROR_CODES = [
   "WALLET_NO_INPUTS",
   "WALLET_NOTE_RESERVED",
   "WALLET_PAYMENT_ALREADY_USED",
+  "WALLET_PAYMENT_BLOCKHASH",
   "WALLET_PAYMENT_SIGNATURES",
   "WALLET_SUBMIT_PAYMENT",
   "WALLET_NOTHING_TO_MERGE",
@@ -126,7 +127,7 @@ export function wrapWalletError(
   cause: unknown,
   details?: Readonly<Record<string, unknown>>,
 ): WalletError {
-  if (cause instanceof WalletError && cause.code === code) return cause;
+  if (cause instanceof WalletError && cause.code === code && details === undefined) return cause;
   const chain = extractCauseCodes(cause);
   return new WalletError(code, {
     ...(chain.length === 0 ? {} : { causeCode: chain[0], causeCodes: chain }),

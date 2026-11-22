@@ -43,6 +43,7 @@ import {
   Utxo,
   Wallet,
   decryptToBalances,
+  deserializeWallet,
   serializeWallet,
   type ShieldedKeys,
 } from "../src/transaction/index.js";
@@ -196,6 +197,9 @@ function capturePrivateBuild(transaction = TRANSACTION): Readonly<{
       }),
       async broadcastTransaction() {
         throw new Error("unexpected RPC broadcast");
+      },
+      async isBlockhashValid() {
+        return true;
       },
     },
     assemble,
@@ -1235,6 +1239,15 @@ describe("unsigned public transaction builders", () => {
       if (outcome === "registry changed") expect(address).not.toHaveBeenCalled();
       if (outcome === "broadcast uncertain") {
         expect(serializeWallet(wallet)).not.toEqual(before);
+        const restored = deserializeWallet(serializeWallet(wallet));
+        expect(restored.pendingSubmissions()).toMatchObject([
+          {
+            genesisHash,
+            lastValidBlockHeight: 1n,
+            attempts: 1,
+          },
+        ]);
+        expect(restored._activeReservations(BigInt(Date.now()) + 120_000n)).toHaveLength(1);
         await expect(payment.send(sign)).rejects.toMatchObject({
           causeCode: "WALLET_PAYMENT_ALREADY_USED",
         });

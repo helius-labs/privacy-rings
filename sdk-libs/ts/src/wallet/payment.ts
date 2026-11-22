@@ -3,9 +3,11 @@ import {
   assertIsSendableTransaction,
   address,
   getAddressEncoder,
+  getCompiledTransactionMessageDecoder,
   getSignatureFromTransaction,
   getTransactionDecoder,
   getTransactionEncoder,
+  isTransactionWithBlockhashLifetime,
   signatureBytes,
   type SendableTransaction,
 } from "@solana/kit";
@@ -13,7 +15,7 @@ import {
 import { withRequestSignal } from "../client/kit.js";
 import type { PreparedPayment, TransactionBroadcaster } from "../client/ports.js";
 import { equalBytes } from "../interface/bytes.js";
-import type { RequestContext, Transaction } from "../interface/types.js";
+import type { RequestContext, Signature, Transaction } from "../interface/types.js";
 import { WalletError, wrapWalletError } from "./error.js";
 
 const addressEncoder = getAddressEncoder();
@@ -67,9 +69,23 @@ export function prepareServicePayment(
   transaction: Transaction,
   client: TransactionBroadcaster,
   revalidate: (context?: RequestContext) => Promise<void>,
-  reservation?: Readonly<{ assertActive(): void; release(): void }>,
+  reservation?: Readonly<{
+    assertActive(): void;
+    beginBroadcast(signature: Signature, lastValidBlockHeight: bigint): void;
+    release(): void;
+  }>,
 ): PreparedPayment {
+  if (!isTransactionWithBlockhashLifetime(transaction))
+    throw new WalletError("WALLET_PAYMENT_BLOCKHASH");
+  const { blockhash, lastValidBlockHeight } = transaction.lifetimeConstraint;
+  if (
+    lastValidBlockHeight < 0n ||
+    getCompiledTransactionMessageDecoder().decode(transaction.messageBytes).lifetimeToken !==
+      blockhash
+  )
+    throw new WalletError("WALLET_PAYMENT_BLOCKHASH");
   const unsigned = Uint8Array.from(encoder.encode(transaction));
+  const isBlockhashValid = client.isBlockhashValid.bind(client);
   const broadcast = client.broadcastTransaction.bind(client);
   let used = false;
   return Object.freeze<PreparedPayment>({
@@ -79,7 +95,7 @@ export function prepareServicePayment(
           causeCode: "WALLET_PAYMENT_ALREADY_USED",
         });
       used = true;
-      let attempted = false;
+      let attempted: Signature | undefined;
       try {
         return await withRequestSignal(
           "sendPayment",
@@ -89,11 +105,16 @@ export function prepareServicePayment(
             const signed = await sign(decoder.decode(unsigned.slice()), signal);
             signal.throwIfAborted();
             const checked = checkedSignatureTransaction(decoder.decode(unsigned), signed);
+            if ((await isBlockhashValid(blockhash, { signal })) !== true) {
+              throw new WalletError("WALLET_PAYMENT_BLOCKHASH");
+            }
+            signal.throwIfAborted();
             await revalidate({ signal });
             signal.throwIfAborted();
             reservation?.assertActive();
             const expected = getSignatureFromTransaction(checked);
-            attempted = true;
+            reservation?.beginBroadcast(expected, lastValidBlockHeight);
+            attempted = expected;
             if ((await broadcast(checked, { signal })) !== expected) {
               throw new WalletError("WALLET_INTENT_MISMATCH", {
                 details: { field: "rpcSignature" },
@@ -103,8 +124,12 @@ export function prepareServicePayment(
           },
         );
       } catch (cause) {
-        if (!attempted) reservation?.release();
-        throw wrapWalletError("WALLET_SUBMIT_PAYMENT", cause);
+        if (attempted === undefined) reservation?.release();
+        throw wrapWalletError(
+          "WALLET_SUBMIT_PAYMENT",
+          cause,
+          attempted === undefined ? undefined : { transactionId: attempted },
+        );
       }
     },
     cancel() {

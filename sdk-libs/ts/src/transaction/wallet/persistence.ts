@@ -96,7 +96,7 @@ export interface SerializedNoteReservation {
  * must still encrypt it at rest.
  */
 export interface SerializedWalletState {
-  readonly version: 5;
+  readonly version: 6;
   readonly identity: Readonly<{
     signingPublicKey: string;
     nullifierPublicKey: string;
@@ -117,6 +117,7 @@ export interface SerializedWalletState {
     attempts: number;
     signature: Signature;
     lastValidBlockHeight: string;
+    genesisHash?: Address;
   }>[];
 }
 
@@ -124,7 +125,7 @@ export function serializeWallet(wallet: Wallet): string {
   if (!(wallet instanceof Wallet)) fail("wallet");
   const state = wallet._state();
   const snapshot: SerializedWalletState = {
-    version: 5,
+    version: 6,
     identity: {
       signingPublicKey: encode(wallet.identity.signingPublicKey.toBytes()),
       nullifierPublicKey: encode(wallet.identity.nullifierPublicKey),
@@ -151,6 +152,7 @@ export function serializeWallet(wallet: Wallet): string {
       attempts: pending.attempts,
       signature: pending.signature,
       lastValidBlockHeight: pending.lastValidBlockHeight.toString(),
+      ...(pending.genesisHash === undefined ? {} : { genesisHash: pending.genesisHash }),
     })),
     reservations: wallet
       ._reservationEntries()
@@ -187,7 +189,8 @@ export function deserializeWallet(serialized: string): Wallet {
 function hydrate(value: unknown): Wallet {
   const snapshot = record(value, "wallet");
   const version = snapshot["version"];
-  if (version !== 2 && version !== 3 && version !== 4 && version !== 5) fail("version");
+  if (version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6)
+    fail("version");
   const identityValue = record(snapshot["identity"], "identity");
   const identity = ShieldedAddress.fromPublicKeys(
     ShieldedPublicKey.fromBytes(
@@ -244,7 +247,7 @@ function hydrate(value: unknown): Wallet {
   });
   // Versions before 5 predate slot checkpoints, their first sync rescans
   // history once.
-  if (version === 5) {
+  if (version >= 5) {
     hydrateCheckpoints(wallet, snapshot["syncCheckpoints"]);
     wallet._forgetNullifierCheckpoints(nullifiers);
   }
@@ -282,6 +285,9 @@ function hydrate(value: unknown): Wallet {
           item["lastValidBlockHeight"],
           `${path}.lastValidBlockHeight`,
         ),
+        ...(version < 6 || item["genesisHash"] === undefined
+          ? {}
+          : { genesisHash: address(item["genesisHash"], `${path}.genesisHash`) }),
       };
       const known = new Map(
         wallet.utxos().map((entry) => [bytesKey(entry.outputContext.hash), entry]),

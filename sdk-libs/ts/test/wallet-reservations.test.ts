@@ -1,4 +1,4 @@
-import { address, type Address } from "@solana/kit";
+import { address, signature, type Address } from "@solana/kit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AuthorizedPrivateTransaction } from "../src/client/client.js";
@@ -21,7 +21,14 @@ import { extendReservation } from "../src/flows/reserve.js";
 import { createSplit, createTransfer } from "../src/wallet/actions.js";
 import { createMerge } from "../src/wallet/merge.js";
 import { buildTransferTransaction } from "../src/wallet/transactions.js";
-import { privateTransactionClient } from "./helpers/clients.js";
+import { syncWallet } from "../src/wallet/sync.js";
+import {
+  kitReads,
+  matchesPage,
+  privateTransactionClient,
+  syncReads,
+  transactionsPage,
+} from "./helpers/clients.js";
 import { emptyTransaction } from "./helpers/transactions.js";
 
 const TREE = treeAddress(0);
@@ -132,6 +139,84 @@ describe("UTXO reservations", () => {
       code: "WALLET_CREATE_TRANSFER",
       causeCode: "WALLET_INSUFFICIENT_BALANCE",
     });
+  });
+
+  it("restores an uncertain submission and frees its inputs only after finalized expiry and fresh nullifier sync", async () => {
+    const keypair = spendingKeypair();
+    const wallet = fundedWallet(keypair, [5n]);
+    const input = wallet.utxos()[0]!;
+    const genesisHash = address("EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG");
+    const reservation = wallet._reserveUtxos({
+      utxoHashes: [input.outputContext.hash],
+      nowMs: 1n,
+      ttlMs: 120_000n,
+    });
+    const pending = {
+      id: reservation.id,
+      intentHash: filled(2),
+      signature: signature("1".repeat(64)),
+      genesisHash,
+      lastValidBlockHeight: 240n,
+    };
+    expect(wallet._beginSubmission(pending, 2n)).toBe(true);
+    const restored = deserializeWallet(serializeWallet(wallet));
+    expect(restored.pendingSubmissions()).toEqual([
+      {
+        ...pending,
+        attempts: 1,
+        utxoHashes: [input.outputContext.hash],
+      },
+    ]);
+    expect(restored._activeReservations(1_000_000n)).toHaveLength(1);
+
+    let indexerSlot = 400n;
+    let blockHeight = 241n;
+    let chain: Address = PAYER;
+    const context = () => ({ slot: indexerSlot, blockTime: 1_700_000_000n });
+    const client = {
+      ...syncReads({
+        getShieldedTransactionsByTags: async () =>
+          transactionsPage({ context: { ...context(), slot: 500n } }),
+        getEncryptedUtxosByTags: async () => matchesPage({ context: { ...context(), slot: 500n } }),
+        getShieldedTransactionsByNullifiers: async () => transactionsPage({ context: context() }),
+      }),
+      ...kitReads({
+        solanaRpc: {
+          getGenesisHash: () => ({ send: async () => chain }),
+          getEpochInfo: (config: unknown) => ({
+            send: async () => {
+              expect(config).toEqual({ commitment: "finalized" });
+              return { absoluteSlot: 500n, blockHeight };
+            },
+          }),
+        },
+      }),
+    };
+    const sync = () => syncWallet({ wallet: restored, keys: localKeys(keypair), client });
+    const before = serializeWallet(restored);
+    await expect(sync()).rejects.toMatchObject({
+      code: "WALLET_SYNC",
+      causeCode: "WALLET_DECRYPTION_NETWORK_MISMATCH",
+    });
+    expect(serializeWallet(restored)).toBe(before);
+
+    chain = genesisHash;
+    await sync();
+    expect(restored.pendingSubmissions()).toHaveLength(1);
+    await expect(createTransfer(transferParams(restored, 3n))).rejects.toMatchObject({
+      causeCode: "WALLET_INSUFFICIENT_BALANCE",
+    });
+
+    indexerSlot = 500n;
+    blockHeight = 240n;
+    await sync();
+    expect(restored.pendingSubmissions()).toHaveLength(1);
+
+    blockHeight = 241n;
+    await sync();
+    expect(restored.pendingSubmissions()).toEqual([]);
+    expect(restored._activeReservations(1_000_000n)).toEqual([]);
+    await expect(createTransfer(transferParams(restored, 3n))).resolves.toBeDefined();
   });
 
   it("lets exactly one of two concurrent builds spend a UTXO", async () => {
