@@ -495,6 +495,29 @@ export class Wallet {
     return true;
   }
 
+  /** @internal Check the staged submission and all its inputs before broadcast. */
+  _canBroadcastSubmission(id: string, signature: Signature): boolean {
+    const pending = this.#pendingSubmissions.find((entry) => entry.id === id);
+    if (
+      pending?.signature !== signature ||
+      !this.#reservations.some((entry) => entry.id === id && entry.expiresAtMs === null)
+    ) {
+      return false;
+    }
+    const unspent = new Set(
+      this.#utxos
+        .filter((entry) => !entry.spent)
+        .map((entry) => bytesKey(entry.outputContext.hash)),
+    );
+    return pending.utxoHashes.every((hash) => unspent.has(bytesKey(hash)));
+  }
+
+  /** @internal Resolve both parts of an unsubmitted or expired payment. */
+  _settleSubmission(id: string): void {
+    this._releaseReservation(id);
+    this._removePendingSubmission(id);
+  }
+
   /** @internal */
   _activeReservations(nowMs: bigint): readonly UtxoReservation[] {
     return this.#reservations.filter(
@@ -642,8 +665,7 @@ export class Wallet {
       lastSynced: delta.lastSynced,
     });
     for (const id of expiredSubmissions) {
-      this._releaseReservation(id);
-      this._removePendingSubmission(id);
+      this._settleSubmission(id);
     }
   }
 }

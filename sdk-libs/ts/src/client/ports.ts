@@ -89,11 +89,12 @@ export interface TransactionBroadcaster {
   ): Promise<Signature>;
 }
 
-export type PaymentLookup<Client> =
-  | Readonly<{ decryptionService?: undefined }>
+export type PaymentLookup<Client, Persistence = never> =
+  | Readonly<{ decryptionService?: undefined; persistence?: undefined }>
   | Readonly<{
       client: Client & GenesisHashReader & TransactionBroadcaster;
       decryptionService: DecryptionRecipientProvider;
+      persistence?: Persistence;
     }>;
 
 /** A sign-only callback and an SDK-owned submission to the payment RPC. */

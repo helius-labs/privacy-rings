@@ -1,3 +1,6 @@
+import { mkdtemp, open, readFile, rename, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   signTransactionWithSigners,
@@ -23,8 +26,10 @@ import {
   buildWithdrawalTransaction,
   createSprClient,
   deserializeWallet,
+  loadPersistedWallet,
   serializeWallet,
   syncWallet,
+  walletSnapshotCipher,
   type Bytes32,
   type DepositTransactionParams,
   type RequestContext,
@@ -803,7 +808,9 @@ describe("live SDK lifecycle", { concurrent: false }, () => {
     assertHistory(owner, { kind: "merge", direction: "selfTransfer", amount: 30_000_000n });
   }, 1_200_000);
 
-  it("submits a guarded payment to an unregistered recipient", async () => {
+  it("restores the saved record of a guarded payment to an unregistered recipient", async ({
+    onTestFinished,
+  }) => {
     const { client } = harness;
     const sender = await actor(client, 141);
     const recipient = await actor(client, 142);
@@ -816,6 +823,30 @@ describe("live SDK lifecycle", { concurrent: false }, () => {
       amount: 50_000_000n,
     });
     await sync(client, sender);
+    const directory = await mkdtemp(join(tmpdir(), "spr-payment-"));
+    onTestFinished(() => rm(directory, { recursive: true, force: true }));
+    const snapshot = join(directory, "wallet.json");
+    const cipher = walletSnapshotCipher(sender.keypair);
+    const store = {
+      load: () => readFile(snapshot, "utf8"),
+      async save(sealed: string) {
+        const temporary = snapshot + ".tmp";
+        const file = await open(temporary, "wx", 0o600);
+        try {
+          await file.writeFile(sealed);
+          await file.sync();
+        } finally {
+          await file.close();
+        }
+        await rename(temporary, snapshot);
+        const parent = await open(directory, "r");
+        try {
+          await parent.sync();
+        } finally {
+          await parent.close();
+        }
+      },
+    };
     let lookups = 0;
     const payment = await buildTransferTransaction({
       client,
@@ -832,10 +863,13 @@ describe("live SDK lifecycle", { concurrent: false }, () => {
           return recipient.keypair.shieldedAddress();
         },
       },
+      persistence: { store, cipher },
     });
     const signature = await payment.send((transaction, abortSignal) =>
       signTransactionWithSigners([sender.signer], transaction, { abortSignal }),
     );
+    const restored = await loadPersistedWallet({ store, cipher });
+    expect(restored?.pendingSubmissions()).toMatchObject([{ signature }]);
     await waitForSignature(client.solanaRpc, signature);
     await sync(client, recipient);
     expect(lookups).toBe(3);

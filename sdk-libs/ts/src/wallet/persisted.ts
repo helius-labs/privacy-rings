@@ -13,7 +13,7 @@ import { runLockedWalletSync, type SyncWalletInput } from "./sync.js";
  */
 export interface WalletStateStore {
   load(): Promise<string | undefined>;
-  save(snapshot: string): Promise<void>;
+  save(snapshot: string, context?: RequestContext): Promise<void>;
 }
 
 /**
@@ -23,7 +23,7 @@ export interface WalletStateStore {
  * `walletSnapshotCipher` is the shipped implementation.
  */
 export interface WalletStateCipher {
-  seal(snapshot: string): Promise<string>;
+  seal(snapshot: string, context?: RequestContext): Promise<string>;
   open(sealed: string): Promise<string>;
 }
 
@@ -61,16 +61,22 @@ export function savePersistedWallet(input: WalletPersistence): Promise<string> {
   return input.wallet._withSyncLock(() => saveWalletSnapshot(input));
 }
 
-async function saveWalletSnapshot(input: WalletPersistence): Promise<string> {
+/** @internal The caller holds the wallet sync lock. */
+export async function saveWalletSnapshot(
+  input: WalletPersistence,
+  context?: RequestContext,
+): Promise<string> {
+  context?.signal?.throwIfAborted();
   const snapshot = serializeWallet(input.wallet);
   let sealed: string;
   try {
-    sealed = await input.cipher.seal(snapshot);
+    sealed = await input.cipher.seal(snapshot, context);
   } catch (cause) {
     throw wrapWalletError("WALLET_SNAPSHOT", cause);
   }
+  context?.signal?.throwIfAborted();
   try {
-    await input.store.save(sealed);
+    await input.store.save(sealed, context);
   } catch (cause) {
     throw wrapWalletError("WALLET_PERSIST", cause);
   }

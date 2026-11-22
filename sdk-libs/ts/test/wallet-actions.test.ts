@@ -3,6 +3,7 @@ import {
   assertIsFullySignedTransaction,
   generateKeyPairSigner,
   getAddressEncoder,
+  getSignatureFromTransaction,
   signTransactionWithSigners,
   type Address,
   type Blockhash,
@@ -62,6 +63,8 @@ import {
 } from "../src/interface/pda/index.js";
 import { ownerSignerAddresses } from "../src/client/prover/assembly.js";
 import { buildDepositTransaction, createDeposit } from "../src/wallet/deposit.js";
+import { loadPersistedWallet } from "../src/wallet/persisted.js";
+import { walletSnapshotCipher } from "../src/wallet/snapshot-cipher.js";
 import { depositClient, privateTransactionClient } from "./helpers/clients.js";
 import { emptyTransaction } from "./helpers/transactions.js";
 import { approveIntent, type ApprovalRequest } from "../src/transaction/wallet/intent.js";
@@ -1256,6 +1259,186 @@ describe("unsigned public transaction builders", () => {
       }
     },
   );
+
+  it.each([
+    "saved",
+    "uncertain send",
+    "save failed",
+    "recipient changed",
+    "blockhash expired",
+    "input spent",
+    "aborted",
+  ] as const)("guards RPC broadcast when payment persistence is %s", async (outcome) => {
+    const keypair = spendingKeypair();
+    const payer = await generateKeyPairSigner();
+    const wallet = fundedWallet(keypair, [100n]);
+    const recipient = ShieldedKeypair.generate().shieldedAddress();
+    const rotated = ShieldedAddress.fromPublicKeys(
+      recipient.signingPublicKey,
+      recipient.nullifierPublicKey,
+      ShieldedKeypair.generate().shieldedAddress().viewingPublicKey,
+    );
+    const { client } = capturePrivateBuild(emptyTransaction(payer.address));
+    const genesisHash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
+    const before = serializeWallet(wallet);
+    const controller = new AbortController();
+    let stored: string | undefined;
+    let finishSave = () => {};
+    const writing = new Promise<void>((resolve) => {
+      finishSave = resolve;
+    });
+    const cipher = walletSnapshotCipher(keypair);
+    const store = {
+      load: async () => stored,
+      save: vi.fn(async (sealed: string, context?: RequestContext) => {
+        expect(context?.signal).toBeDefined();
+        await writing;
+        if (outcome === "save failed") throw new Error("store write failed");
+        stored = sealed;
+      }),
+    };
+    const address = vi.fn(async () =>
+      outcome === "recipient changed" && stored !== undefined ? rotated : recipient,
+    );
+    const isBlockhashValid = vi.fn(async () => {
+      expect(stored).toBeDefined();
+      return outcome !== "blockhash expired";
+    });
+    const broadcastTransaction = vi.fn(async (transaction: Transaction) => {
+      const signature = getSignatureFromTransaction(transaction);
+      const restored = await loadPersistedWallet({ store, cipher });
+      expect(restored?.pendingSubmissions()).toMatchObject([
+        { signature, genesisHash, lastValidBlockHeight: 1n },
+      ]);
+      expect(restored?._activeReservations(BigInt(Date.now()) + 120_000n)).toHaveLength(1);
+      if (outcome === "uncertain send") {
+        throw new ClientError("CLIENT_RPC", { details: { method: "sendTransaction" } });
+      }
+      return signature;
+    });
+    const persistence = { store, cipher, wallet: fundedWallet(keypair, []) };
+    const payment = await buildTransferTransaction({
+      client: {
+        ...client,
+        isBlockhashValid,
+        broadcastTransaction,
+        getGenesisHash: async () => genesisHash,
+      },
+      wallet,
+      keys: localKeys(keypair),
+      feePayer: payer.address,
+      recipient: recipient.solanaAddress(),
+      amount: 25n,
+      decryptionService: { address, genesisHash },
+      persistence,
+    });
+    const sending = payment.send(
+      (transaction) => signTransactionWithSigners([payer], transaction),
+      { signal: controller.signal },
+    );
+    const failure = {
+      "uncertain send": "CLIENT_RPC",
+      "save failed": "WALLET_PERSIST",
+      "recipient changed": "WALLET_DECRYPTION_RECIPIENT_MISMATCH",
+      "blockhash expired": "WALLET_PAYMENT_BLOCKHASH",
+      "input spent": "WALLET_UNSIGNED_INPUT_UNAVAILABLE",
+      aborted: "CLIENT_ABORTED",
+    };
+    const settled =
+      outcome === "saved"
+        ? expect(sending).resolves.toEqual(expect.any(String))
+        : expect(sending).rejects.toMatchObject({
+            code: "WALLET_SUBMIT_PAYMENT",
+            causeCode: failure[outcome],
+          });
+    try {
+      await vi.waitFor(() => expect(store.save).toHaveBeenCalledOnce());
+      expect(broadcastTransaction).not.toHaveBeenCalled();
+      expect(isBlockhashValid).not.toHaveBeenCalled();
+      expect(wallet.pendingSubmissions()).toHaveLength(1);
+      if (outcome === "input spent") {
+        wallet._replace({
+          ...wallet._state(),
+          utxos: wallet.utxos().map((entry) => ({ ...entry, spent: true })),
+        });
+      }
+      if (outcome === "aborted") {
+        controller.abort();
+        await settled;
+        expect(broadcastTransaction).not.toHaveBeenCalled();
+      }
+    } finally {
+      finishSave();
+    }
+    await settled;
+    await wallet._withSyncLock(async () => {});
+    const attempted = outcome === "saved" || outcome === "uncertain send";
+    expect(broadcastTransaction).toHaveBeenCalledTimes(attempted ? 1 : 0);
+    if (attempted) {
+      expect(wallet.pendingSubmissions()).toHaveLength(1);
+    } else {
+      expect(wallet.pendingSubmissions()).toEqual([]);
+      if (outcome !== "input spent") expect(serializeWallet(wallet)).toBe(before);
+    }
+    if (outcome === "aborted") {
+      const restored = await loadPersistedWallet({ store, cipher });
+      expect(restored?.pendingSubmissions()).toHaveLength(1);
+    }
+  });
+
+  it("cannot stage or broadcast a cancelled payment waiting behind the wallet save queue", async () => {
+    const keypair = spendingKeypair();
+    const payer = await generateKeyPairSigner();
+    const wallet = fundedWallet(keypair, [100n]);
+    const recipient = ShieldedKeypair.generate().shieldedAddress();
+    const { client } = capturePrivateBuild(emptyTransaction(payer.address));
+    const genesisHash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
+    const store = { save: vi.fn(async () => {}) };
+    const broadcastTransaction = vi.fn(async (transaction: Transaction) =>
+      getSignatureFromTransaction(transaction),
+    );
+    const payment = await buildTransferTransaction({
+      client: { ...client, broadcastTransaction, getGenesisHash: async () => genesisHash },
+      wallet,
+      keys: localKeys(keypair),
+      feePayer: payer.address,
+      recipient: recipient.solanaAddress(),
+      amount: 25n,
+      decryptionService: { address: async () => recipient, genesisHash },
+      persistence: { store, cipher: walletSnapshotCipher(keypair) },
+    });
+    let finish = () => {};
+    const blocking = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const currentWriter = wallet._withSyncLock(() => blocking);
+    const stage = vi.spyOn(wallet, "_beginSubmission");
+    const sign = vi.fn(async (transaction: Transaction) =>
+      signTransactionWithSigners([payer], transaction),
+    );
+    const controller = new AbortController();
+    const sending = expect(payment.send(sign, { signal: controller.signal })).rejects.toMatchObject(
+      {
+        code: "WALLET_SUBMIT_PAYMENT",
+        causeCode: "CLIENT_ABORTED",
+      },
+    );
+    try {
+      await vi.waitFor(() => expect(sign).toHaveBeenCalledOnce());
+      expect(stage).not.toHaveBeenCalled();
+      controller.abort();
+      await sending;
+    } finally {
+      finish();
+    }
+    await currentWriter;
+    await wallet._withSyncLock(async () => {});
+    expect(stage).not.toHaveBeenCalled();
+    expect(store.save).not.toHaveBeenCalled();
+    expect(broadcastTransaction).not.toHaveBeenCalled();
+    expect(wallet.pendingSubmissions()).toEqual([]);
+    expect(wallet._activeReservations(BigInt(Date.now()))).toEqual([]);
+  });
 
   it("applies split defaults without mutating the wallet", async () => {
     const keypair = spendingKeypair();

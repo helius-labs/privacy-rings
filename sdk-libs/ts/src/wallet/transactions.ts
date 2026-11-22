@@ -32,6 +32,7 @@ import {
 } from "./actions.js";
 import { WalletError, wrapWalletError } from "./error.js";
 import { prepareServicePayment } from "./payment.js";
+import { saveWalletSnapshot, type WalletPersistence } from "./persisted.js";
 import { authorizePrivateTransaction } from "./private-transaction.js";
 import { withdrawalSetupInstructions } from "../flows/settlement.js";
 
@@ -60,8 +61,10 @@ export interface PrivateTransactionParams {
   readonly approve?: ApprovalHandler;
 }
 
+type TransferPayments = PaymentLookup<PrivateTransactionClient, Omit<WalletPersistence, "wallet">>;
+
 export type TransferTransactionParams = PrivateTransactionParams &
-  PaymentLookup<PrivateTransactionClient> & {
+  TransferPayments & {
     readonly recipient: TransferDestination;
     readonly asset?: Address;
     readonly amount: bigint;
@@ -74,7 +77,7 @@ export interface TransferPayment {
 }
 
 export type MultiTransferTransactionParams = PrivateTransactionParams &
-  PaymentLookup<PrivateTransactionClient> & {
+  TransferPayments & {
     /** Each paid as its own private output, in this order; one to fifteen of them. */
     readonly payments: readonly TransferPayment[];
     readonly asset?: Address;
@@ -103,10 +106,7 @@ export async function buildTransferTransaction(
 ): Promise<Transaction | PreparedPayment> {
   try {
     const input = { ...parameters };
-    const payment =
-      input.decryptionService === undefined
-        ? undefined
-        : { client: input.client, genesisHash: input.decryptionService.genesisHash };
+    const payment = servicePaymentOptions(input);
     const created = await createTransfer(
       {
         ...input,
@@ -144,10 +144,7 @@ export async function buildMultiTransferTransaction(
 ): Promise<Transaction | PreparedPayment> {
   try {
     const input = { ...parameters };
-    const payment =
-      input.decryptionService === undefined
-        ? undefined
-        : { client: input.client, genesisHash: input.decryptionService.genesisHash };
+    const payment = servicePaymentOptions(input);
     const created = await createMultiTransfer(
       {
         ...input,
@@ -215,8 +212,28 @@ export async function buildSplitTransaction(
 type PaymentChecks = Readonly<{
   client: TransactionBroadcaster;
   genesisHash: string;
+  persistence: WalletPersistence | undefined;
   revalidate(context?: RequestContext): Promise<void>;
 }>;
+
+function servicePaymentOptions(
+  input: PrivateTransactionParams & TransferPayments,
+): Omit<PaymentChecks, "revalidate"> | undefined {
+  if (input.decryptionService === undefined) {
+    if (input.persistence !== undefined) throw new WalletError("WALLET_INVALID_PAYMENT");
+    return undefined;
+  }
+  const persistence = input.persistence;
+  return {
+    client: input.client,
+    genesisHash: input.decryptionService.genesisHash,
+    persistence: persistence && {
+      wallet: input.wallet,
+      store: persistence.store,
+      cipher: persistence.cipher,
+    },
+  };
+}
 
 function buildAuthorizedTransaction(
   input: PrivateTransactionParams,
@@ -269,6 +286,8 @@ async function buildAuthorizedTransaction(
     if (authorizedMaterial === undefined) throw new WalletError("WALLET_INTENT_MISMATCH");
     const approvedIntent = intentHash(authorizedMaterial.intent);
     const genesisHash = address(payment.genesisHash);
+    const persistence = payment.persistence;
+    const wallet = input.wallet;
     return prepareServicePayment(
       assembled,
       payment.client,
@@ -278,7 +297,7 @@ async function buildAuthorizedTransaction(
         : {
             assertActive() {
               if (
-                !input.wallet
+                !wallet
                   ._activeReservations(BigInt(Date.now()))
                   .some(({ id }) => id === reservationId)
               ) {
@@ -286,22 +305,38 @@ async function buildAuthorizedTransaction(
               }
             },
             release() {
-              input.wallet._releaseReservation(reservationId);
+              wallet._settleSubmission(reservationId);
             },
-            beginBroadcast(signature, lastValidBlockHeight) {
-              if (
-                !input.wallet._beginSubmission(
-                  {
-                    id: reservationId,
-                    signature,
-                    lastValidBlockHeight,
-                    genesisHash,
-                    intentHash: approvedIntent,
-                  },
-                  BigInt(Date.now()),
-                )
-              )
+            assertPending(signature) {
+              if (!wallet._canBroadcastSubmission(reservationId, signature))
                 throw new WalletError("WALLET_UNSIGNED_INPUT_UNAVAILABLE");
+            },
+            async stage(signature, lastValidBlockHeight, signal) {
+              const begin = () => {
+                signal.throwIfAborted();
+                if (
+                  !wallet._beginSubmission(
+                    {
+                      id: reservationId,
+                      signature,
+                      lastValidBlockHeight,
+                      genesisHash,
+                      intentHash: approvedIntent,
+                    },
+                    BigInt(Date.now()),
+                  )
+                ) {
+                  throw new WalletError("WALLET_UNSIGNED_INPUT_UNAVAILABLE");
+                }
+              };
+              if (persistence === undefined) {
+                begin();
+                return;
+              }
+              await wallet._withSyncLock(async () => {
+                begin();
+                await saveWalletSnapshot(persistence, { signal });
+              });
             },
           },
     );

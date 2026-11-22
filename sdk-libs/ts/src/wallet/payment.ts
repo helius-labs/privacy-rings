@@ -71,7 +71,8 @@ export function prepareServicePayment(
   revalidate: (context?: RequestContext) => Promise<void>,
   reservation?: Readonly<{
     assertActive(): void;
-    beginBroadcast(signature: Signature, lastValidBlockHeight: bigint): void;
+    stage(signature: Signature, lastValidBlockHeight: bigint, signal: AbortSignal): Promise<void>;
+    assertPending(signature: Signature): void;
     release(): void;
   }>,
 ): PreparedPayment {
@@ -105,15 +106,16 @@ export function prepareServicePayment(
             const signed = await sign(decoder.decode(unsigned.slice()), signal);
             signal.throwIfAborted();
             const checked = checkedSignatureTransaction(decoder.decode(unsigned), signed);
+            const expected = getSignatureFromTransaction(checked);
+            await reservation?.stage(expected, lastValidBlockHeight, signal);
+            signal.throwIfAborted();
             if ((await isBlockhashValid(blockhash, { signal })) !== true) {
               throw new WalletError("WALLET_PAYMENT_BLOCKHASH");
             }
             signal.throwIfAborted();
             await revalidate({ signal });
             signal.throwIfAborted();
-            reservation?.assertActive();
-            const expected = getSignatureFromTransaction(checked);
-            reservation?.beginBroadcast(expected, lastValidBlockHeight);
+            reservation?.assertPending(expected);
             attempted = expected;
             if ((await broadcast(checked, { signal })) !== expected) {
               throw new WalletError("WALLET_INTENT_MISMATCH", {

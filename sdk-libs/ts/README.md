@@ -356,7 +356,13 @@ An uncertain send reports the original transaction ID in
 `WalletError.details.transactionId`. Wallet sync releases remaining inputs
 after finalized block height passes the transaction's last valid height
 and the indexer has checked each affected nullifier through that slot.
-Save the reservation-bearing wallet snapshot to carry this state across restarts.
+
+For persistent wallets, pass `persistence: { store, cipher }` to the transfer
+builder. The SDK seals and saves the signed payment record on the wallet's
+sync queue before checking the recipient and blockhash again and broadcasting.
+`store.save` must resolve after committing its atomic replacement. The
+restored record holds the inputs until sync can settle them. A stopped
+payment may leave a saved reservation for sync to clear after expiry.
 
 ```ts
 const payment = await buildTransferTransaction({
@@ -367,6 +373,7 @@ const payment = await buildTransferTransaction({
   recipient: recipientSolanaAddress,
   amount: 25_000_000n,
   decryptionService,
+  persistence: { store, cipher },
 });
 const signature = await payment.send((transaction, abortSignal) =>
   signTransactionWithSigners([feePayer], transaction, { abortSignal }),
