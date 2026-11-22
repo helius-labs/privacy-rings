@@ -291,6 +291,39 @@ async fn a_revoked_cached_boot_cannot_collect_or_send_owner_approval() {
 }
 
 #[tokio::test]
+async fn approval_deadline_cancels_a_stalled_replica_exchange() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/nitro/", listener.local_addr().unwrap());
+    let fixture: Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(UnixNitroCheckpointStore::open(directory.path()).unwrap());
+    let (trust, session, active) = accepted_boot(&fixture, &endpoint, now_ms().unwrap(), &store);
+    let service = NitroDecryptionService::new(trust, store).unwrap();
+    *service.0.policies.test_heads.lock().unwrap() = Some([active.clone(), active]);
+    let signer = Arc::new(Keypair::new_from_array([21; 32]));
+    let owner = signer.pubkey();
+    let approval_ms = 2_000;
+    let operation = Operation::decrypt(owner, &[], now_ms().unwrap() + approval_ms);
+    let exchange = tokio::spawn(async move {
+        service
+            .0
+            .exchange(&session, operation, Some((owner, signer)))
+            .await
+    });
+    let (_stalled_reply, _) =
+        tokio::time::timeout(Duration::from_millis(approval_ms), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_millis(approval_ms)).await;
+    assert!(matches!(
+        exchange.await.unwrap(),
+        Err(NitroDecryptionError::SessionExpired)
+    ));
+}
+
+#[tokio::test]
 async fn a_cached_boot_cannot_resolve_payments_under_a_new_recovery_policy() {
     let fixture: Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
     let directory = tempfile::tempdir().unwrap();

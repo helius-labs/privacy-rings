@@ -97,7 +97,8 @@ Solana network, release, batch, one-time response key and an exclusive deadline
 within the verified session. The client verifies both published heads before
 prompting the signer, before sending the signed request and before opening the
 authenticated reply. A revoked, superseded or unavailable policy stops the
-exchange. The enclave checks the deadline before returning a reply. The client
+exchange. The approval deadline bounds those reads and the replica response.
+The enclave checks the deadline before returning a reply. The client
 verifies the boot signature, request and ciphertext digests, and deadline
 before opening it. The 60-second attestation window starts with the policy
 fetch and ends when either elapsed or wall time reaches its deadline. A stalled

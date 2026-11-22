@@ -21,7 +21,7 @@ use spr_transaction::DecryptRequest;
 use thiserror::Error;
 use tokio::{
     sync::{oneshot, Mutex, Semaphore},
-    time::{timeout, timeout_at, Instant},
+    time::{timeout_at, Instant},
 };
 use url::Url;
 use zeroize::Zeroizing;
@@ -486,19 +486,14 @@ impl Service {
     async fn require_exchange_policy(
         &self,
         session: &Session,
-        approval_expires_at_ms: Option<u64>,
+        approval: Option<(u64, Instant)>,
     ) -> Result<(), NitroDecryptionError> {
         self.require_current(session).await?;
-        if let Some(expires_at_ms) = approval_expires_at_ms {
-            let now = now_ms()?;
-            require_unexpired_approval(approval_expires_at_ms, now)?;
-            let remaining =
-                Duration::from_millis(expires_at_ms - now).min(session.window.remaining(now));
-            timeout(remaining, self.policies.read())
-                .await
-                .map_err(|_| NitroDecryptionError::SessionExpired)??;
+        if let Some((expires_at_ms, deadline)) = approval {
+            require_unexpired_approval(expires_at_ms, deadline)?;
+            self.policies.read().await?;
             self.require_current(session).await?;
-            require_unexpired_approval(approval_expires_at_ms, now_ms()?)?;
+            require_unexpired_approval(expires_at_ms, deadline)?;
         }
         Ok(())
     }
@@ -556,8 +551,17 @@ impl Service {
         operation: Operation,
         signer: Option<(Pubkey, Arc<Owner>)>,
     ) -> Result<OperationResult, NitroDecryptionError> {
-        self.require_current(session).await?;
-        let approval_expires_at_ms = operation.approval_expires_at_ms();
+        let approval = if let Some(expires_at_ms) = operation.approval_expires_at_ms() {
+            let now = now_ms()?;
+            let lifetime = expires_at_ms.saturating_sub(now);
+            let remaining = Duration::from_millis(lifetime).min(session.window.remaining(now));
+            let deadline = Instant::now() + remaining;
+            require_unexpired_approval(expires_at_ms, deadline)?;
+            Some((expires_at_ms, deadline))
+        } else {
+            self.require_current(session).await?;
+            None
+        };
         let response_secret = response_secret()?;
         let request_id = random_bytes()?;
         let mut request = Request::new(
@@ -575,16 +579,13 @@ impl Service {
         if envelope_overhead + 2 * size > MAX_CIPHERTEXT {
             return Err(NitroDecryptionError::RequestTooLarge);
         }
-        if let (Some((owner, signer)), Some(expires_at_ms)) = (signer, approval_expires_at_ms) {
+        if let (Some((owner, signer)), Some((_, deadline))) = (signer, approval) {
             let key = wire::owner_key(owner)?;
             let message = wire::owner_message(&key, self.trust.network(), &digest);
-            let now = now_ms()?;
-            let timeout = Duration::from_millis(expires_at_ms.saturating_sub(now))
-                .min(session.window.remaining(now));
             let signature = owner_call(
                 &self.owner_work,
-                timeout,
-                self.require_exchange_policy(session, approval_expires_at_ms),
+                deadline.saturating_duration_since(Instant::now()),
+                self.require_exchange_policy(session, approval),
                 move || {
                     let signature: [u8; 64] = signer
                         .try_sign_message(&message)
@@ -603,31 +604,42 @@ impl Service {
         if encrypted.len() > MAX_CIPHERTEXT {
             return Err(NitroDecryptionError::RequestTooLarge);
         }
-        self.require_exchange_policy(session, approval_expires_at_ms)
-            .await?;
-        let response = self
-            .http
-            .post(route(&session.endpoint, &["v1", "operations"])?)
-            .header(CONTENT_TYPE, "application/json")
-            .body(encrypted)
-            .send()
-            .await
-            .map_err(|_| NitroDecryptionError::Unavailable)?;
-        let response = serde_json::from_slice(&body(response, MAX_RESPONSE_BYTES).await?)
-            .map_err(|_| NitroDecryptionError::Protocol)?;
-        let ciphertext = request.verify_response(&session.replica, response, &digest)?;
-        self.require_exchange_policy(session, approval_expires_at_ms)
-            .await?;
-        let plaintext = crypto::open(&response_secret, &ciphertext)?;
-        serde_json::from_slice(&plaintext).map_err(|_| NitroDecryptionError::Protocol)
+        let exchange = async {
+            self.require_exchange_policy(session, approval).await?;
+            let response = self
+                .http
+                .post(route(&session.endpoint, &["v1", "operations"])?)
+                .header(CONTENT_TYPE, "application/json")
+                .body(encrypted)
+                .send()
+                .await
+                .map_err(|_| NitroDecryptionError::Unavailable)?;
+            let response = serde_json::from_slice(&body(response, MAX_RESPONSE_BYTES).await?)
+                .map_err(|_| NitroDecryptionError::Protocol)?;
+            let ciphertext = request.verify_response(&session.replica, response, &digest)?;
+            self.require_exchange_policy(session, approval).await?;
+            let plaintext = crypto::open(&response_secret, &ciphertext)?;
+            let result =
+                serde_json::from_slice(&plaintext).map_err(|_| NitroDecryptionError::Protocol)?;
+            if let Some((expires_at_ms, deadline)) = approval {
+                require_unexpired_approval(expires_at_ms, deadline)?;
+            }
+            Ok(result)
+        };
+        match approval {
+            Some((_, deadline)) => timeout_at(deadline, exchange)
+                .await
+                .map_err(|_| NitroDecryptionError::SessionExpired)?,
+            None => exchange.await,
+        }
     }
 }
 
 fn require_unexpired_approval(
-    expires_at_ms: Option<u64>,
-    now: u64,
+    expires_at_ms: u64,
+    deadline: Instant,
 ) -> Result<(), NitroDecryptionError> {
-    if expires_at_ms.is_some_and(|expires_at_ms| now >= expires_at_ms) {
+    if Instant::now() >= deadline || now_ms()? >= expires_at_ms {
         return Err(NitroDecryptionError::SessionExpired);
     }
     Ok(())

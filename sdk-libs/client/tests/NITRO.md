@@ -21,7 +21,7 @@ Run `cargo test --locked -p spr-client --features client -p spr-prover-tee`.
 | A registry miss can use service keys only on the service’s Solana network. Both async and blocking lookup reject a devnet service on a mainnet RPC. | [Wallet transport](nitro_transport.rs) |
 | A retryable exchange failure discards the failed cached boot even on the last attempt. A rate-limited exchange returns HTTP 429 and preserves the boot. | [Exchange cache](nitro_transport.rs) |
 | The wallet can look up keys and recover a note through the encrypted endpoint. It refuses another viewing key, an oversized item and a reply to a request revoked in flight. | [Wallet transport](nitro_transport.rs) |
-| Owner-authorized decrypt reads both published heads before prompting, after signing and before opening the authenticated reply. A cached boot cannot receive an approval after a revocation the wallet sees at those checks. | [Wallet transport](nitro_transport.rs) |
+| Owner-authorized decrypt reads both published heads before prompting, after signing and before opening the authenticated reply. A cached boot cannot receive an approval after a revocation the wallet sees at those checks. The same approval deadline bounds publisher reads and the replica response. | [Wallet transport](nitro_transport.rs) |
 
 The wallet transport test uses a loopback peer and starts with a verified-session
 fixture. The AWS evidence tests use measurements and evidence captured from an
