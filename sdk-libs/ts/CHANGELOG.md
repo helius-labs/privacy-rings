@@ -31,7 +31,7 @@ Breaking
 
 Added
 
-- `buildDepositTransaction`, `buildTransferTransaction`, and `buildMultiTransferTransaction` accept a verified `decryptionService` and return a `PreparedPayment` that verifies the signed transaction and rechecks the recipient, with `persistence` on transfers saving the pending payment before broadcast.
+- `buildDepositTransaction`, `buildTransferTransaction`, and `buildMultiTransferTransaction` accept a verified `decryptionService` and return a `PreparedPayment` that rechecks the signed payment before broadcast, and `TransactionBroadcaster.getBlockhashValidity` supplies the RPC slot that persistent transfers save with the blockhash.
 - `ProgramProofInputs` types the prover input map of a `ProgramTransaction`, and `TransactionErrorCode.TRANSACTION_PROGRAM_PUBLIC_HASH_MISMATCH` reports proof inputs bound to another public hash.
 - `ClientErrorCode.CLIENT_INDEXER_RESPONSE_TOO_LARGE` reports an indexer response above 10 MiB, the most Photon sends, whether the SDK or Photon (`-32008`) refuses it.
 - `SprClient.proveAnonymousRingTransact(input)` accepts a `TransactOwnerSigner` or an owner signature prepared over `transactMessageDigest(proofInputs)`.
@@ -47,6 +47,7 @@ Changed
 
 Fixed
 
+- `syncWallet` can release a guarded payment's inputs once Solana finalizes the exact blockhash's expiry and the indexer scans those inputs through that slot.
 - `syncWallet` failed on an indexer page of dense private transactions; it now halves `pageLimit` for the rest of the sync until the page fits, keeping the `requireSlot` check.
 - `syncWallet` misclassified authored spends containing unknown output schemes as withdrawals or splits, and now omits their history rows.
 - `syncWallet` failed with `TRANSACTION_KEYS_UNRESOLVED` when a reserved or unknown output scheme accompanied a confidential note, and now stores the note.

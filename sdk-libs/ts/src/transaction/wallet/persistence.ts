@@ -1,4 +1,4 @@
-import { getBase64Decoder } from "@solana/kit";
+import { getBase64Decoder, isBlockhash, type Blockhash } from "@solana/kit";
 
 import { bytesKey } from "../../interface/bytes.js";
 import { wireDecoder } from "../../interface/decode.js";
@@ -118,6 +118,8 @@ export interface SerializedWalletState {
     signature: Signature;
     lastValidBlockHeight: string;
     genesisHash?: Address;
+    blockhash?: Blockhash;
+    blockhashValidAtSlot?: string;
   }>[];
 }
 
@@ -153,6 +155,10 @@ export function serializeWallet(wallet: Wallet): string {
       signature: pending.signature,
       lastValidBlockHeight: pending.lastValidBlockHeight.toString(),
       ...(pending.genesisHash === undefined ? {} : { genesisHash: pending.genesisHash }),
+      ...(pending.blockhash === undefined ? {} : { blockhash: pending.blockhash }),
+      ...(pending.blockhashValidAtSlot === undefined
+        ? {}
+        : { blockhashValidAtSlot: pending.blockhashValidAtSlot.toString() }),
     })),
     reservations: wallet
       ._reservationEntries()
@@ -273,6 +279,20 @@ function hydrate(value: unknown): Wallet {
         attempts > 3
       )
         fail(`${path}.attempts`);
+      const genesisHash =
+        version < 6 || item["genesisHash"] === undefined
+          ? undefined
+          : address(item["genesisHash"], `${path}.genesisHash`);
+      const blockhash = version < 6 ? undefined : item["blockhash"];
+      const validAtSlot = version < 6 ? undefined : item["blockhashValidAtSlot"];
+      if ((blockhash === undefined) !== (validAtSlot === undefined))
+        fail(`${path}.blockhashValidAtSlot`);
+      if (
+        blockhash !== undefined &&
+        (genesisHash === undefined || typeof blockhash !== "string" || !isBlockhash(blockhash))
+      ) {
+        fail(`${path}.blockhash`);
+      }
       const pending: PendingWalletSubmission = {
         id,
         intentHash: bytes(item["intentHash"], 32, `${path}.intentHash`) as Bytes32,
@@ -285,9 +305,11 @@ function hydrate(value: unknown): Wallet {
           item["lastValidBlockHeight"],
           `${path}.lastValidBlockHeight`,
         ),
-        ...(version < 6 || item["genesisHash"] === undefined
+        ...(genesisHash === undefined ? {} : { genesisHash }),
+        ...(blockhash === undefined ? {} : { blockhash }),
+        ...(validAtSlot === undefined
           ? {}
-          : { genesisHash: address(item["genesisHash"], `${path}.genesisHash`) }),
+          : { blockhashValidAtSlot: unsigned(validAtSlot, `${path}.blockhashValidAtSlot`) }),
       };
       const known = new Map(
         wallet.utxos().map((entry) => [bytesKey(entry.outputContext.hash), entry]),

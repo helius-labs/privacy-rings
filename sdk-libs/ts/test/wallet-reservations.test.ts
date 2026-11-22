@@ -1,4 +1,4 @@
-import { address, signature, type Address } from "@solana/kit";
+import { address, blockhash, signature, type Address, type Blockhash } from "@solana/kit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AuthorizedPrivateTransaction } from "../src/client/client.js";
@@ -156,10 +156,22 @@ describe("UTXO reservations", () => {
       intentHash: filled(2),
       signature: signature("1".repeat(64)),
       genesisHash,
+      blockhash: blockhash("1".repeat(32)),
+      blockhashValidAtSlot: 500n,
       lastValidBlockHeight: 240n,
     };
     expect(wallet._beginSubmission(pending, 2n)).toBe(true);
-    const restored = deserializeWallet(serializeWallet(wallet));
+    const snapshot = serializeWallet(wallet);
+    const missingSlot = snapshot.replace(',"blockhashValidAtSlot":"500"', "");
+    expect(() => deserializeWallet(missingSlot)).toThrow("TRANSACTION_DESERIALIZE");
+    const previous = deserializeWallet(
+      missingSlot.replace(`,"blockhash":"${pending.blockhash}"`, ""),
+    );
+    expect(previous.pendingSubmissions()).toMatchObject([
+      { genesisHash, signature: pending.signature },
+    ]);
+    expect(previous._activeReservations(1_000_000n)).toHaveLength(1);
+    const restored = deserializeWallet(snapshot);
     expect(restored.pendingSubmissions()).toEqual([
       {
         ...pending,
@@ -171,8 +183,18 @@ describe("UTXO reservations", () => {
 
     let indexerSlot = 400n;
     let blockHeight = 241n;
+    let finalizedSlot = 499n;
+    let blockhashSlot = 500n;
+    let stillValid = false;
     let chain: Address = PAYER;
     const context = () => ({ slot: indexerSlot, blockTime: 1_700_000_000n });
+    const checkBlockhash = vi.fn((checked: Blockhash, config: unknown) => ({
+      send: async () => {
+        expect(checked).toBe(pending.blockhash);
+        expect(config).toEqual({ commitment: "finalized", minContextSlot: finalizedSlot });
+        return { context: { slot: blockhashSlot }, value: stillValid };
+      },
+    }));
     const client = {
       ...syncReads({
         getShieldedTransactionsByTags: async () =>
@@ -186,9 +208,10 @@ describe("UTXO reservations", () => {
           getEpochInfo: (config: unknown) => ({
             send: async () => {
               expect(config).toEqual({ commitment: "finalized" });
-              return { absoluteSlot: 500n, blockHeight };
+              return { absoluteSlot: finalizedSlot, blockHeight };
             },
           }),
+          isBlockhashValid: checkBlockhash,
         },
       }),
     };
@@ -201,18 +224,38 @@ describe("UTXO reservations", () => {
     expect(serializeWallet(restored)).toBe(before);
 
     chain = genesisHash;
+    indexerSlot = 500n;
     await sync();
     expect(restored.pendingSubmissions()).toHaveLength(1);
+    expect(checkBlockhash).not.toHaveBeenCalled();
     await expect(createTransfer(transferParams(restored, 3n))).rejects.toMatchObject({
       causeCode: "WALLET_INSUFFICIENT_BALANCE",
     });
 
-    indexerSlot = 500n;
+    finalizedSlot = 500n;
     blockHeight = 240n;
     await sync();
     expect(restored.pendingSubmissions()).toHaveLength(1);
+    expect(checkBlockhash).not.toHaveBeenCalled();
 
     blockHeight = 241n;
+    stillValid = true;
+    await sync();
+    expect(restored.pendingSubmissions()).toHaveLength(1);
+    expect(checkBlockhash).toHaveBeenCalledOnce();
+
+    stillValid = false;
+    blockhashSlot = 499n;
+    const beforeStaleReply = serializeWallet(restored);
+    await expect(sync()).rejects.toMatchObject({ code: "WALLET_SYNC", causeCode: "CLIENT_RPC" });
+    expect(serializeWallet(restored)).toBe(beforeStaleReply);
+
+    blockhashSlot = 501n;
+    await sync();
+    expect(restored.pendingSubmissions()).toHaveLength(1);
+    expect(restored._activeReservations(1_000_000n)).toHaveLength(1);
+
+    indexerSlot = 501n;
     await sync();
     expect(restored.pendingSubmissions()).toEqual([]);
     expect(restored._activeReservations(1_000_000n)).toEqual([]);

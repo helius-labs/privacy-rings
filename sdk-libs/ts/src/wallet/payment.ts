@@ -12,7 +12,7 @@ import {
   type SendableTransaction,
 } from "@solana/kit";
 
-import { withRequestSignal } from "../client/kit.js";
+import { withRequestSignal, type LatestBlockhash } from "../client/kit.js";
 import type { PreparedPayment, TransactionBroadcaster } from "../client/ports.js";
 import { equalBytes } from "../interface/bytes.js";
 import type { RequestContext, Signature, Transaction } from "../interface/types.js";
@@ -71,7 +71,11 @@ export function prepareServicePayment(
   revalidate: (context?: RequestContext) => Promise<void>,
   reservation?: Readonly<{
     assertActive(): void;
-    stage(signature: Signature, lastValidBlockHeight: bigint, signal: AbortSignal): Promise<void>;
+    stage(
+      signature: Signature,
+      lifetime: LatestBlockhash & { blockhashValidAtSlot: bigint },
+      signal: AbortSignal,
+    ): Promise<void>;
     assertPending(signature: Signature): void;
     release(): void;
   }>,
@@ -81,12 +85,20 @@ export function prepareServicePayment(
   const { blockhash, lastValidBlockHeight } = transaction.lifetimeConstraint;
   if (
     lastValidBlockHeight < 0n ||
+    lastValidBlockHeight > 0xffff_ffff_ffff_ffffn ||
     getCompiledTransactionMessageDecoder().decode(transaction.messageBytes).lifetimeToken !==
       blockhash
   )
     throw new WalletError("WALLET_PAYMENT_BLOCKHASH");
   const unsigned = Uint8Array.from(encoder.encode(transaction));
-  const isBlockhashValid = client.isBlockhashValid.bind(client);
+  const getBlockhashValidity = client.getBlockhashValidity.bind(client);
+  async function validAtSlot(signal: AbortSignal): Promise<bigint> {
+    const { slot, valid } = await getBlockhashValidity(blockhash, { signal });
+    if (valid !== true || typeof slot !== "bigint" || slot < 0n || slot > 0xffff_ffff_ffff_ffffn) {
+      throw new WalletError("WALLET_PAYMENT_BLOCKHASH");
+    }
+    return slot;
+  }
   const broadcast = client.broadcastTransaction.bind(client);
   let used = false;
   return Object.freeze<PreparedPayment>({
@@ -107,13 +119,22 @@ export function prepareServicePayment(
             signal.throwIfAborted();
             const checked = checkedSignatureTransaction(decoder.decode(unsigned), signed);
             const expected = getSignatureFromTransaction(checked);
-            await reservation?.stage(expected, lastValidBlockHeight, signal);
-            signal.throwIfAborted();
-            if ((await isBlockhashValid(blockhash, { signal })) !== true) {
-              throw new WalletError("WALLET_PAYMENT_BLOCKHASH");
+            let blockhashValidAtSlot = 0n;
+            if (reservation) {
+              blockhashValidAtSlot = await validAtSlot(signal);
+              signal.throwIfAborted();
+              await reservation.stage(
+                expected,
+                { blockhash, lastValidBlockHeight, blockhashValidAtSlot },
+                signal,
+              );
             }
             signal.throwIfAborted();
             await revalidate({ signal });
+            signal.throwIfAborted();
+            if ((await validAtSlot(signal)) < blockhashValidAtSlot) {
+              throw new WalletError("WALLET_PAYMENT_BLOCKHASH");
+            }
             signal.throwIfAborted();
             reservation?.assertPending(expected);
             attempted = expected;

@@ -6,7 +6,7 @@ import {
   type Base64EncodedBytes,
 } from "@solana/kit";
 
-import { runKitRpc } from "../client/kit.js";
+import { readBlockhashValidity, runKitRpc } from "../client/kit.js";
 import { initializePoseidon } from "../hasher/index.js";
 import type { IndexerReader, KitRpcAccess } from "../client/ports.js";
 import { ClientError } from "../client/error.js";
@@ -748,8 +748,25 @@ async function expiredPendingPayments(
   ) {
     throw new ClientError("CLIENT_RPC", { details: { method: "getEpochInfo" } });
   }
-  const submissions = pending.filter((entry) => blockHeight > entry.lastValidBlockHeight);
-  return submissions.length > 0 ? { slot: absoluteSlot, submissions } : undefined;
+  const submissions: typeof pending = [];
+  let settlementSlot = absoluteSlot;
+  for (const entry of pending) {
+    const { blockhash, blockhashValidAtSlot, lastValidBlockHeight } = entry;
+    if (blockHeight <= lastValidBlockHeight || absoluteSlot < (blockhashValidAtSlot ?? 0n))
+      continue;
+    if (blockhash !== undefined) {
+      const { slot, valid } = await readBlockhashValidity(
+        rpc,
+        blockhash,
+        { commitment: "finalized", minContextSlot: absoluteSlot },
+        context,
+      );
+      if (valid) continue;
+      if (slot > settlementSlot) settlementSlot = slot;
+    }
+    submissions.push(entry);
+  }
+  return submissions.length > 0 ? { slot: settlementSlot, submissions } : undefined;
 }
 
 async function backfillSessionRegistry(

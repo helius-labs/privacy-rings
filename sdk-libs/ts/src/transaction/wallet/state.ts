@@ -1,3 +1,4 @@
+import type { Blockhash } from "@solana/kit";
 import { bytesKey } from "../../interface/bytes.js";
 import type { Address, Bytes32, Signature } from "../../interface/types.js";
 import type { X25519PublicKey } from "../../keypair/x25519.js";
@@ -85,6 +86,8 @@ export interface PendingWalletSubmission {
   readonly signature: Signature;
   readonly lastValidBlockHeight: bigint;
   readonly genesisHash?: Address;
+  readonly blockhash?: Blockhash;
+  readonly blockhashValidAtSlot?: bigint;
 }
 
 /** @internal */
@@ -482,7 +485,11 @@ export class Wallet {
 
   /** @internal Replace a live preparation lease with an on-chain submission. */
   _beginSubmission(
-    pending: Omit<PendingWalletSubmission, "attempts" | "utxoHashes"> & { genesisHash: Address },
+    pending: Omit<PendingWalletSubmission, "attempts" | "utxoHashes"> & {
+      genesisHash: Address;
+      blockhash: Blockhash;
+      blockhashValidAtSlot: bigint;
+    },
     nowMs: bigint,
   ): boolean {
     const index = this.#reservations.findIndex(

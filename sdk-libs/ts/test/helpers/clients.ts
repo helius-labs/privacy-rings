@@ -101,7 +101,7 @@ export function depositClient(
     getLatestBlockhash: async () => BLOCKHASH,
     getAccount: async () => undefined,
     broadcastTransaction: notImplemented("broadcastTransaction"),
-    isBlockhashValid: async () => true,
+    getBlockhashValidity: async () => ({ slot: 1n, valid: true }),
     ...overrides,
   };
 }

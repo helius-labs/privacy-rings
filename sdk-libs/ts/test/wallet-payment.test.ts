@@ -20,10 +20,10 @@ async function payment() {
   const broadcastTransaction = vi.fn(async (transaction: Transaction) =>
     getSignatureFromTransaction(transaction),
   );
-  const isBlockhashValid = vi.fn(async () => true);
+  const getBlockhashValidity = vi.fn(async () => ({ slot: 1n, valid: true }));
   const prepared = await buildDepositTransaction({
     client: {
-      ...depositClient({ broadcastTransaction, isBlockhashValid }),
+      ...depositClient({ broadcastTransaction, getBlockhashValidity }),
       getGenesisHash: async () => GENESIS,
     },
     decryptionService: { address, genesisHash: GENESIS },
@@ -32,7 +32,7 @@ async function payment() {
     amount: 5n,
   });
   const sign = (transaction: Transaction) => signTransactionWithSigners([payer], transaction);
-  return { prepared, payer, recipient, sign, address, broadcastTransaction, isBlockhashValid };
+  return { prepared, payer, recipient, sign, address, broadcastTransaction, getBlockhashValidity };
 }
 
 it("refuses a different Solana message from the signing callback", async () => {
@@ -130,18 +130,28 @@ it("refuses an RPC acknowledgement for a different signature", async () => {
   expect(broadcastTransaction).toHaveBeenCalledOnce();
 });
 
-it("refuses a blockhash that becomes invalid while the signer is open", async () => {
-  const { prepared, sign, address, isBlockhashValid, broadcastTransaction } = await payment();
-  await expect(
-    prepared.send(async (transaction) => {
-      isBlockhashValid.mockResolvedValueOnce(false);
-      return sign(transaction);
-    }),
-  ).rejects.toMatchObject({ causeCode: "WALLET_PAYMENT_BLOCKHASH" });
-  expect(isBlockhashValid).toHaveBeenCalledTimes(1);
-  expect(address).toHaveBeenCalledTimes(2);
-  expect(broadcastTransaction).not.toHaveBeenCalled();
-});
+it.each(["signing", "recipient lookup"] as const)(
+  "refuses a blockhash that expires during %s",
+  async (phase) => {
+    const { prepared, sign, address, recipient, getBlockhashValidity, broadcastTransaction } =
+      await payment();
+    const expires = () => getBlockhashValidity.mockResolvedValueOnce({ slot: 2n, valid: false });
+    if (phase === "recipient lookup")
+      address.mockImplementationOnce(async () => {
+        expires();
+        return recipient;
+      });
+    await expect(
+      prepared.send(async (transaction) => {
+        if (phase === "signing") expires();
+        return sign(transaction);
+      }),
+    ).rejects.toMatchObject({ causeCode: "WALLET_PAYMENT_BLOCKHASH" });
+    expect(getBlockhashValidity).toHaveBeenCalledOnce();
+    expect(address).toHaveBeenCalledTimes(3);
+    expect(broadcastTransaction).not.toHaveBeenCalled();
+  },
+);
 
 it("keeps the managed submission path when the caller edits its builder arguments", async () => {
   const payer = await generateKeyPairSigner();

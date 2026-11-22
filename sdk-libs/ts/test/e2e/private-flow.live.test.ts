@@ -869,7 +869,9 @@ describe("live SDK lifecycle", { concurrent: false }, () => {
       signTransactionWithSigners([sender.signer], transaction, { abortSignal }),
     );
     const restored = await loadPersistedWallet({ store, cipher });
-    expect(restored?.pendingSubmissions()).toMatchObject([{ signature }]);
+    expect(restored?.pendingSubmissions()).toMatchObject([
+      { signature, blockhash: expect.any(String), blockhashValidAtSlot: expect.any(BigInt) },
+    ]);
     await waitForSignature(client.solanaRpc, signature);
     await sync(client, recipient);
     expect(lookups).toBe(3);

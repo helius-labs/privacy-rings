@@ -7,6 +7,8 @@ import {
   SOLANA_ERROR__JSON_RPC__METHOD_NOT_FOUND,
   SOLANA_ERROR__RPC__TRANSPORT_HTTP_ERROR,
   SolanaError,
+  type Blockhash,
+  type Commitment,
   type Rpc,
   type RpcResponse,
   type RpcSubscriptions,
@@ -17,6 +19,7 @@ import {
 import { parseJsonWithBigInts, stringifyJsonWithBigInts } from "@solana/rpc-spec-types";
 
 import type { RequestContext } from "../interface/types.js";
+import { wireDecoder } from "../interface/decode.js";
 
 import { ClientError, isClientError } from "./error.js";
 import { composeSignal, requestError, untilAborted, type ComposedSignal } from "./internal.js";
@@ -92,12 +95,37 @@ export async function runKitRpc<T>(
 ): Promise<T> {
   const signal = composeSignal(context, method);
   try {
-    return await operation(signal.signal);
+    return await untilAborted(operation(signal.signal), signal, () => requestError(method, signal));
   } catch (cause) {
     throw operationError(method, signal, cause);
   } finally {
     signal.cleanup();
   }
+}
+
+export async function readBlockhashValidity(
+  rpc: SolanaRpc,
+  blockhash: Blockhash,
+  config: Readonly<{ commitment: Commitment; minContextSlot?: bigint }>,
+  context?: RequestContext,
+) {
+  const method = "isBlockhashValid";
+  const response: unknown = await runKitRpc(method, context, (abortSignal) =>
+    rpc.isBlockhashValid(blockhash, config).send({ abortSignal }),
+  );
+  const invalid = (reason: string) =>
+    new ClientError("CLIENT_RPC", { details: { method, reason } });
+  const decode = wireDecoder(invalid);
+  const result = decode.record(response, "result");
+  const slot = decode.record(result["context"], "context")["slot"];
+  if (
+    typeof slot !== "bigint" ||
+    slot < (config.minContextSlot ?? 0n) ||
+    slot > 0xffff_ffff_ffff_ffffn
+  ) {
+    throw invalid("context.slot");
+  }
+  return { slot, valid: decode.boolean(result["value"], "value") };
 }
 
 /** Bound a flow that includes callbacks outside the SDK's RPC transport. */

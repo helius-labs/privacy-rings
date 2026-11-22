@@ -201,8 +201,8 @@ function capturePrivateBuild(transaction = TRANSACTION): Readonly<{
       async broadcastTransaction() {
         throw new Error("unexpected RPC broadcast");
       },
-      async isBlockhashValid() {
-        return true;
+      async getBlockhashValidity() {
+        return { slot: 1n, valid: true };
       },
     },
     assemble,
@@ -1266,6 +1266,7 @@ describe("unsigned public transaction builders", () => {
     "save failed",
     "recipient changed",
     "blockhash expired",
+    "RPC slot regressed",
     "input spent",
     "aborted",
   ] as const)("guards RPC broadcast when payment persistence is %s", async (outcome) => {
@@ -1300,15 +1301,18 @@ describe("unsigned public transaction builders", () => {
     const address = vi.fn(async () =>
       outcome === "recipient changed" && stored !== undefined ? rotated : recipient,
     );
-    const isBlockhashValid = vi.fn(async () => {
-      expect(stored).toBeDefined();
-      return outcome !== "blockhash expired";
+    const getBlockhashValidity = vi.fn(async () => {
+      if (stored === undefined) return { slot: 10n, valid: true };
+      return {
+        slot: outcome === "RPC slot regressed" ? 9n : 11n,
+        valid: outcome !== "blockhash expired",
+      };
     });
     const broadcastTransaction = vi.fn(async (transaction: Transaction) => {
       const signature = getSignatureFromTransaction(transaction);
       const restored = await loadPersistedWallet({ store, cipher });
       expect(restored?.pendingSubmissions()).toMatchObject([
-        { signature, genesisHash, lastValidBlockHeight: 1n },
+        { signature, genesisHash, lastValidBlockHeight: 1n, blockhashValidAtSlot: 10n },
       ]);
       expect(restored?._activeReservations(BigInt(Date.now()) + 120_000n)).toHaveLength(1);
       if (outcome === "uncertain send") {
@@ -1320,7 +1324,7 @@ describe("unsigned public transaction builders", () => {
     const payment = await buildTransferTransaction({
       client: {
         ...client,
-        isBlockhashValid,
+        getBlockhashValidity,
         broadcastTransaction,
         getGenesisHash: async () => genesisHash,
       },
@@ -1341,6 +1345,7 @@ describe("unsigned public transaction builders", () => {
       "save failed": "WALLET_PERSIST",
       "recipient changed": "WALLET_DECRYPTION_RECIPIENT_MISMATCH",
       "blockhash expired": "WALLET_PAYMENT_BLOCKHASH",
+      "RPC slot regressed": "WALLET_PAYMENT_BLOCKHASH",
       "input spent": "WALLET_UNSIGNED_INPUT_UNAVAILABLE",
       aborted: "CLIENT_ABORTED",
     };
@@ -1354,7 +1359,7 @@ describe("unsigned public transaction builders", () => {
     try {
       await vi.waitFor(() => expect(store.save).toHaveBeenCalledOnce());
       expect(broadcastTransaction).not.toHaveBeenCalled();
-      expect(isBlockhashValid).not.toHaveBeenCalled();
+      expect(getBlockhashValidity).toHaveBeenCalledOnce();
       expect(wallet.pendingSubmissions()).toHaveLength(1);
       if (outcome === "input spent") {
         wallet._replace({

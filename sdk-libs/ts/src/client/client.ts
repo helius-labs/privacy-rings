@@ -77,6 +77,7 @@ import {
 } from "./ports.js";
 import {
   createKitClients,
+  readBlockhashValidity,
   runKitRpc,
   type LatestBlockhash,
   type SolanaRpc,
@@ -435,15 +436,13 @@ export class SprClient
     return value;
   }
 
-  isBlockhashValid(blockhash: Blockhash, context?: RequestContext): Promise<boolean> {
-    return runKitRpc("isBlockhashValid", context, async (abortSignal) => {
-      const { value } = await this.solanaRpc
-        .isBlockhashValid(blockhash, { commitment: this.commitment })
-        .send({ abortSignal });
-      return wireDecoder(
-        () => new ClientError("CLIENT_RPC", { details: { method: "isBlockhashValid" } }),
-      ).boolean(value, "isBlockhashValid");
-    });
+  getBlockhashValidity(blockhash: Blockhash, context?: RequestContext) {
+    return readBlockhashValidity(
+      this.solanaRpc,
+      blockhash,
+      { commitment: this.commitment },
+      context,
+    );
   }
 
   broadcastTransaction(

@@ -309,7 +309,7 @@ async function buildAuthorizedTransaction(
               if (!wallet._canBroadcastSubmission(reservationId, signature))
                 throw new WalletError("WALLET_UNSIGNED_INPUT_UNAVAILABLE");
             },
-            async stage(signature, lastValidBlockHeight, signal) {
+            async stage(signature, lifetime, signal) {
               const begin = () => {
                 signal.throwIfAborted();
                 if (
@@ -317,7 +317,7 @@ async function buildAuthorizedTransaction(
                     {
                       id: reservationId,
                       signature,
-                      lastValidBlockHeight,
+                      ...lifetime,
                       genesisHash,
                       intentHash: approvedIntent,
                     },

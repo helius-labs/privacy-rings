@@ -82,7 +82,11 @@ export type RecipientLookup<Client> =
     }>;
 
 export interface TransactionBroadcaster {
-  isBlockhashValid(blockhash: Blockhash, context?: RequestContext): Promise<boolean>;
+  /** The validity of the exact hash and the Solana RPC slot that answered. */
+  getBlockhashValidity(
+    blockhash: Blockhash,
+    context?: RequestContext,
+  ): Promise<Readonly<{ slot: bigint; valid: boolean }>>;
   broadcastTransaction(
     transaction: Transaction & SendableTransaction,
     context?: RequestContext,
