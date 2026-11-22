@@ -1,7 +1,11 @@
 use std::{
     fs,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
     thread,
+    time::Duration,
 };
 
 use serde_json::{json, Value};
@@ -323,6 +327,55 @@ fn concurrent_clients_cannot_restore_or_replace_a_checkpoint() {
         Err(NitroPolicyError::Rollback),
     ));
     assert_eq!(store.current(&trust).unwrap(), Some(current));
+}
+
+#[test]
+fn stalled_checkpoint_lock_fails_closed_and_leaves_the_revision_intact() {
+    let fixture = Fixture::load();
+    let trust = fixture.trust();
+    let directory = tempfile::tempdir().unwrap();
+    let store = UnixNitroCheckpointStore::open(directory.path()).unwrap();
+    let genesis = fixture
+        .accept(&trust, &store, "genesis", "genesis")
+        .unwrap();
+    let lock_path = directory.path().join(format!(
+        "devnet-{}.lock",
+        hex::encode(trust.security_domain_id())
+    ));
+    let lock = fs::OpenOptions::new().write(true).open(lock_path).unwrap();
+    lock.lock().unwrap();
+    thread::scope(|scope| {
+        let (finished, results) = mpsc::channel();
+        let read = finished.clone();
+        let store = &store;
+        let trust = &trust;
+        let fixture = &fixture;
+        scope.spawn(move || read.send(store.current(trust).map(|_| ())));
+        scope.spawn(move || {
+            finished.send(
+                fixture
+                    .accept(trust, store, "successor", "genesis")
+                    .map(|_| ()),
+            )
+        });
+        let first = results.recv_timeout(Duration::from_secs(5));
+        let second = results.recv_timeout(Duration::from_secs(5));
+        drop(lock);
+        assert!(matches!(first, Ok(Err(NitroPolicyError::Storage))));
+        assert!(matches!(second, Ok(Err(NitroPolicyError::Storage))));
+    });
+    assert_eq!(
+        store.current(&trust).unwrap().as_ref(),
+        Some(genesis.checkpoint())
+    );
+    assert_eq!(
+        fixture
+            .accept(&trust, &store, "successor", "genesis")
+            .unwrap()
+            .checkpoint()
+            .sequence,
+        2
+    );
 }
 
 #[test]

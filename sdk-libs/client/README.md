@@ -62,8 +62,9 @@ replica. An observed head at the stored sequence must match its digest. An
 immediate successor must link to it. The custody floor can only rise and
 recovery-only mode is permanent. A signed revocation advances the checkpoint and returns no replica.
 `UnixNitroCheckpointStore` uses an application-owned directory on a local
-filesystem. Other platforms call `NitroPolicyUpdate::advances` inside their
-store transaction and persist `checkpoint()` before returning success.
+filesystem. Reads and writes return a storage error if another process holds
+the lock for a second. Other platforms call `NitroPolicyUpdate::advances`
+inside their store transaction and persist `checkpoint()` before returning success.
 
 Use `NitroDecryptionService::resolve_recipient` for sends. The service is called
 only after a successful registry lookup finds no record and the Solana RPC’s

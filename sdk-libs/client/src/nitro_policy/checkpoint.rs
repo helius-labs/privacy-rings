@@ -17,10 +17,12 @@ pub use unix::UnixNitroCheckpointStore;
 #[cfg(unix)]
 mod unix {
     use std::{
-        fs::{File, OpenOptions},
+        fs::{File, OpenOptions, TryLockError},
         io::{ErrorKind, Read},
         os::unix::fs::OpenOptionsExt,
         path::{Path, PathBuf},
+        thread,
+        time::{Duration, Instant},
     };
 
     use super::{
@@ -28,9 +30,11 @@ mod unix {
     };
 
     const MAX_CHECKPOINT_BYTES: u64 = 1024;
+    const LOCK_TIMEOUT: Duration = Duration::from_secs(1);
+    const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
     /// File-backed storage for an application-owned directory on a local Unix filesystem.
-    /// The lock file stays in place across atomic replacements.
+    /// The lock file stays in place across atomic replacements. A busy lock has a one-second deadline.
     pub struct UnixNitroCheckpointStore {
         directory: PathBuf,
     }
@@ -64,7 +68,20 @@ mod unix {
                 .mode(0o600)
                 .open(self.directory.join(format!("{name}.lock")))
                 .map_err(|_| NitroPolicyError::Storage)?;
-            lock.lock().map_err(|_| NitroPolicyError::Storage)?;
+            let deadline = Instant::now() + LOCK_TIMEOUT;
+            loop {
+                match lock.try_lock() {
+                    Ok(()) => break,
+                    Err(TryLockError::WouldBlock) => {
+                        let remaining = deadline.saturating_duration_since(Instant::now());
+                        thread::sleep(remaining.min(LOCK_RETRY_INTERVAL));
+                        if Instant::now() >= deadline {
+                            return Err(NitroPolicyError::Storage);
+                        }
+                    }
+                    Err(TryLockError::Error(_)) => return Err(NitroPolicyError::Storage),
+                }
+            }
             run(&self.directory.join(format!("{name}.json")))
         }
 
