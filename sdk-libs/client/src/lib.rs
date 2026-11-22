@@ -21,6 +21,7 @@ pub mod authority;
 pub mod client;
 pub mod error;
 pub mod indexer;
+pub mod nitro_policy;
 pub mod prover;
 pub mod rpc;
 pub mod scan;

@@ -42,6 +42,7 @@ solana-address = { workspace = true }
 thiserror = { workspace = true }
 hex = { workspace = true, features = ["serde"] }
 sha2 = { workspace = true }
+p256 = { workspace = true, features = ["ecdsa"] }
 httpdate = { workspace = true }
 rand_core = { workspace = true }
 http = { workspace = true }
@@ -72,6 +73,9 @@ solana-pubkey = { workspace = true }
 solana-transaction = { workspace = true, features = ["serde"] }
 solana-transaction-status-client-types = { workspace = true }
 tokio = { workspace = true, features = ["time", "rt", "macros", "sync"] }
+
+[target.'cfg(unix)'.dependencies]
+tempfile = "3"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

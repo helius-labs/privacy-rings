@@ -46,6 +46,25 @@ Without the `reqwest` feature neither crate links reqwest and only
 `with_client` builds a client; `solana-rpc` still links it through
 `solana-rpc-client`, so a wallet that wants none brings its own `Rpc` too.
 
+## Standalone decryption release policy
+
+`nitro_policy::NitroPolicyReader` fetches the current policy from two
+independently owned S3 buckets named in the wallet's shipped trust pins. Both
+heads need the pinned release quorum and two of the three custody policy
+approvals. The mirror may hold the primary's exact predecessor during an
+update. Both heads are required before the SDK trusts the endpoint, executable
+hash, custody epoch and PCR0–4 for any replica.
+
+The reader commits the revision to a durable checkpoint before returning a
+replica. A later revision cannot lower the custody floor or leave recovery-only
+mode. A signed revocation advances the checkpoint and returns no replica.
+`UnixNitroCheckpointStore` uses an application-owned directory on a local
+filesystem. Other platforms can supply an atomic `NitroCheckpointStore`.
+
+The policy reader and Nitro boot-evidence verifier are available separately.
+The Rust wallet still needs the encrypted decryption transport that invokes
+both before releasing a request.
+
 ## Proving and submitting
 
 ```rust
