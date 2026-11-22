@@ -10,6 +10,7 @@ Run `cargo test -p spr-client --lib nitro_` and
 | A fresh Nitro boot binds discovery, both boot points and PCR0–4. | [Discovery binding](nitro_exchange.rs) and the AWS evidence verifier tests in `spr-prover-tee` |
 | The owner signs the exact network, release, response key and ordered batch. The reply must come from that boot and bind this request and ciphertext. | [Proofs and owner message](nitro_exchange.rs) |
 | Wrong response keys and altered frames fail authentication. The wire format matches the service SDK. | [Envelope vectors](nitro_envelope.rs) |
+| A registry miss can use service keys only on the service’s Solana network. Both async and blocking lookup reject a devnet service on a mainnet RPC. | [Wallet transport](nitro_transport.rs) |
 | The wallet can look up keys and recover a note through the encrypted endpoint. It refuses another viewing key, an oversized item and a reply to a request revoked in flight. | [Wallet transport](nitro_transport.rs) |
 
 The wallet transport test uses a loopback peer and starts with a verified-session

@@ -138,6 +138,35 @@ fn reply_for(body: &[u8], owner: Pubkey, result: Value) -> Value {
     })
 }
 
+struct PaymentRpc([u8; 32]);
+
+impl crate::Rpc for PaymentRpc {
+    fn get_account(
+        &self,
+        _: Pubkey,
+    ) -> Result<Option<solana_account::Account>, crate::ClientError> {
+        Ok(None)
+    }
+
+    fn genesis_hash(&self) -> Result<[u8; 32], crate::ClientError> {
+        Ok(self.0)
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::AsyncRpc for PaymentRpc {
+    async fn get_account(
+        &self,
+        _: Pubkey,
+    ) -> Result<Option<solana_account::Account>, crate::ClientError> {
+        Ok(None)
+    }
+
+    async fn genesis_hash(&self) -> Result<[u8; 32], crate::ClientError> {
+        Ok(self.0)
+    }
+}
+
 #[tokio::test]
 async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -248,7 +277,30 @@ async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
         }
     });
 
-    let address = service.address(owner).await.unwrap();
+    let mainnet = PaymentRpc(
+        "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
+            .parse::<solana_hash::Hash>()
+            .unwrap()
+            .to_bytes(),
+    );
+    for rejected in [
+        service.resolve_recipient_sync(&mainnet, owner),
+        service.resolve_recipient(&mainnet, owner).await,
+    ] {
+        assert!(matches!(
+            rejected,
+            Err(crate::ClientError::NitroDecryption(
+                NitroDecryptionError::NetworkMismatch
+            ))
+        ));
+    }
+    let devnet = PaymentRpc(
+        "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"
+            .parse::<solana_hash::Hash>()
+            .unwrap()
+            .to_bytes(),
+    );
+    let address = service.resolve_recipient(&devnet, owner).await.unwrap();
     assert_eq!(address.viewing_pubkey, viewing);
     let keys = service.open(signer).await.unwrap();
     let request = DecryptRequest {

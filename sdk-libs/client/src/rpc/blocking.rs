@@ -99,6 +99,10 @@ impl<T: Rpc + Send + Sync + 'static> AsyncRpc for Blocking<T> {
         self.run(move |rpc| rpc.get_balance(address)).await
     }
 
+    async fn genesis_hash(&self) -> Result<[u8; 32], ClientError> {
+        self.run(|rpc| rpc.genesis_hash()).await
+    }
+
     async fn get_latest_blockhash(&self) -> Result<(Hash, u64), ClientError> {
         self.run(|rpc| rpc.get_latest_blockhash()).await
     }

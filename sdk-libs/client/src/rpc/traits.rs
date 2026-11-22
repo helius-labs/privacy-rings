@@ -65,6 +65,10 @@ pub trait Rpc {
         Err(unsupported("get_balance"))
     }
 
+    fn genesis_hash(&self) -> Result<[u8; 32], ClientError> {
+        Err(unsupported("genesis_hash"))
+    }
+
     fn get_latest_blockhash(&self) -> Result<(Hash, u64), ClientError> {
         Err(unsupported("get_latest_blockhash"))
     }
@@ -301,6 +305,10 @@ pub trait AsyncRpc: Send + Sync {
 
     async fn get_balance(&self, address: Address) -> Result<u64, ClientError> {
         Err(unsupported("get_balance"))
+    }
+
+    async fn genesis_hash(&self) -> Result<[u8; 32], ClientError> {
+        Err(unsupported("genesis_hash"))
     }
 
     async fn get_latest_blockhash(&self) -> Result<(Hash, u64), ClientError> {

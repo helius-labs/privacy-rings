@@ -201,6 +201,10 @@ impl AsyncRpc for AsyncSolanaRpc {
             })
     }
 
+    async fn genesis_hash(&self) -> Result<[u8; 32], ClientError> {
+        AsyncSolanaRpc::genesis_hash(self).await
+    }
+
     async fn get_latest_blockhash(&self) -> Result<(Hash, u64), ClientError> {
         self.client
             .get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())

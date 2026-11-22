@@ -36,6 +36,7 @@ import { checkAuthorizedBinding, checkTransactData } from "../transaction/wallet
 
 import { compileUnsignedTransaction } from "../flows/compile.js";
 import { checkedComputeUnitLimit, checkedPriorityFee } from "../flows/internal.js";
+import { wireDecoder } from "../interface/decode.js";
 import { ClientError, fromClientCause } from "./error.js";
 import { checkedServiceUrl, hasProofMethods, inputTreeAddress } from "./internal.js";
 import { SprIndexer } from "./indexer.js";
@@ -407,6 +408,18 @@ export class SprClient
       this.solanaRpc.getBalance(address, { commitment: this.commitment }).send({ abortSignal }),
     );
     return value;
+  }
+
+  async getGenesisHash(context?: RequestContext): Promise<string> {
+    return runKitRpc("getGenesisHash", context, async (abortSignal) => {
+      const hash: unknown = await this.solanaRpc.getGenesisHash().send({ abortSignal });
+      return wireDecoder(
+        () =>
+          new ClientError("CLIENT_RPC", {
+            details: { method: "getGenesisHash" },
+          }),
+      ).address(hash, "getGenesisHash");
+    });
   }
 
   async getLatestBlockhash(context?: RequestContext): Promise<LatestBlockhash> {

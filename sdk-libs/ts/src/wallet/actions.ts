@@ -1,4 +1,4 @@
-import type { ChainReader, DecryptionRecipientProvider } from "../client/ports.js";
+import type { ChainReader, RecipientLookup } from "../client/ports.js";
 import { equalBytes, bytesKey } from "../interface/bytes.js";
 import {
   type Address,
@@ -24,7 +24,7 @@ import {
 } from "../flows/select.js";
 import { WalletError, wrapWalletError } from "./error.js";
 import { reserveWalletEntries } from "./internal.js";
-import { resolvePaymentRecipient } from "./registry.js";
+import { paymentRecipientResolver } from "./registry.js";
 
 export { resolveWithdrawalSettlement as resolveWithdrawal };
 
@@ -119,15 +119,13 @@ export class UnsignedPrivateTransaction {
   }
 }
 
-export interface TransferParams {
-  readonly client?: Pick<ChainReader, "getAccount">;
-  readonly decryptionService?: DecryptionRecipientProvider;
+export type TransferParams = RecipientLookup<Pick<ChainReader, "getAccount">> & {
   readonly wallet: Wallet;
   readonly payer: Address;
   readonly recipient: TransferDestination;
   readonly asset: Address;
   readonly amount: bigint;
-}
+};
 
 export type TransferDestination = Address | ShieldedAddress;
 
@@ -158,14 +156,12 @@ export interface CreatedTransfer {
   readonly recipient: TransferRecipient;
 }
 
-export interface MultiTransferParams {
-  readonly client?: Pick<ChainReader, "getAccount">;
-  readonly decryptionService?: DecryptionRecipientProvider;
+export type MultiTransferParams = RecipientLookup<Pick<ChainReader, "getAccount">> & {
   readonly wallet: Wallet;
   readonly payer: Address;
   readonly asset: Address;
   readonly payments: readonly Readonly<{ recipient: TransferDestination; amount: bigint }>[];
-}
+};
 
 export interface CreatedMultiTransfer {
   readonly transaction: UnsignedPrivateTransaction;
@@ -331,12 +327,8 @@ export async function createTransfer(
 ): Promise<CreatedTransfer> {
   u64Amount(params.amount);
   try {
-    const recipient = await resolveTransferRecipient(
-      params.recipient,
-      params.client,
-      params.decryptionService,
-      context,
-    );
+    const resolveRecipient = paymentRecipientResolver(params, context);
+    const recipient = await resolveRecipient(params.recipient);
     return Object.freeze({
       transaction: createPayments(params, [{ recipient, amount: params.amount }]),
       recipient,
@@ -377,14 +369,10 @@ export async function createMultiTransfer(
     });
     u64Amount(total);
     // Every lookup finishes before a UTXO is reserved, so a refusal reserves nothing.
+    const resolveRecipient = paymentRecipientResolver(params, context);
     const resolved = await Promise.all(
       params.payments.map(async (payment) => ({
-        recipient: await resolveTransferRecipient(
-          payment.recipient,
-          params.client,
-          params.decryptionService,
-          context,
-        ),
+        recipient: await resolveRecipient(payment.recipient),
         amount: payment.amount,
       })),
     );
@@ -438,25 +426,6 @@ function createPayments(
     },
     summary: `private transaction transfer of ${String(amount)} to ${destination}`,
   });
-}
-
-async function resolveTransferRecipient(
-  recipient: TransferDestination,
-  client: Pick<ChainReader, "getAccount"> | undefined,
-  decryptionService: DecryptionRecipientProvider | undefined,
-  context: RequestContext | undefined,
-): Promise<TransferRecipient> {
-  if (recipient instanceof ShieldedAddress) {
-    return { kind: "shielded", address: recipient, viewTag: recipient.confidentialViewTag() };
-  }
-  if (client === undefined) throw new WalletError("WALLET_RECIPIENT_CLIENT_REQUIRED");
-  return resolvePaymentRecipient(
-    { rpc: client, ...(decryptionService === undefined ? {} : { decryptionService }) },
-    recipient,
-    (owner) =>
-      new WalletError("WALLET_RECIPIENT_NOT_REGISTERED", { details: { recipient: owner } }),
-    context,
-  );
 }
 
 export function createSplit(params: SplitParams): CreatedSplit {

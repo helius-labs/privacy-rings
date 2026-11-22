@@ -342,14 +342,16 @@ describe("private transaction construction", () => {
     });
   });
 
+  const genesisHash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
+  const otherGenesis = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
   it("uses verified service keys after a successful registry miss", async () => {
     const recipient = ShieldedKeypair.generate().shieldedAddress();
     const address = vi.fn(async () => recipient);
     const context = { signal: new AbortController().signal };
     const created = await createTransfer(
       {
-        client: { getAccount: async () => undefined },
-        decryptionService: { address },
+        client: { getAccount: async () => undefined, getGenesisHash: async () => genesisHash },
+        decryptionService: { address, genesisHash },
         wallet: fundedWallet(ShieldedKeypair.generate(), [100n]),
         payer: PAYER,
         recipient: recipient.solanaAddress(),
@@ -375,12 +377,14 @@ describe("private transaction construction", () => {
       0,
     );
     const address = vi.fn(async () => ShieldedKeypair.generate().shieldedAddress());
+    const getGenesisHash = vi.fn(async () => otherGenesis);
     const result = await createTransfer({
       wallet: fundedWallet(ShieldedKeypair.generate(), [100n]),
       client: {
         getAccount: async () => ({ owner: USER_REGISTRY_PROGRAM_ID, data: record, lamports: 1n }),
+        getGenesisHash,
       },
-      decryptionService: { address },
+      decryptionService: { address, genesisHash },
       recipient: owner,
       payer: PAYER,
       asset: SOL_MINT,
@@ -389,6 +393,7 @@ describe("private transaction construction", () => {
     expect(result.recipient.kind).toBe("registered");
     expect(result.recipient.address.toBytes()).toEqual(recipient.toBytes());
     expect(address).not.toHaveBeenCalled();
+    expect(getGenesisHash).not.toHaveBeenCalled();
   });
 
   it("leaves spend state intact on registry failure or a mismatched service address", async () => {
@@ -396,7 +401,7 @@ describe("private transaction construction", () => {
     const before = serializeWallet(wallet);
     const address = vi.fn(async () => ShieldedKeypair.generate().shieldedAddress());
     const input = {
-      decryptionService: { address },
+      decryptionService: { address, genesisHash },
       wallet,
       payer: PAYER,
       recipient: RECIPIENT,
@@ -410,6 +415,7 @@ describe("private transaction construction", () => {
           getAccount: async () => {
             throw new Error("RPC unavailable");
           },
+          getGenesisHash: async () => genesisHash,
         },
       }),
     ).rejects.toMatchObject({ code: "WALLET_CREATE_TRANSFER" });
@@ -417,7 +423,7 @@ describe("private transaction construction", () => {
     await expect(
       createTransfer({
         ...input,
-        client: { getAccount: async () => undefined },
+        client: { getAccount: async () => undefined, getGenesisHash: async () => genesisHash },
       }),
     ).rejects.toMatchObject({
       code: "WALLET_CREATE_TRANSFER",
@@ -430,11 +436,15 @@ describe("private transaction construction", () => {
     const recipient = ShieldedKeypair.generate().shieldedAddress();
     const wallet = fundedWallet(ShieldedKeypair.generate(), [100n]);
     const before = serializeWallet(wallet);
-    for (const cancelAt of ["registry", "service"] as const) {
+    for (const cancelAt of ["registry", "network", "service"] as const) {
       const controller = new AbortController();
       const getAccount = vi.fn(async () => {
         if (cancelAt === "registry") controller.abort();
         return undefined;
+      });
+      const getGenesisHash = vi.fn(async () => {
+        if (cancelAt === "network") controller.abort();
+        return genesisHash;
       });
       const address = vi.fn(async () => {
         controller.abort();
@@ -443,8 +453,8 @@ describe("private transaction construction", () => {
       await expect(
         createTransfer(
           {
-            client: { getAccount },
-            decryptionService: { address },
+            client: { getAccount, getGenesisHash },
+            decryptionService: { address, genesisHash },
             wallet,
             payer: PAYER,
             recipient: recipient.solanaAddress(),
@@ -457,9 +467,57 @@ describe("private transaction construction", () => {
         code: "WALLET_CREATE_TRANSFER",
         causeCode: "WALLET_RECIPIENT_LOOKUP_ABORTED",
       });
-      expect(address).toHaveBeenCalledTimes(cancelAt === "registry" ? 0 : 1);
+      expect(address).toHaveBeenCalledTimes(cancelAt === "service" ? 1 : 0);
       expect(serializeWallet(wallet)).toEqual(before);
     }
+  });
+
+  it("refuses a mismatched or invalid genesis without reserving any inputs", async () => {
+    const wallet = fundedWallet(ShieldedKeypair.generate(), [100n]);
+    const before = serializeWallet(wallet);
+    const recipient = ShieldedKeypair.generate().shieldedAddress();
+    const address = vi.fn(async () => recipient);
+    for (const hash of [otherGenesis, "invalid"]) {
+      await expect(
+        createTransfer({
+          client: { getAccount: async () => undefined, getGenesisHash: async () => hash },
+          decryptionService: { address, genesisHash },
+          wallet,
+          payer: PAYER,
+          recipient: recipient.solanaAddress(),
+          asset: SOL_MINT,
+          amount: 10n,
+        }),
+      ).rejects.toMatchObject({
+        code: "WALLET_CREATE_TRANSFER",
+        causeCode: "WALLET_DECRYPTION_NETWORK_MISMATCH",
+      });
+    }
+    expect(address).not.toHaveBeenCalled();
+    expect(serializeWallet(wallet)).toEqual(before);
+  });
+
+  it("reads genesis once for a batch of unregistered recipients", async () => {
+    const first = ShieldedKeypair.generate().shieldedAddress();
+    const second = ShieldedKeypair.generate().shieldedAddress();
+    const getGenesisHash = vi.fn(async () => genesisHash);
+    const address = vi.fn(async (owner: Address) =>
+      owner === first.solanaAddress() ? first : second,
+    );
+    const created = await createMultiTransfer({
+      client: { getAccount: async () => undefined, getGenesisHash },
+      decryptionService: { address, genesisHash },
+      wallet: fundedWallet(ShieldedKeypair.generate(), [100n]),
+      payer: PAYER,
+      asset: SOL_MINT,
+      payments: [first, second].map((recipient) => ({
+        recipient: recipient.solanaAddress(),
+        amount: 5n,
+      })),
+    });
+    expect(created.recipients.map(({ address }) => address)).toEqual([first, second]);
+    expect(getGenesisHash).toHaveBeenCalledOnce();
+    expect(address).toHaveBeenCalledTimes(2);
   });
 
   it("keeps split and merge conservation in their internal intent models", async () => {

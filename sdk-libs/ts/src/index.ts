@@ -104,6 +104,8 @@ export {
   WalletError,
   type DepositTransactionParams,
   type DecryptionRecipientProvider,
+  type GenesisHashReader,
+  type RecipientLookup,
   type AssetMetadata,
   type MergeTransactionParams,
   type MultiTransferTransactionParams,

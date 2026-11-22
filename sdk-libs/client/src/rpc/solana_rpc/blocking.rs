@@ -227,6 +227,10 @@ impl Rpc for SolanaRpc {
             })
     }
 
+    fn genesis_hash(&self) -> Result<[u8; 32], ClientError> {
+        SolanaRpc::genesis_hash(self)
+    }
+
     fn get_latest_blockhash(&self) -> Result<(Hash, u64), ClientError> {
         self.client
             .get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())

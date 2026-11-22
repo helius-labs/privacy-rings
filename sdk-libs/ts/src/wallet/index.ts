@@ -12,6 +12,8 @@ export {
 export { LocalKeys } from "../client/keys.js";
 export type {
   DecryptionRecipientProvider,
+  GenesisHashReader,
+  RecipientLookup,
   ProofAuthority,
   ProofService,
   WalletKeys,

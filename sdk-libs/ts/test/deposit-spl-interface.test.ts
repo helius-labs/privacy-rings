@@ -74,7 +74,7 @@ async function chain(accounts: Readonly<{ config?: RpcAccount; registry?: RpcAcc
 
 function splDepositParams(
   client: Partial<DepositClient>,
-  overrides: Partial<DepositTransactionParams> = {},
+  overrides: Partial<Omit<DepositTransactionParams, "client" | "decryptionService">> = {},
 ): DepositTransactionParams {
   return {
     client: depositClient(client),
@@ -89,7 +89,7 @@ function splDepositParams(
 
 function splDeposit(
   client: Partial<DepositClient>,
-  overrides: Partial<DepositTransactionParams> = {},
+  overrides: Partial<Omit<DepositTransactionParams, "client" | "decryptionService">> = {},
 ): Promise<Transaction> {
   return buildDepositTransaction(splDepositParams(client, overrides));
 }
@@ -109,16 +109,44 @@ it("builds the same SOL deposit with a service-resolved recipient as with explic
   const recipient = ShieldedKeypair.generate().shieldedAddress();
   const getAccount = vi.fn(async () => undefined);
   const address = vi.fn(async () => recipient);
-  const input = { client: depositClient({ getAccount }), feePayer: PAYER, amount: 5n };
+  const genesisHash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
+  const getGenesisHash = vi.fn(async () => genesisHash);
+  const input = {
+    client: { ...depositClient({ getAccount }), getGenesisHash },
+    feePayer: PAYER,
+    amount: 5n,
+  };
   const explicit = await buildDepositTransaction({ ...input, recipient });
   const resolved = await buildDepositTransaction({
     ...input,
     recipient: recipient.solanaAddress(),
-    decryptionService: { address },
+    decryptionService: { address, genesisHash },
   });
   expect(resolved.messageBytes).toEqual(explicit.messageBytes);
   expect(getAccount).toHaveBeenCalledOnce();
+  expect(getGenesisHash).toHaveBeenCalledOnce();
   expect(address).toHaveBeenCalledWith(recipient.solanaAddress(), undefined);
+});
+
+it("refuses service keys for another chain before building a deposit", async () => {
+  const recipient = ShieldedKeypair.generate().shieldedAddress();
+  const address = vi.fn(async () => recipient);
+  const getLatestBlockhash = vi.fn(depositClient().getLatestBlockhash);
+  const client = {
+    ...depositClient({ getLatestBlockhash }),
+    getGenesisHash: async () => "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+  };
+  await expect(
+    buildDepositTransaction({
+      client,
+      feePayer: PAYER,
+      amount: 5n,
+      recipient: recipient.solanaAddress(),
+      decryptionService: { address, genesisHash: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG" },
+    }),
+  ).rejects.toMatchObject({ causeCode: "WALLET_DECRYPTION_NETWORK_MISMATCH" });
+  expect(address).not.toHaveBeenCalled();
+  expect(getLatestBlockhash).not.toHaveBeenCalled();
 });
 
 describe("deposit SPL interface setup", () => {

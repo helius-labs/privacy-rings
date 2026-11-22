@@ -1,6 +1,6 @@
 import type {
   ChainReader,
-  DecryptionRecipientProvider,
+  RecipientLookup,
   ProofDataSourceContext,
   TransactionAssembler,
   WalletKeys,
@@ -54,13 +54,12 @@ export interface PrivateTransactionParams {
   readonly approve?: ApprovalHandler;
 }
 
-export interface TransferTransactionParams extends PrivateTransactionParams {
-  readonly recipient: TransferDestination;
-  /** Used when the registry confirms the recipient has no record. */
-  readonly decryptionService?: DecryptionRecipientProvider;
-  readonly asset?: Address;
-  readonly amount: bigint;
-}
+export type TransferTransactionParams = PrivateTransactionParams &
+  RecipientLookup<PrivateTransactionClient> & {
+    readonly recipient: TransferDestination;
+    readonly asset?: Address;
+    readonly amount: bigint;
+  };
 
 /** One payment of a multi-recipient transfer. */
 export interface TransferPayment {
@@ -68,12 +67,12 @@ export interface TransferPayment {
   readonly amount: bigint;
 }
 
-export interface MultiTransferTransactionParams extends PrivateTransactionParams {
-  /** Each paid as its own private output, in this order; one to fifteen of them. */
-  readonly payments: readonly TransferPayment[];
-  readonly decryptionService?: DecryptionRecipientProvider;
-  readonly asset?: Address;
-}
+export type MultiTransferTransactionParams = PrivateTransactionParams &
+  RecipientLookup<PrivateTransactionClient> & {
+    /** Each paid as its own private output, in this order; one to fifteen of them. */
+    readonly payments: readonly TransferPayment[];
+    readonly asset?: Address;
+  };
 
 export interface WithdrawalTransactionParams extends PrivateTransactionParams {
   readonly recipient: Address;
@@ -95,15 +94,9 @@ export async function buildTransferTransaction(
   try {
     const created = await createTransfer(
       {
-        client: input.client,
-        wallet: input.wallet,
+        ...input,
         payer: input.feePayer,
-        recipient: input.recipient,
-        ...(input.decryptionService === undefined
-          ? {}
-          : { decryptionService: input.decryptionService }),
         asset: input.asset ?? SOL_MINT,
-        amount: input.amount,
       },
       context,
     );
@@ -127,13 +120,8 @@ export async function buildMultiTransferTransaction(
   try {
     const created = await createMultiTransfer(
       {
-        client: input.client,
-        wallet: input.wallet,
+        ...input,
         payer: input.feePayer,
-        payments: input.payments,
-        ...(input.decryptionService === undefined
-          ? {}
-          : { decryptionService: input.decryptionService }),
         asset: input.asset ?? SOL_MINT,
       },
       context,

@@ -24,8 +24,8 @@ use zeroize::Zeroizing;
 
 use crate::{
     nitro_policy::{
-        now_ms, read_limited, AcceptedNitroPolicy, NitroCheckpointStore, NitroPolicyError,
-        NitroPolicyReader, NitroTarget, NitroTrust,
+        now_ms, read_limited, AcceptedNitroPolicy, NitroCheckpointStore, NitroNetwork,
+        NitroPolicyError, NitroPolicyReader, NitroTarget, NitroTrust,
     },
     user_registry::{resolve_shielded_recipient, resolve_shielded_recipient_async},
     AsyncRpc, ClientError, Rpc,
@@ -68,6 +68,8 @@ pub enum NitroDecryptionError {
     Random,
     #[error("Nitro decryption only accepts recovery requests")]
     RecoveryOnly,
+    #[error("the Solana RPC is on a different network from the decryption service")]
+    NetworkMismatch,
     #[error("the encrypted decryption request exceeds the service limit")]
     RequestTooLarge,
     #[error(transparent)]
@@ -130,6 +132,7 @@ impl NitroDecryptionService {
         owner: Pubkey,
     ) -> Result<ShieldedAddress, ClientError> {
         resolve_shielded_recipient_async(rpc, owner, |owner| async move {
+            self.require_chain(rpc.genesis_hash().await?)?;
             self.address(owner).await.map_err(ClientError::from)
         })
         .await
@@ -142,10 +145,23 @@ impl NitroDecryptionService {
         owner: Pubkey,
     ) -> Result<ShieldedAddress, ClientError> {
         resolve_shielded_recipient(rpc, owner, |owner| {
+            self.require_chain(rpc.genesis_hash()?)?;
             self.runtime()
                 .block_on(self.address(owner))
                 .map_err(ClientError::from)
         })
+    }
+
+    fn require_chain(&self, genesis_hash: [u8; 32]) -> Result<(), NitroDecryptionError> {
+        // Solana's complete 32-byte genesis hashes, encoded as base58.
+        let expected = match self.0.trust.network() {
+            NitroNetwork::Devnet => "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+            NitroNetwork::Mainnet => "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+        };
+        if solana_hash::Hash::from(genesis_hash).to_string() != expected {
+            return Err(NitroDecryptionError::NetworkMismatch);
+        }
+        Ok(())
     }
 
     fn runtime(&self) -> &BlockingRuntime {

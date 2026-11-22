@@ -62,7 +62,8 @@ mode. A signed revocation advances the checkpoint and returns no replica.
 filesystem. Other platforms can supply an atomic `NitroCheckpointStore`.
 
 Use `NitroDecryptionService::resolve_recipient` for sends. The service is called
-only after a successful registry lookup finds no record. Use
+only after a successful registry lookup finds no record and the Solana RPC’s
+genesis hash matches the service network. Use
 `NitroDecryptionService::open` with the owner's Solana signer to recover notes
 under the service keys. The returned handle implements `ShieldedKeys` for
 `UtxoScan` and `ProofAuthority` for spending. Blocking callers can use
@@ -73,8 +74,7 @@ the request to its attested transport key. A decrypt signature binds the
 Solana network, release, batch and one-time response key. The client checks
 the reply's boot signature, request and ciphertext digests, and current
 checkpoint before opening it. A recovery-only release permits opening
-existing notes and rejects new payment lookups. Use trust pins for the
-wallet's Solana network. [Test invariants](tests/NITRO.md)
+existing notes and rejects new payment lookups. [Test invariants](tests/NITRO.md)
 
 ## Proving and submitting
 

@@ -64,8 +64,22 @@ export interface ChainReader {
 
 /** A verified service that publishes shielded addresses for Solana owners. */
 export interface DecryptionRecipientProvider {
+  /** Full base58 Solana genesis hash bound to the service keys. */
+  readonly genesisHash: string;
   address(owner: Address, context?: RequestContext): Promise<ShieldedAddress>;
 }
+
+export interface GenesisHashReader {
+  getGenesisHash(context?: RequestContext): Promise<string>;
+}
+
+/** The payment's own client identifies the chain before a service lookup. */
+export type RecipientLookup<Client> =
+  | Readonly<{ client?: Client; decryptionService?: undefined }>
+  | Readonly<{
+      client: Client & GenesisHashReader;
+      decryptionService: DecryptionRecipientProvider;
+    }>;
 
 export interface BlockhashProvider {
   getLatestBlockhash(context?: RequestContext): Promise<LatestBlockhash>;

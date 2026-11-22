@@ -3,7 +3,7 @@ import { DEFAULT_COMPUTE_UNIT_LIMIT, checkedAddress } from "../flows/internal.js
 import type {
   BlockhashProvider,
   ChainReader,
-  DecryptionRecipientProvider,
+  RecipientLookup,
   TreeContext,
 } from "../client/ports.js";
 import type {
@@ -31,7 +31,7 @@ import { SOL_MINT } from "../transaction/asset.js";
 import { resolveDepositSettlement } from "../flows/settlement.js";
 
 import { WalletError, wrapWalletError } from "./error.js";
-import { resolveShieldedRecipient } from "./registry.js";
+import { paymentRecipientResolver } from "./registry.js";
 
 /** @internal */
 export interface DepositParams {
@@ -130,14 +130,12 @@ export async function createDeposit(params: DepositParams): Promise<Deposit> {
 
 export type DepositClient = TreeContext & BlockhashProvider & Pick<ChainReader, "getAccount">;
 
-export interface DepositTransactionParams {
+export type DepositTransactionParams = RecipientLookup<DepositClient> & {
   readonly client: DepositClient;
   readonly feePayer: Address;
   readonly depositor?: Address;
   readonly tree?: Address;
   readonly recipient: Address | ShieldedAddress;
-  /** Used when the registry confirms the recipient has no record. */
-  readonly decryptionService?: DecryptionRecipientProvider;
   readonly asset?: Address;
   readonly amount: bigint;
   readonly splTokenAccount?: Address;
@@ -152,7 +150,7 @@ export interface DepositTransactionParams {
   readonly createSplInterface?: boolean;
   /** Placed verbatim before every other instruction, in order. */
   readonly setupInstructions?: readonly Instruction[];
-}
+};
 
 /**
  * Whether a deposit of `mint` must first create its SPL interface. Throws when
@@ -204,20 +202,8 @@ export async function buildDepositTransaction(
 ): Promise<Transaction> {
   try {
     input.setupInstructions?.forEach(checkedSetupInstruction);
-    const recipient = await resolveShieldedRecipient(
-      {
-        rpc: input.client,
-        recipient: input.recipient,
-        ...(input.decryptionService === undefined
-          ? {}
-          : { decryptionService: input.decryptionService }),
-      },
-      (unregistered) =>
-        new WalletError("WALLET_RECIPIENT_NOT_REGISTERED", {
-          details: { recipient: unregistered },
-        }),
-      context,
-    );
+    const resolveRecipient = paymentRecipientResolver(input, context);
+    const { address: recipient } = await resolveRecipient(input.recipient);
     const depositor = input.depositor ?? input.feePayer;
     const tree = input.tree ?? input.client.tree;
     const asset = input.asset ?? SOL_MINT;
