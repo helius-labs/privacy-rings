@@ -61,10 +61,8 @@ export interface PrivateTransactionParams {
   readonly approve?: ApprovalHandler;
 }
 
-type TransferPayments = PaymentLookup<PrivateTransactionClient, Omit<WalletPersistence, "wallet">>;
-
 export type TransferTransactionParams = PrivateTransactionParams &
-  TransferPayments & {
+  PaymentLookup<PrivateTransactionClient, Omit<WalletPersistence, "wallet">> & {
     readonly recipient: TransferDestination;
     readonly asset?: Address;
     readonly amount: bigint;
@@ -77,7 +75,7 @@ export interface TransferPayment {
 }
 
 export type MultiTransferTransactionParams = PrivateTransactionParams &
-  TransferPayments & {
+  PaymentLookup<PrivateTransactionClient, Omit<WalletPersistence, "wallet">> & {
     /** Each paid as its own private output, in this order; one to fifteen of them. */
     readonly payments: readonly TransferPayment[];
     readonly asset?: Address;
@@ -217,7 +215,7 @@ type PaymentChecks = Readonly<{
 }>;
 
 function servicePaymentOptions(
-  input: PrivateTransactionParams & TransferPayments,
+  input: TransferTransactionParams | MultiTransferTransactionParams,
 ): Omit<PaymentChecks, "revalidate"> | undefined {
   if (input.decryptionService === undefined) {
     if (input.persistence !== undefined) throw new WalletError("WALLET_INVALID_PAYMENT");
