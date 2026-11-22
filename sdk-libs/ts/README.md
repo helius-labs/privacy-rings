@@ -329,13 +329,15 @@ another nullifier key registers under a new owner.
 A private transfer looks up the recipient's Solana address in the onchain
 registry. To pay an unregistered owner, pass a verified
 `decryptionService` that implements `DecryptionRecipientProvider`. The SDK
-uses it after a confirmed registry miss and checks its genesis hash against
-the payment RPC before requesting keys for the original Ed25519 owner. A missing record without a
-provider returns `WALLET_RECIPIENT_NOT_REGISTERED`. Use
+uses it after a successful registry lookup finds no record and checks its
+genesis hash against the payment RPC before requesting keys for the original
+Ed25519 owner. It reads the registry again before using the service keys.
+A missing record without a provider returns `WALLET_RECIPIENT_NOT_REGISTERED`. Use
 `buildWithdrawalTransaction` for a public payment.
 
-The same provider works with deposits and multi-recipient transfers. Later
-registration directs new payments to the onchain keys. Open the service
+The same provider works with deposits and multi-recipient transfers. Repeated
+payments to the same owner in a batch share one lookup. Registration directs
+new payments to the onchain keys. Open the service
 identity through the verified client to recover a note sent before
 registration.
 

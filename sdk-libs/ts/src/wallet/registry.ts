@@ -338,22 +338,17 @@ export function paymentRecipientResolver(
   function requireActive(): void {
     if (context?.signal?.aborted) throw new WalletError("WALLET_RECIPIENT_LOOKUP_ABORTED");
   }
-  return async (recipient: Address | ShieldedAddress) => {
-    if (recipient instanceof ShieldedAddress) {
-      return {
-        kind: "shielded" as const,
-        address: recipient,
-        viewTag: recipient.confidentialViewTag(),
-      };
+  async function resolveOwner(recipient: Address) {
+    requireActive();
+    const client = input.client;
+    if (client === undefined) throw new WalletError("WALLET_RECIPIENT_CLIENT_REQUIRED");
+    async function readRegistration(rpc: AccountReader) {
+      const record = await resolveRegisteredAddress({ rpc, owner: recipient }, context);
+      requireActive();
+      return record && { kind: "registered" as const, ...record };
     }
-    requireActive();
-    if (input.client === undefined) throw new WalletError("WALLET_RECIPIENT_CLIENT_REQUIRED");
-    const registered = await resolveRegisteredAddress(
-      { rpc: input.client, owner: recipient },
-      context,
-    );
-    requireActive();
-    if (registered !== undefined) return { kind: "registered" as const, ...registered };
+    const registered = await readRegistration(client);
+    if (registered) return registered;
     if (input.decryptionService === undefined) {
       throw new WalletError("WALLET_RECIPIENT_NOT_REGISTERED", { details: { recipient } });
     }
@@ -372,7 +367,29 @@ export function paymentRecipientResolver(
     ) {
       throw new WalletError("WALLET_DECRYPTION_RECIPIENT_MISMATCH");
     }
-    return { kind: "shielded" as const, address, viewTag: address.confidentialViewTag() };
+    return (
+      (await readRegistration(client)) ?? {
+        kind: "shielded" as const,
+        address,
+        viewTag: address.confidentialViewTag(),
+      }
+    );
+  }
+  const lookups = new Map<Address, ReturnType<typeof resolveOwner>>();
+  return async (recipient: Address | ShieldedAddress) => {
+    if (recipient instanceof ShieldedAddress) {
+      return {
+        kind: "shielded" as const,
+        address: recipient,
+        viewTag: recipient.confidentialViewTag(),
+      };
+    }
+    let lookup = lookups.get(recipient);
+    if (!lookup) {
+      lookup = resolveOwner(recipient);
+      lookups.set(recipient, lookup);
+    }
+    return lookup;
   };
 }
 

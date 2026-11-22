@@ -480,7 +480,7 @@ pub fn try_resolve_registered_address<R: Rpc>(
     )?))
 }
 
-/// Uses the registry record, then the decryption service if the record is absent.
+/// Uses the registry record or service keys when both reads around the service lookup find no record.
 pub fn resolve_shielded_recipient<R: Rpc>(
     rpc: &R,
     owner: Pubkey,
@@ -489,10 +489,14 @@ pub fn resolve_shielded_recipient<R: Rpc>(
     if let Some(record) = try_resolve_registered_address(rpc, owner)? {
         return Ok(record.address);
     }
-    check_service_recipient(owner, service(owner)?)
+    let service_address = check_service_recipient(owner, service(owner)?)?;
+    Ok(
+        try_resolve_registered_address(rpc, owner)?
+            .map_or(service_address, |record| record.address),
+    )
 }
 
-/// Resolves a recipient with an asynchronous verified decryption client.
+/// Asynchronous variant of [`resolve_shielded_recipient`].
 pub async fn resolve_shielded_recipient_async<R: AsyncRpc, F>(
     rpc: &R,
     owner: Pubkey,
@@ -504,7 +508,10 @@ where
     if let Some(record) = try_resolve_registered_address_async(rpc, owner).await? {
         return Ok(record.address);
     }
-    check_service_recipient(owner, service(owner).await?)
+    let service_address = check_service_recipient(owner, service(owner).await?)?;
+    Ok(try_resolve_registered_address_async(rpc, owner)
+        .await?
+        .map_or(service_address, |record| record.address))
 }
 
 fn check_service_recipient(
@@ -1006,6 +1013,72 @@ mod tests {
             })
             .await
             .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn registration_observed_after_service_lookup_takes_precedence() {
+        use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+
+        struct PublishingRegistry {
+            registered: MockRpc,
+            published: AtomicBool,
+        }
+
+        impl Rpc for PublishingRegistry {
+            fn get_account(&self, address: Address) -> Result<Option<Account>, ClientError> {
+                if self.published.load(Relaxed) {
+                    Rpc::get_account(&self.registered, address)
+                } else {
+                    Ok(None)
+                }
+            }
+
+            fn get_latest_blockhash(&self) -> Result<(solana_hash::Hash, u64), ClientError> {
+                unreachable!()
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl AsyncRpc for PublishingRegistry {
+            async fn get_account(&self, address: Address) -> Result<Option<Account>, ClientError> {
+                Rpc::get_account(self, address)
+            }
+
+            async fn get_latest_blockhash(&self) -> Result<(solana_hash::Hash, u64), ClientError> {
+                unreachable!()
+            }
+        }
+
+        let registered = ed25519_address(4);
+        let owner = Pubkey::new_from_array(registered.signing_pubkey.as_ed25519().unwrap());
+        let service_address = ShieldedAddress {
+            signing_pubkey: registered.signing_pubkey,
+            ..ed25519_address(19)
+        };
+        let rpc = PublishingRegistry {
+            registered: registry_holding(owner, fields(&registered)),
+            published: AtomicBool::new(false),
+        };
+        let publish = |_| {
+            rpc.published.store(true, Relaxed);
+            Ok(service_address)
+        };
+        assert_eq!(
+            resolve_shielded_recipient(&rpc, owner, publish).unwrap(),
+            registered
+        );
+
+        rpc.published.store(false, Relaxed);
+        assert_eq!(
+            resolve_shielded_recipient_async(
+                &rpc,
+                owner,
+                |requested| async move { publish(requested) }
+            )
+            .await
+            .unwrap(),
+            registered
         );
     }
 

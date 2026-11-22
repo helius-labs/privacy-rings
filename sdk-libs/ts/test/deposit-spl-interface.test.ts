@@ -123,7 +123,7 @@ it("builds the same SOL deposit with a service-resolved recipient as with explic
     decryptionService: { address, genesisHash },
   });
   expect(resolved.messageBytes).toEqual(explicit.messageBytes);
-  expect(getAccount).toHaveBeenCalledOnce();
+  expect(getAccount).toHaveBeenCalledTimes(2);
   expect(getGenesisHash).toHaveBeenCalledOnce();
   expect(address).toHaveBeenCalledWith(recipient.solanaAddress(), undefined);
 });

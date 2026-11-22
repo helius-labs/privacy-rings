@@ -31,7 +31,7 @@ Breaking
 
 Added
 
-- `buildDepositTransaction`, `buildTransferTransaction`, and `buildMultiTransferTransaction` accept a verified `decryptionService` for recipients with no registry record when its `genesisHash` matches `SprClient.getGenesisHash()` on the payment RPC.
+- `buildDepositTransaction`, `buildTransferTransaction`, and `buildMultiTransferTransaction` accept a verified `decryptionService` for recipients with no registry record when its `genesisHash` matches `SprClient.getGenesisHash()` on the payment RPC. The SDK checks the registry again before using the service keys.
 - `ProgramProofInputs` types the prover input map of a `ProgramTransaction`, and `TransactionErrorCode.TRANSACTION_PROGRAM_PUBLIC_HASH_MISMATCH` reports proof inputs bound to another public hash.
 - `ClientErrorCode.CLIENT_INDEXER_RESPONSE_TOO_LARGE` reports an indexer response above 10 MiB, the most Photon sends, whether the SDK or Photon (`-32008`) refuses it.
 - `SprClient.proveAnonymousRingTransact(input)` accepts a `TransactOwnerSigner` or an owner signature prepared over `transactMessageDigest(proofInputs)`.
