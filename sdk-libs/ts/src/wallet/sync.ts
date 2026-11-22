@@ -711,6 +711,7 @@ async function runWalletSync(
     }
     const settledIds =
       expired === undefined ? [] : settlementIds(session, expired, settlementScans);
+    context?.signal?.throwIfAborted();
     input.wallet._commitSync(sealSyncDelta(session), session.baseRevision, settledIds);
     return report;
   } catch (cause) {

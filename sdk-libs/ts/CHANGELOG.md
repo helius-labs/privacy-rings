@@ -47,6 +47,7 @@ Changed
 
 Fixed
 
+- Wallet sync wipes plaintext buffers returned by `ShieldedKeys.decrypt`, including on cancellation and malformed replies. Custom key holders must return fresh buffers and transfer their ownership to the caller.
 - `PreparedPayment.send` refreshes the recipient after checking the blockhash so a key change during that RPC stops the payment before broadcast.
 - `syncWallet` used to release payment inputs after blockhash expiry based on an earlier indexer scan and now requires a fresh scan and checks the original transaction signature for a landed spend.
 - `syncWallet` failed on an indexer page of dense private transactions; it now halves `pageLimit` for the rest of the sync until the page fits, keeping the `requireSlot` check.

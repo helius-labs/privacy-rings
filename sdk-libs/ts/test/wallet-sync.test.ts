@@ -1191,6 +1191,40 @@ describe("wallet sync", () => {
     expect(seen.every((entry) => entry === context)).toBe(true);
   });
 
+  it.each(["before scanning", "during decryption"])(
+    "leaves wallet state unchanged when cancelled %s",
+    async (when) => {
+      const { keypair, keys, split } = mergeAfterSplit();
+      const wallet = new Wallet({ identity: keypair.shieldedAddress() });
+      const before = serializeWallet(wallet);
+      const controller = new AbortController();
+      const decrypt = vi.fn(async (requests: Parameters<ShieldedKeys["decrypt"]>[0]) => {
+        const plaintexts = await keys.decrypt(requests);
+        controller.abort();
+        return plaintexts;
+      });
+      if (when === "before scanning") controller.abort();
+
+      try {
+        await expect(
+          decryptWithKeys(
+            { ...remoteOver(keys), decrypt },
+            {
+              wallet,
+              transactions: [split],
+              context: { signal: controller.signal },
+            },
+          ),
+        ).rejects.toMatchObject({ name: "AbortError" });
+        expect(serializeWallet(wallet)).toEqual(before);
+        expect(decrypt).toHaveBeenCalledTimes(when === "before scanning" ? 0 : 1);
+      } finally {
+        keys.destroy();
+        keypair.destroy();
+      }
+    },
+  );
+
   /** `depth` merges, each consolidating the previous one's single output. */
   function mergeChain(depth: number) {
     const fixture = mergeAfterSplit();
