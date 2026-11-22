@@ -14,6 +14,8 @@
 mod blocking;
 mod confirmation;
 mod merge;
+#[cfg(feature = "reqwest")]
+mod nitro_payment;
 mod nonblocking;
 mod transaction;
 mod validation;
@@ -38,6 +40,8 @@ use crate::{
 use crate::{indexer::SprIndexer, prover::tee::TeePolicy};
 
 pub use merge::{check_merge_record, MergeSubmission, ProvedMerge, MERGE_CU_LIMIT};
+#[cfg(feature = "reqwest")]
+pub use nitro_payment::{NitroPaymentRecipient, NitroPaymentSubmission};
 pub use transaction::{SignedPrivateTransaction, Submission, UnsignedMessage};
 pub use validation::check_service_url;
 

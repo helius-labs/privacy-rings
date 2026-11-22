@@ -71,12 +71,18 @@ the lock for a second, or if the lock or checkpoint is a symbolic link or
 other nonregular file. Other platforms call `NitroPolicyUpdate::advances`
 inside their store transaction and persist `checkpoint()` before returning success.
 
-Use `NitroDecryptionService::resolve_recipient` for sends. The service is called
-only after a successful registry lookup finds no record and the Solana RPC’s
-genesis hash matches the service network. The client checks the registry again
-before using the service keys. The resolver reads both signed policy heads before reusing an attested
-boot for a payment. For a payment assembled by the caller, resolve again at
-signing and require the same recipient keys.
+Use `NitroDecryptionService::resolve_recipient` for sends. The resolver uses
+service keys after a successful registry miss and matching Solana genesis
+hash. It checks the registry again before returning those keys. Reusing an
+attested boot for a payment requires reading both signed policy heads.
+
+Build each output with `recipient.address()` and pass the resolved recipients
+to `Submission::with_nitro_recipients`. It checks that every output to an
+attached owner uses the resolved keys. Its `send` and `send_sync` methods resolve
+the recipients again after transaction signing and before broadcast. A changed
+registration, changed keys, or a payment refusal aborts the send. Use
+`finish_unsigned` for external signers. That method checks again after proving,
+and the caller owns any delay between receiving the message and broadcasting.
 
 Use `NitroDecryptionService::open` with the owner's Solana signer to recover notes
 under the service keys. The returned handle implements `ShieldedKeys` for

@@ -6,6 +6,7 @@ use solana_keypair::Signer;
 use solana_message::VersionedMessage;
 use solana_pubkey::Pubkey;
 use solana_signature::Signature;
+use solana_transaction::versioned::VersionedTransaction;
 use spr_instruction::instruction::{Transact, TransactInterfaceTransferAccounts};
 use spr_interface::{
     instruction::{instruction_data::transact::TransactProof, TransactIxData},
@@ -364,9 +365,7 @@ impl<'a> Submission<'a> {
     ) -> Result<Signature, ClientError> {
         let unsigned = self.finish_unsigned(client).await?;
         let transaction = sign_transaction(unsigned.message, signers)?;
-        let signature = client.process_transaction(transaction).await?;
-        client.confirm_private_transaction(signature).await?;
-        Ok(signature)
+        send_signed(client, transaction).await
     }
 
     /// See [`Self::finish_unsigned`].
@@ -385,6 +384,15 @@ impl<'a> Submission<'a> {
     ) -> Result<Signature, ClientError> {
         client.block_on(self.send(&client.client, signers))
     }
+}
+
+pub(super) async fn send_signed<R: AsyncRpc, I: AsyncIndexer>(
+    client: &AsyncSprClient<R, I>,
+    transaction: VersionedTransaction,
+) -> Result<Signature, ClientError> {
+    let signature = client.process_transaction(transaction).await?;
+    client.confirm_private_transaction(signature).await?;
+    Ok(signature)
 }
 
 /// Conservative reuse window for a blockhash prefetched while proving,

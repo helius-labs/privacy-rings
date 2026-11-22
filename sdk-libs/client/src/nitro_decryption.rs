@@ -36,6 +36,7 @@ use crate::{
 };
 
 pub use self::keys::NitroDecryptionKeys;
+pub use crate::client::{NitroPaymentRecipient, NitroPaymentSubmission};
 
 use self::{
     crypto::{random_bytes, response_secret, OVERHEAD},
@@ -79,6 +80,10 @@ pub enum NitroDecryptionError {
     RecoveryOnly,
     #[error("the Solana RPC is on a different network from the decryption service")]
     NetworkMismatch,
+    #[error("the transaction output does not match the resolved Nitro payment recipient")]
+    PaymentRecipientMismatch,
+    #[error("the Nitro payment recipient changed during transaction preparation")]
+    PaymentRecipientChanged,
     #[error("the encrypted decryption request exceeds the service limit")]
     RequestTooLarge,
     #[error(transparent)]
@@ -170,6 +175,15 @@ impl NitroDecryptionService {
         &self,
         rpc: &R,
         owner: Pubkey,
+    ) -> Result<NitroPaymentRecipient, ClientError> {
+        let address = self.resolve_recipient_address(rpc, owner).await?;
+        Ok(NitroPaymentRecipient::new(self.clone(), owner, address))
+    }
+
+    pub(crate) async fn resolve_recipient_address<R: AsyncRpc>(
+        &self,
+        rpc: &R,
+        owner: Pubkey,
     ) -> Result<ShieldedAddress, ClientError> {
         resolve_shielded_recipient_async(rpc, owner, |owner| async move {
             self.require_chain(rpc.genesis_hash().await?)?;
@@ -183,13 +197,14 @@ impl NitroDecryptionService {
         &self,
         rpc: &R,
         owner: Pubkey,
-    ) -> Result<ShieldedAddress, ClientError> {
-        resolve_shielded_recipient(rpc, owner, |owner| {
+    ) -> Result<NitroPaymentRecipient, ClientError> {
+        let address = resolve_shielded_recipient(rpc, owner, |owner| {
             self.require_chain(rpc.genesis_hash()?)?;
             self.runtime()
                 .block_on(self.address(owner))
                 .map_err(ClientError::from)
-        })
+        })?;
+        Ok(NitroPaymentRecipient::new(self.clone(), owner, address))
     }
 
     fn require_chain(&self, genesis_hash: [u8; 32]) -> Result<(), NitroDecryptionError> {

@@ -469,7 +469,7 @@ async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
             .to_bytes(),
     );
     let address = service.resolve_recipient(&devnet, owner).await.unwrap();
-    assert_eq!(address.viewing_pubkey, viewing);
+    assert_eq!(address.address().viewing_pubkey, viewing);
     let keys = service.open(signer).await.unwrap();
     let request = DecryptRequest {
         ciphertext: &[1, 2, 3],
