@@ -18,6 +18,7 @@ default = ["reqwest"]
 reqwest = [
     "dep:aes-gcm", "dep:ed25519-dalek", "dep:hkdf", "dep:hmac",
     "dep:reqwest", "p256/ecdh", "p256/getrandom", "spr-api/reqwest",
+    "solana-transaction/verify",
 ]
 socks = ["reqwest", "reqwest/socks"]
 solana-rpc = ["dep:bs58", "dep:base64", "dep:solana-rpc-client", "dep:solana-commitment-config"]

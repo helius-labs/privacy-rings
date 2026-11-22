@@ -84,6 +84,8 @@ pub enum NitroDecryptionError {
     PaymentRecipientMismatch,
     #[error("the Nitro payment recipient changed during transaction preparation")]
     PaymentRecipientChanged,
+    #[error("the signer changed the prepared Nitro payment message")]
+    PaymentMessageChanged,
     #[error("the encrypted decryption request exceeds the service limit")]
     RequestTooLarge,
     #[error(transparent)]

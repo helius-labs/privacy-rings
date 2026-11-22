@@ -153,7 +153,7 @@ impl Signer for RotatingSigner<'_> {
 }
 
 #[tokio::test]
-async fn a_recipient_change_during_signing_prevents_broadcast() {
+async fn the_signed_payment_is_checked_before_broadcast() {
     let directory = tempfile::tempdir().unwrap();
     let service = decryption(&directory);
     let payer = Keypair::new();
@@ -183,11 +183,11 @@ async fn a_recipient_change_during_signing_prevents_broadcast() {
     let submission = Submission::new(&signed, payer.pubkey(), &keys)
         .with_nitro_recipients(&recipients)
         .unwrap();
-    let unsigned = || UnsignedMessage {
+    let unsigned = |blockhash| UnsignedMessage {
         message: compile_message(
             &payer.pubkey(),
             &[],
-            Hash::new_unique(),
+            Hash::new_from_array([blockhash; 32]),
             ComputeBudgetConfig::for_instruction_count(1),
         )
         .unwrap(),
@@ -196,7 +196,9 @@ async fn a_recipient_change_during_signing_prevents_broadcast() {
     let signer = RotatingSigner(&payer, &client.rpc().rotated);
     assert!(matches!(
         submission
-            .send_unsigned(&client, unsigned(), &[&signer])
+            .send_unsigned(&client, unsigned(1), async |prepared: &UnsignedMessage| {
+                sign_transaction(prepared.message.clone(), &[&signer])
+            })
             .await,
         Err(ClientError::NitroDecryption(
             NitroDecryptionError::PaymentRecipientChanged
@@ -207,7 +209,41 @@ async fn a_recipient_change_during_signing_prevents_broadcast() {
 
     client.rpc().rotated.store(false, SeqCst);
     assert!(matches!(
-        submission.send_unsigned(&client, unsigned(), &[&payer]).await,
+        submission
+            .send_unsigned(&client, unsigned(1), async |_: &UnsignedMessage| {
+                sign_transaction(unsigned(2).message, &[&payer])
+            })
+            .await,
+        Err(ClientError::NitroDecryption(
+            NitroDecryptionError::PaymentMessageChanged
+        ))
+    ));
+    for signatures in [vec![], vec![Signature::default()]] {
+        assert!(matches!(
+            submission
+                .send_unsigned(
+                    &client,
+                    unsigned(1),
+                    async move |prepared: &UnsignedMessage| {
+                        Ok(VersionedTransaction {
+                            message: prepared.message.clone(),
+                            signatures,
+                        })
+                    }
+                )
+                .await,
+            Err(ClientError::SolanaTransactionSigning(_))
+        ));
+    }
+    assert_eq!(client.rpc().broadcasts.load(SeqCst), 0);
+
+    assert!(matches!(
+        submission
+            .send_unsigned(&client, unsigned(1), async |prepared: &UnsignedMessage| {
+                tokio::task::yield_now().await;
+                sign_transaction(prepared.message.clone(), &[&payer])
+            })
+            .await,
         Err(ClientError::Rpc(message)) if message == "mock broadcast"
     ));
     assert_eq!(client.rpc().broadcasts.load(SeqCst), 1);

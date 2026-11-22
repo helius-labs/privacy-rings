@@ -2,6 +2,7 @@ use futures::future::try_join_all;
 use solana_keypair::Signer;
 use solana_pubkey::Pubkey;
 use solana_signature::Signature;
+use solana_transaction::versioned::VersionedTransaction;
 use spr_keypair::ShieldedAddress;
 
 use crate::{
@@ -86,33 +87,45 @@ impl<'a> Submission<'a> {
 }
 
 impl NitroPaymentSubmission<'_> {
-    /// Prove the transaction and recheck its recipients before returning it for external signing.
-    pub async fn finish_unsigned<R: AsyncRpc, I: AsyncIndexer>(
-        &self,
-        client: &AsyncSprClient<R, I>,
-    ) -> Result<UnsignedMessage, ClientError> {
-        let unsigned = self.submission.finish_unsigned(client).await?;
-        self.revalidate(client.rpc()).await?;
-        Ok(unsigned)
-    }
-
     /// Prove, sign, recheck the recipients, then submit and confirm.
     pub async fn send<R: AsyncRpc, I: AsyncIndexer>(
         &self,
         client: &AsyncSprClient<R, I>,
         signers: &[&dyn Signer],
     ) -> Result<Signature, ClientError> {
+        self.send_with_signer(client, async |unsigned: &UnsignedMessage| {
+            sign_transaction(unsigned.message.clone(), signers)
+        })
+        .await
+    }
+
+    /// Get the completed transaction from an external signer and keep the final
+    /// message and recipient checks on the SDK's path to RPC broadcast.
+    pub async fn send_with_signer<R: AsyncRpc, I: AsyncIndexer>(
+        &self,
+        client: &AsyncSprClient<R, I>,
+        sign: impl AsyncFnOnce(&UnsignedMessage) -> Result<VersionedTransaction, ClientError>,
+    ) -> Result<Signature, ClientError> {
         let unsigned = self.submission.finish_unsigned(client).await?;
-        self.send_unsigned(client, unsigned, signers).await
+        self.send_unsigned(client, unsigned, sign).await
     }
 
     async fn send_unsigned<R: AsyncRpc, I: AsyncIndexer>(
         &self,
         client: &AsyncSprClient<R, I>,
         unsigned: UnsignedMessage,
-        signers: &[&dyn Signer],
+        sign: impl AsyncFnOnce(&UnsignedMessage) -> Result<VersionedTransaction, ClientError>,
     ) -> Result<Signature, ClientError> {
-        let signed = sign_transaction(unsigned.message, signers)?;
+        let signed = sign(&unsigned).await?;
+        if signed.message != unsigned.message {
+            return Err(NitroDecryptionError::PaymentMessageChanged.into());
+        }
+        signed
+            .sanitize()
+            .map_err(|error| ClientError::SolanaTransactionSigning(error.to_string()))?;
+        signed
+            .verify_and_hash_message()
+            .map_err(|error| ClientError::SolanaTransactionSigning(error.to_string()))?;
         self.revalidate(client.rpc()).await?;
         send_signed(client, signed).await
     }
@@ -127,12 +140,13 @@ impl NitroPaymentSubmission<'_> {
         Ok(())
     }
 
-    /// See [`Self::finish_unsigned`].
-    pub fn finish_unsigned_sync<R: BlockingRpc, I: BlockingIndexer>(
+    /// Blocking version of [`Self::send_with_signer`].
+    pub fn send_with_signer_sync<R: BlockingRpc, I: BlockingIndexer>(
         &self,
         client: &SprClient<R, I>,
-    ) -> Result<UnsignedMessage, ClientError> {
-        client.block_on(self.finish_unsigned(&client.client))
+        sign: impl FnOnce(&UnsignedMessage) -> Result<VersionedTransaction, ClientError>,
+    ) -> Result<Signature, ClientError> {
+        client.block_on(self.send_with_signer(&client.client, async move |unsigned| sign(unsigned)))
     }
 
     /// See [`Self::send`].

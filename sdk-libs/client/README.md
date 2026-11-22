@@ -79,10 +79,11 @@ attested boot for a payment requires reading both signed policy heads.
 Build each output with `recipient.address()` and pass the resolved recipients
 to `Submission::with_nitro_recipients`. It checks that every output to an
 attached owner uses the resolved keys. Its `send` and `send_sync` methods resolve
-the recipients again after transaction signing and before broadcast. A changed
-registration, changed keys, or a payment refusal aborts the send. Use
-`finish_unsigned` for external signers. That method checks again after proving,
-and the caller owns any delay between receiving the message and broadcasting.
+the recipients again after signing and before broadcast. A changed registration,
+changed keys, or a payment refusal aborts the send. Use `send_with_signer` or
+`send_with_signer_sync` with an external signer. Return the signed transaction
+from the signing callback so the SDK can check its message and recipients
+before it broadcasts.
 
 Use `NitroDecryptionService::open` with the owner's Solana signer to recover notes
 under the service keys. The returned handle implements `ShieldedKeys` for
