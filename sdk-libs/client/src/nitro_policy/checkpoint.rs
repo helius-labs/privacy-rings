@@ -1,13 +1,13 @@
-use super::{NitroCheckpoint, NitroPolicyError, NitroTrust};
+use super::{NitroCheckpoint, NitroPolicyError, NitroPolicyUpdate, NitroTrust};
 
 /// Durable compare-and-set scoped to the pinned network and security domain.
-/// Return success only after the checkpoint is committed.
+/// Check the update against storage inside the transaction before committing it.
 pub trait NitroCheckpointStore: Send + Sync {
     fn current(&self, trust: &NitroTrust) -> Result<Option<NitroCheckpoint>, NitroPolicyError>;
     fn accept(
         &self,
         trust: &NitroTrust,
-        candidate: &NitroCheckpoint,
+        update: &NitroPolicyUpdate<'_>,
     ) -> Result<bool, NitroPolicyError>;
 }
 
@@ -23,7 +23,9 @@ mod unix {
         path::{Path, PathBuf},
     };
 
-    use super::{NitroCheckpoint, NitroCheckpointStore, NitroPolicyError, NitroTrust};
+    use super::{
+        NitroCheckpoint, NitroCheckpointStore, NitroPolicyError, NitroPolicyUpdate, NitroTrust,
+    };
 
     const MAX_CHECKPOINT_BYTES: u64 = 1024;
 
@@ -96,21 +98,21 @@ mod unix {
         fn accept(
             &self,
             trust: &NitroTrust,
-            candidate: &NitroCheckpoint,
+            update: &NitroPolicyUpdate<'_>,
         ) -> Result<bool, NitroPolicyError> {
+            let candidate = update.checkpoint();
             if !valid(candidate) {
                 return Err(NitroPolicyError::Storage);
             }
             self.with_lock(trust, |path| {
-                if let Some(prior) = Self::read(path)? {
-                    if !prior.accepts(candidate) {
-                        return Ok(false);
-                    }
-                    if prior == *candidate {
-                        // A previous rename can be visible even if syncing failed.
-                        self.sync_directory()?;
-                        return Ok(true);
-                    }
+                let prior = Self::read(path)?;
+                if !update.advances(prior.as_ref()) {
+                    return Ok(false);
+                }
+                if prior.as_ref() == Some(candidate) {
+                    // A previous rename can be visible even if syncing failed.
+                    self.sync_directory()?;
+                    return Ok(true);
                 }
                 let mut next = tempfile::NamedTempFile::new_in(&self.directory)
                     .map_err(|_| NitroPolicyError::Storage)?;

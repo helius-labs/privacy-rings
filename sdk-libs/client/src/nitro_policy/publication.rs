@@ -45,14 +45,16 @@ impl NitroPolicyReader {
         )?;
         let trust = self.trust.clone();
         let store = self.store.clone();
-        tokio::task::spawn_blocking(move || {
+        let policy = tokio::task::spawn_blocking(move || {
             let policy =
                 accept_published_nitro_policy(&trust, [&primary, &mirror], &*store, now_ms()?)?;
-            policy.require_current(&trust, &*store, now_ms()?)?;
+            policy.require_current_with_clock(&trust, &*store, now_ms)?;
             Ok(policy)
         })
         .await
-        .map_err(|_| NitroPolicyError::Storage)?
+        .map_err(|_| NitroPolicyError::Storage)??;
+        policy.require_valid_at(now_ms()?)?;
+        Ok(policy)
     }
 
     pub(crate) async fn require_current(
@@ -61,9 +63,11 @@ impl NitroPolicyReader {
     ) -> Result<(), NitroPolicyError> {
         let trust = self.trust.clone();
         let store = self.store.clone();
-        tokio::task::spawn_blocking(move || policy.require_current(&trust, &*store, now_ms()?))
-            .await
-            .map_err(|_| NitroPolicyError::Storage)?
+        tokio::task::spawn_blocking(move || {
+            policy.require_current_with_clock(&trust, &*store, now_ms)
+        })
+        .await
+        .map_err(|_| NitroPolicyError::Storage)?
     }
 
     async fn fetch(&self, endpoint: &Url, owner: &str) -> Result<Vec<u8>, NitroPolicyError> {

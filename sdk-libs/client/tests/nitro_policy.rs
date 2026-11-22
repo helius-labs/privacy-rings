@@ -1,4 +1,8 @@
-use std::{fs, thread};
+use std::{
+    fs,
+    sync::atomic::{AtomicU64, Ordering},
+    thread,
+};
 
 use serde_json::{json, Value};
 
@@ -199,6 +203,47 @@ fn expiration_and_updated_trust_prevent_cached_use() {
 }
 
 #[test]
+fn checkpoint_read_cannot_extend_the_policy_deadline() {
+    struct ReadAdvancesTime<'a> {
+        clock: &'a AtomicU64,
+        deadline: u64,
+        checkpoint: NitroCheckpoint,
+    }
+    impl NitroCheckpointStore for ReadAdvancesTime<'_> {
+        fn current(&self, _: &NitroTrust) -> Result<Option<NitroCheckpoint>, NitroPolicyError> {
+            self.clock.store(self.deadline, Ordering::Relaxed);
+            Ok(Some(self.checkpoint.clone()))
+        }
+
+        fn accept(
+            &self,
+            _: &NitroTrust,
+            _: &NitroPolicyUpdate<'_>,
+        ) -> Result<bool, NitroPolicyError> {
+            unreachable!("this store only reads the checkpoint")
+        }
+    }
+
+    let fixture = Fixture::load();
+    let trust = fixture.trust();
+    let dir = tempfile::tempdir().unwrap();
+    let store = UnixNitroCheckpointStore::open(dir.path()).unwrap();
+    let policy = fixture
+        .accept(&trust, &store, "genesis", "genesis")
+        .unwrap();
+    let clock = AtomicU64::new(fixture.now());
+    let reader = ReadAdvancesTime {
+        clock: &clock,
+        deadline: policy.expires_at_ms,
+        checkpoint: policy.checkpoint().clone(),
+    };
+    assert!(matches!(
+        policy.require_current_with_clock(&trust, &reader, || Ok(clock.load(Ordering::Relaxed))),
+        Err(NitroPolicyError::Invalid)
+    ));
+}
+
+#[test]
 fn shipped_anchor_rejects_signed_forks_before_persisting() {
     let fixture = Fixture::load();
     let trust = fixture.trust();
@@ -273,12 +318,42 @@ fn concurrent_clients_cannot_restore_or_replace_a_checkpoint() {
     });
     let current = store.current(&trust).unwrap().unwrap();
     assert_eq!(current.sequence, 2);
-    let fork = NitroCheckpoint {
-        digest: [4; 32],
-        ..current.clone()
-    };
-    assert!(!other.accept(&trust, &fork).unwrap());
+    assert!(matches!(
+        fixture.accept(&trust, &other, "competingSuccessor", "competingSuccessor"),
+        Err(NitroPolicyError::Rollback),
+    ));
     assert_eq!(store.current(&trust).unwrap(), Some(current));
+}
+
+#[test]
+fn restored_checkpoint_rejects_a_disputed_predecessor_from_either_feed() {
+    let fixture = Fixture::load();
+    let trust = fixture.trust();
+    let dir = tempfile::tempdir().unwrap();
+    let writer = UnixNitroCheckpointStore::open(dir.path()).unwrap();
+    let saved = fixture
+        .accept(&trust, &writer, "successor", "genesis")
+        .unwrap();
+    let restored = UnixNitroCheckpointStore::open(dir.path()).unwrap();
+    for (primary, mirror) in [
+        ("forkOfAccepted", "forkOfAccepted"),
+        ("forkOfAccepted", "competingSuccessor"),
+        ("witnessedFork", "forkOfAccepted"),
+    ] {
+        assert!(matches!(
+            fixture.accept(&trust, &restored, primary, mirror),
+            Err(NitroPolicyError::Rollback)
+        ));
+        assert_eq!(
+            restored.current(&trust).unwrap().as_ref(),
+            Some(saved.checkpoint())
+        );
+    }
+    assert!(matches!(
+        fixture.accept(&trust, &restored, "agreedCatchUp", "agreedCatchUp"),
+        Err(NitroPolicyError::Revoked)
+    ));
+    assert_eq!(restored.current(&trust).unwrap().unwrap().sequence, 4);
 }
 
 #[test]

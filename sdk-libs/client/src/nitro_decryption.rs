@@ -325,6 +325,7 @@ impl Service {
             .require_current(session.policy.clone())
             .await?;
         let now = now_ms()?;
+        session.policy.require_valid_at(now)?;
         if !(session.replica.valid_from_ms..=session.replica.valid_through_ms).contains(&now)
             || now >= session.expires_at_ms
         {
