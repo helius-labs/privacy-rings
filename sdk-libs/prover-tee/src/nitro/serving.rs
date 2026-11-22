@@ -74,7 +74,7 @@ pub(super) fn verify_serving_boot(
         .as_deref()
         .and_then(|key| key.try_into().ok())
         .ok_or_else(|| invalid("the serving key pair is missing or has the wrong size"))?;
-    for point in public_keys.chunks_exact(P256_POINT_BYTES) {
+    for point in public_keys.as_chunks::<P256_POINT_BYTES>().0 {
         if point[0] != 4 || p256::PublicKey::from_sec1_bytes(point).is_err() {
             return Err(invalid("a serving key is not an uncompressed P256 point"));
         }
