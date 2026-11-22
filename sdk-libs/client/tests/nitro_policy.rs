@@ -385,13 +385,11 @@ fn rejects_nonregular_checkpoint_and_lock_files_without_waiting() {
             if is_symlink {
                 symlink(directory.path().join("missing"), &path).unwrap();
             } else {
-                assert!(
-                    Command::new("mkfifo")
-                        .arg(&path)
-                        .status()
-                        .unwrap()
-                        .success()
-                );
+                assert!(Command::new("mkfifo")
+                    .arg(&path)
+                    .status()
+                    .unwrap()
+                    .success());
             }
             let store = UnixNitroCheckpointStore::open(directory.path()).unwrap();
             let (finished, result) = mpsc::channel();
