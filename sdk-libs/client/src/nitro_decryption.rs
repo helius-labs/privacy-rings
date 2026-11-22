@@ -295,13 +295,18 @@ async fn owner_call<T: Send + 'static>(
         .map_err(|_| NitroDecryptionError::OwnerTimeout)?
         .map_err(|_| NitroDecryptionError::Signature)?;
     let (reply, result) = oneshot::channel();
-    tokio::task::spawn_blocking(move || {
-        // A synchronous signer can outlive its caller. Release the slot only when it returns.
-        let _permit = permit;
-        if !reply.is_closed() && Instant::now() < deadline {
-            let _ = reply.send(call());
-        }
-    });
+    // Keep a stalled device off Tokio's blocking pool so it cannot hold up runtime shutdown.
+    let runtime = tokio::runtime::Handle::current();
+    std::thread::Builder::new()
+        .name("spr-nitro-signer".into())
+        .spawn(move || {
+            let _permit = permit;
+            let _runtime = runtime.enter();
+            if !reply.is_closed() && Instant::now() < deadline {
+                let _ = reply.send(call());
+            }
+        })
+        .map_err(|_| NitroDecryptionError::Signature)?;
     let result = timeout_at(deadline, result)
         .await
         .map_err(|_| NitroDecryptionError::OwnerTimeout)?;
