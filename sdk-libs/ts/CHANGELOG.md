@@ -48,7 +48,7 @@ Changed
 Fixed
 
 - `PreparedPayment.send` refreshes the recipient after checking the blockhash so a key change during that RPC stops the payment before broadcast.
-- `syncWallet` can release a guarded payment's inputs once Solana finalizes the exact blockhash's expiry and the indexer scans those inputs through that slot.
+- `syncWallet` used to release payment inputs after blockhash expiry based on an earlier indexer scan and now requires a fresh scan and checks the original transaction signature for a landed spend.
 - `syncWallet` failed on an indexer page of dense private transactions; it now halves `pageLimit` for the rest of the sync until the page fits, keeping the `requireSlot` check.
 - `syncWallet` misclassified authored spends containing unknown output schemes as withdrawals or splits, and now omits their history rows.
 - `syncWallet` failed with `TRANSACTION_KEYS_UNRESOLVED` when a reserved or unknown output scheme accompanied a confidential note, and now stores the note.

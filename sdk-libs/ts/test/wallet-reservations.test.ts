@@ -30,6 +30,7 @@ import {
   transactionsPage,
 } from "./helpers/clients.js";
 import { emptyTransaction } from "./helpers/transactions.js";
+import { transactionItems } from "./helpers/pages.js";
 
 const TREE = treeAddress(0);
 const PAYER = address("4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi");
@@ -185,7 +186,14 @@ describe("UTXO reservations", () => {
     let blockHeight = 241n;
     let finalizedSlot = 499n;
     let blockhashSlot = 500n;
+    let signatureHistorySlot = 501n;
+    let indexedSpend = false;
     let stillValid = false;
+    let signatureStatus: {
+      slot: bigint;
+      confirmationStatus: "confirmed" | "finalized";
+      err: string | null;
+    } | null = null;
     let chain: Address = PAYER;
     const context = () => ({ slot: indexerSlot, blockTime: 1_700_000_000n });
     const checkBlockhash = vi.fn((checked: Blockhash, config: unknown) => ({
@@ -195,12 +203,36 @@ describe("UTXO reservations", () => {
         return { context: { slot: blockhashSlot }, value: stillValid };
       },
     }));
+    const checkSignature = vi.fn((signatures: readonly string[], config: unknown) => ({
+      send: async () => {
+        expect(signatures).toEqual([pending.signature]);
+        expect(config).toEqual({ searchTransactionHistory: true });
+        return { context: { slot: signatureHistorySlot }, value: [signatureStatus] };
+      },
+    }));
     const client = {
       ...syncReads({
         getShieldedTransactionsByTags: async () =>
           transactionsPage({ context: { ...context(), slot: 500n } }),
         getEncryptedUtxosByTags: async () => matchesPage({ context: { ...context(), slot: 500n } }),
-        getShieldedTransactionsByNullifiers: async () => transactionsPage({ context: context() }),
+        getShieldedTransactionsByNullifiers: async () =>
+          transactionsPage({
+            context: context(),
+            data: transactionItems(
+              indexedSpend
+                ? [
+                    {
+                      slot: 500n,
+                      txSignature: pending.signature,
+                      proofless: false,
+                      messages: [],
+                      nullifiers: [input.nullifier],
+                      outputSlots: [],
+                    },
+                  ]
+                : [],
+            ),
+          }),
       }),
       ...kitReads({
         solanaRpc: {
@@ -212,10 +244,11 @@ describe("UTXO reservations", () => {
             },
           }),
           isBlockhashValid: checkBlockhash,
+          getSignatureStatuses: checkSignature,
         },
       }),
     };
-    const sync = () => syncWallet({ wallet: restored, keys: localKeys(keypair), client });
+    const sync = (wallet = restored) => syncWallet({ wallet, keys: localKeys(keypair), client });
     const before = serializeWallet(restored);
     await expect(sync()).rejects.toMatchObject({
       code: "WALLET_SYNC",
@@ -251,11 +284,50 @@ describe("UTXO reservations", () => {
     expect(serializeWallet(restored)).toBe(beforeStaleReply);
 
     blockhashSlot = 501n;
+    signatureHistorySlot = 500n;
+    await expect(sync()).rejects.toMatchObject({ code: "WALLET_SYNC", causeCode: "CLIENT_RPC" });
+    expect(serializeWallet(restored)).toBe(beforeStaleReply);
+    signatureHistorySlot = 501n;
+
     await sync();
     expect(restored.pendingSubmissions()).toHaveLength(1);
     expect(restored._activeReservations(1_000_000n)).toHaveLength(1);
 
     indexerSlot = 501n;
+    for (const status of [
+      { slot: 500n, confirmationStatus: "finalized", err: null },
+      { slot: 500n, confirmationStatus: "confirmed", err: "AccountNotFound" },
+    ] as const) {
+      const unresolved = deserializeWallet(serializeWallet(restored));
+      signatureStatus = status;
+      await sync(unresolved);
+      expect(unresolved.pendingSubmissions()).toHaveLength(1);
+      expect(unresolved._activeReservations(1_000_000n)).toHaveLength(1);
+    }
+    const succeeded = deserializeWallet(serializeWallet(restored));
+    signatureStatus = { slot: 500n, confirmationStatus: "finalized", err: null };
+    await sync(succeeded);
+    indexedSpend = true;
+    await sync(succeeded);
+    expect(succeeded.pendingSubmissions()).toEqual([]);
+    expect(succeeded.utxos()[0]?.spent).toBe(true);
+    indexedSpend = false;
+
+    stillValid = true;
+    await sync();
+    stillValid = false;
+
+    signatureStatus = { slot: 500n, confirmationStatus: "finalized", err: "AccountNotFound" };
+    indexerSlot = 500n;
+    await sync();
+    expect(restored.pendingSubmissions()).toHaveLength(1);
+
+    indexerSlot = 501n;
+    const absent = deserializeWallet(serializeWallet(restored));
+    signatureStatus = null;
+    await sync(absent);
+    expect(absent.pendingSubmissions()).toEqual([]);
+    signatureStatus = { slot: 500n, confirmationStatus: "finalized", err: "AccountNotFound" };
     await sync();
     expect(restored.pendingSubmissions()).toEqual([]);
     expect(restored._activeReservations(1_000_000n)).toEqual([]);

@@ -6,7 +6,7 @@ import {
   type Base64EncodedBytes,
 } from "@solana/kit";
 
-import { readBlockhashValidity, runKitRpc } from "../client/kit.js";
+import { readBlockhashValidity, readSignatureHistory, runKitRpc } from "../client/kit.js";
 import { initializePoseidon } from "../hasher/index.js";
 import type { IndexerReader, KitRpcAccess } from "../client/ports.js";
 import { ClientError } from "../client/error.js";
@@ -26,6 +26,7 @@ import type {
   HistoryFilters,
   PaginationToken,
   RequestContext,
+  Signature,
 } from "../interface/types.js";
 import { TransactionError } from "../transaction/error.js";
 import type { IndexedShieldedTransaction } from "../transaction/instructions/transact.js";
@@ -552,6 +553,17 @@ async function runWalletSync(
       return gate;
     };
     const session = beginSyncSession(input.wallet);
+    const settlementScans = new Map<string, bigint | undefined>();
+    if (expired !== undefined) {
+      const hashes = new Set(
+        expired.submissions.flatMap(({ utxoHashes }) => utxoHashes.map(bytesKey)),
+      );
+      for (const entry of session.staging.utxos()) {
+        if (hashes.has(bytesKey(entry.outputContext.hash))) {
+          settlementScans.set(bytesKey(entry.nullifier), undefined);
+        }
+      }
+    }
     const transactions = new Map<string, IndexedShieldedTransaction>();
     const deposits = new Map<string, IndexedShieldedTransaction>();
     const tags = walletQueryTags(session.staging, keys);
@@ -587,9 +599,11 @@ async function runWalletSync(
     }
 
     const scanNullifiers = async (nullifiers: readonly Bytes32[]): Promise<void> => {
-      const groups = groupByCheckpoint(nullifiers, (nullifier) =>
-        sessionCheckpoint(session, "nullifiers", bytesKey(nullifier)),
-      );
+      const groups = groupByCheckpoint(nullifiers, (nullifier) => {
+        const key = bytesKey(nullifier);
+        // Recheck the full history for an input that may be released.
+        return settlementScans.has(key) ? undefined : sessionCheckpoint(session, "nullifiers", key);
+      });
 
       for (const group of groups) {
         for (let offset = 0; offset < group.keys.length; offset += chunkSize) {
@@ -606,6 +620,10 @@ async function runWalletSync(
             context,
           );
           advanceSessionCheckpoints(session, "nullifiers", chunk, checkpoint);
+          for (const nullifier of chunk) {
+            const key = bytesKey(nullifier);
+            if (settlementScans.has(key)) settlementScans.set(key, checkpoint);
+          }
         }
       }
     };
@@ -691,7 +709,8 @@ async function runWalletSync(
         details: { unknownAssetIds: report.unknownAssetIds.map(String) },
       });
     }
-    const settledIds = expired === undefined ? [] : settlementIds(session, expired);
+    const settledIds =
+      expired === undefined ? [] : settlementIds(session, expired, settlementScans);
     input.wallet._commitSync(sealSyncDelta(session), session.baseRevision, settledIds);
     return report;
   } catch (cause) {
@@ -702,17 +721,23 @@ async function runWalletSync(
 function settlementIds(
   session: WalletSyncSession,
   expired: NonNullable<Awaited<ReturnType<typeof expiredPendingPayments>>>,
+  scans: ReadonlyMap<string, bigint | undefined>,
 ): string[] {
   const byHash = new Map(
     session.staging.utxos().map((entry) => [bytesKey(entry.outputContext.hash), entry]),
   );
   return expired.submissions
-    .filter(({ utxoHashes }) =>
+    .filter(({ signature, utxoHashes }) =>
       utxoHashes.every((hash) => {
         const entry = byHash.get(bytesKey(hash));
         if (entry === undefined) return false;
-        const checkpoint = session.checkpoints.nullifiers.get(bytesKey(entry.nullifier));
-        return entry.spent || (checkpoint !== undefined && checkpoint >= expired.slot);
+        const checkpoint = scans.get(bytesKey(entry.nullifier));
+        return (
+          entry.spent ||
+          (!expired.mayHaveLanded.has(signature) &&
+            checkpoint !== undefined &&
+            checkpoint >= expired.slot)
+        );
       }),
     )
     .map(({ id }) => id);
@@ -766,7 +791,17 @@ async function expiredPendingPayments(
     }
     submissions.push(entry);
   }
-  return submissions.length > 0 ? { slot: settlementSlot, submissions } : undefined;
+  if (submissions.length === 0) return undefined;
+  const mayHaveLanded = new Set<Signature>();
+  // Solana limits signature status requests to 256 signatures.
+  for (let offset = 0; offset < submissions.length; offset += 256) {
+    const signatures = submissions.slice(offset, offset + 256).map(({ signature }) => signature);
+    const results = await readSignatureHistory(rpc, signatures, settlementSlot, context);
+    signatures.forEach((signature, index) => {
+      if (results[index]) mayHaveLanded.add(signature);
+    });
+  }
+  return { slot: settlementSlot, submissions, mayHaveLanded };
 }
 
 async function backfillSessionRegistry(

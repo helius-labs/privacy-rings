@@ -358,8 +358,11 @@ where the RPC reported that blockhash valid.
 An uncertain send reports the original transaction ID in
 `WalletError.details.transactionId`. Wallet sync releases remaining inputs
 when finality passes the recorded height and reaches the observed slot, the
-same blockhash is invalid at finalized commitment, and the indexer has checked
-each affected nullifier through the invalidity response's slot.
+same blockhash is invalid at finalized commitment, and a fresh indexer scan
+covers each affected nullifier through the invalidity response's slot. Sync
+also checks the original signature in Solana's transaction history. If it
+reports success or remains unfinalized, sync holds any input it has yet to
+see spent.
 
 For persistent wallets, pass `persistence: { store, cipher }` to the transfer
 builder. The SDK seals and saves the signed payment record on the wallet's

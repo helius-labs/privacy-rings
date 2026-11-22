@@ -13,13 +13,14 @@ import {
   type RpcResponse,
   type RpcSubscriptions,
   type RpcTransport,
+  type Signature,
   type SolanaRpcApi,
   type SolanaRpcSubscriptionsApi,
 } from "@solana/kit";
 import { parseJsonWithBigInts, stringifyJsonWithBigInts } from "@solana/rpc-spec-types";
 
 import type { RequestContext } from "../interface/types.js";
-import { wireDecoder } from "../interface/decode.js";
+import { decodeBatch, wireDecoder } from "../interface/decode.js";
 
 import { ClientError, isClientError } from "./error.js";
 import { composeSignal, requestError, untilAborted, type ComposedSignal } from "./internal.js";
@@ -126,6 +127,50 @@ export async function readBlockhashValidity(
     throw invalid("context.slot");
   }
   return { slot, valid: decode.boolean(result["value"], "value") };
+}
+
+/** True for each signature that might have executed successfully. */
+export async function readSignatureHistory(
+  rpc: SolanaRpc,
+  signatures: readonly Signature[],
+  minContextSlot: bigint,
+  context?: RequestContext,
+): Promise<readonly boolean[]> {
+  const method = "getSignatureStatuses";
+  const response: unknown = await runKitRpc(method, context, (abortSignal) =>
+    rpc.getSignatureStatuses(signatures, { searchTransactionHistory: true }).send({ abortSignal }),
+  );
+  const invalid = (reason: string) =>
+    new ClientError("CLIENT_RPC", { details: { method, reason } });
+  const decode = wireDecoder(invalid);
+  const result = decode.record(response, "result");
+  const slot = decode.record(result["context"], "context")["slot"];
+  if (typeof slot !== "bigint" || slot < minContextSlot || slot > 0xffff_ffff_ffff_ffffn)
+    throw invalid("context.slot");
+  return decodeBatch(
+    result["value"],
+    signatures.length,
+    (entry) => {
+      if (entry === null) return false;
+      const status = decode.record(entry, "value");
+      const landed = status["slot"];
+      if (typeof landed !== "bigint" || landed < 0n || landed > slot) throw invalid("value.slot");
+      const finality = status["confirmationStatus"];
+      if (
+        finality !== null &&
+        finality !== "processed" &&
+        finality !== "confirmed" &&
+        finality !== "finalized"
+      )
+        throw invalid("value.confirmationStatus");
+      const error = status["err"];
+      if (error === null) return true;
+      if (typeof error !== "string") decode.record(error, "value.err");
+      else if (error.length === 0) throw invalid("value.err");
+      return finality !== "finalized";
+    },
+    () => invalid("value"),
+  );
 }
 
 /** Bound a flow that includes callbacks outside the SDK's RPC transport. */
