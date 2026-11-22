@@ -336,11 +336,11 @@ A missing record without a provider returns `WALLET_RECIPIENT_NOT_REGISTERED`. U
 `buildWithdrawalTransaction` for a public payment.
 
 The same provider works with deposits and multi-recipient transfers. A batch
-looks up each owner once per check. Before returning a transaction, the
-builders look up service-derived addresses again and require the same keys.
-A change or refusal during preparation fails the build. Registration directs
-new payments to the onchain keys. Open the service
-identity through the verified client to recover a note sent before
+looks up each owner once per check. Before returning a transaction addressed
+through the service, the builders recheck Solana's genesis hash and resolve
+the recipient again, giving any new registry record priority. A change in
+the chain or recipient keys during preparation fails the build. Open the
+service identity through the verified client to recover a note sent before
 registration.
 
 ```ts

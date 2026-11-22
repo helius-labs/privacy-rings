@@ -333,14 +333,29 @@ export function paymentRecipientResolver(
   input: RecipientLookup<AccountReader>,
   context?: RequestContext,
 ) {
-  let genesis: Promise<string> | undefined;
   const service = input.decryptionService;
   const fallbacks = new Map<Address, ShieldedAddress>();
   const networkMismatch = () => new WalletError("WALLET_DECRYPTION_NETWORK_MISMATCH");
   function requireActive(): void {
     if (context?.signal?.aborted) throw new WalletError("WALLET_RECIPIENT_LOOKUP_ABORTED");
   }
-  async function resolveOwner(recipient: Address) {
+  async function checkServiceChain(): Promise<void> {
+    if (input.decryptionService === undefined) return;
+    requireActive();
+    const hash = await input.client.getGenesisHash(context);
+    requireActive();
+    if (
+      wireDecoder(networkMismatch).address(hash, "getGenesisHash") !==
+      input.decryptionService.genesisHash
+    ) {
+      throw networkMismatch();
+    }
+  }
+  function chainCheckForBatch(): () => Promise<void> {
+    let checked: Promise<void> | undefined;
+    return () => (checked ??= checkServiceChain());
+  }
+  async function resolveOwner(recipient: Address, requireServiceChain: () => Promise<void>) {
     requireActive();
     const client = input.client;
     if (client === undefined) throw new WalletError("WALLET_RECIPIENT_CLIENT_REQUIRED");
@@ -354,11 +369,7 @@ export function paymentRecipientResolver(
     if (service === undefined) {
       throw new WalletError("WALLET_RECIPIENT_NOT_REGISTERED", { details: { recipient } });
     }
-    const hash = await (genesis ??= input.client.getGenesisHash(context));
-    requireActive();
-    if (wireDecoder(networkMismatch).address(hash, "getGenesisHash") !== service.genesisHash) {
-      throw networkMismatch();
-    }
+    await requireServiceChain();
     const address = await service.address(recipient, context);
     requireActive();
     if (
@@ -370,9 +381,9 @@ export function paymentRecipientResolver(
     }
     const latestRegistration = await readRegistration(client);
     if (latestRegistration) return latestRegistration;
-    fallbacks.set(recipient, address);
     return { kind: "shielded" as const, address, viewTag: address.confidentialViewTag() };
   }
+  const requireServiceChain = chainCheckForBatch();
   const lookups = new Map<Address, ReturnType<typeof resolveOwner>>();
   async function resolve(recipient: Address | ShieldedAddress) {
     if (recipient instanceof ShieldedAddress) {
@@ -384,22 +395,22 @@ export function paymentRecipientResolver(
     }
     let lookup = lookups.get(recipient);
     if (!lookup) {
-      lookup = resolveOwner(recipient);
+      lookup = resolveOwner(recipient, requireServiceChain).then((resolved) => {
+        if (resolved.kind === "shielded") fallbacks.set(recipient, resolved.address);
+        return resolved;
+      });
       lookups.set(recipient, lookup);
     }
     return lookup;
   }
   async function revalidate(): Promise<void> {
-    if (service === undefined || fallbacks.size === 0) return;
-    requireActive();
+    if (fallbacks.size === 0) return;
+    const requireCurrentServiceChain = chainCheckForBatch();
+    await requireCurrentServiceChain();
     await Promise.all(
       [...fallbacks].map(async ([owner, original]) => {
-        const current = await service.address(owner, context);
-        requireActive();
-        if (
-          !(current instanceof ShieldedAddress) ||
-          !equalBytes(current.toBytes(), original.toBytes())
-        ) {
+        const { address: current } = await resolveOwner(owner, requireCurrentServiceChain);
+        if (!equalBytes(current.toBytes(), original.toBytes())) {
           throw new WalletError("WALLET_DECRYPTION_RECIPIENT_MISMATCH");
         }
       }),

@@ -123,8 +123,8 @@ it("builds the same SOL deposit with a service-resolved recipient as with explic
     decryptionService: { address, genesisHash },
   });
   expect(resolved.messageBytes).toEqual(explicit.messageBytes);
-  expect(getAccount).toHaveBeenCalledTimes(2);
-  expect(getGenesisHash).toHaveBeenCalledOnce();
+  expect(getAccount).toHaveBeenCalledTimes(4);
+  expect(getGenesisHash).toHaveBeenCalledTimes(2);
   expect(address).toHaveBeenCalledWith(recipient.solanaAddress(), undefined);
   expect(address).toHaveBeenCalledTimes(2);
 });
@@ -176,6 +176,30 @@ it("refuses service keys for another chain before building a deposit", async () 
   ).rejects.toMatchObject({ causeCode: "WALLET_DECRYPTION_NETWORK_MISMATCH" });
   expect(address).not.toHaveBeenCalled();
   expect(getLatestBlockhash).not.toHaveBeenCalled();
+});
+
+it("refuses a prepared service deposit after the payment RPC changes networks", async () => {
+  const recipient = ShieldedKeypair.generate().shieldedAddress();
+  const address = vi.fn(async () => recipient);
+  const genesisHash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
+  const getGenesisHash = vi
+    .fn(async () => "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d")
+    .mockResolvedValueOnce(genesisHash);
+  const getLatestBlockhash = vi.fn(depositClient().getLatestBlockhash);
+  await expect(
+    buildDepositTransaction({
+      client: { ...depositClient({ getLatestBlockhash }), getGenesisHash },
+      feePayer: PAYER,
+      amount: 5n,
+      recipient: recipient.solanaAddress(),
+      decryptionService: { address, genesisHash },
+    }),
+  ).rejects.toMatchObject({
+    code: "WALLET_BUILD_DEPOSIT",
+    causeCode: "WALLET_DECRYPTION_NETWORK_MISMATCH",
+  });
+  expect(getLatestBlockhash).toHaveBeenCalledOnce();
+  expect(address).toHaveBeenCalledOnce();
 });
 
 describe("deposit SPL interface setup", () => {

@@ -1106,6 +1106,52 @@ describe("unsigned public transaction builders", () => {
     },
   );
 
+  it("releases reserved inputs when a service recipient registers different keys during proving", async () => {
+    const keypair = spendingKeypair();
+    const wallet = fundedWallet(keypair, [100n]);
+    const recipient = ShieldedKeypair.generate().shieldedAddress();
+    const owner = recipient.solanaAddress();
+    const registered = ShieldedKeypair.generate().shieldedAddress();
+    const pda = await internalUserRecordPda(owner);
+    const record = {
+      owner: USER_REGISTRY_PROGRAM_ID,
+      lamports: 1n,
+      data: Uint8Array.of(
+        1,
+        ...getAddressEncoder().encode(owner),
+        pda.bump,
+        ...registered.nullifierPublicKey,
+        ...registered.viewingPublicKey.toBytes(),
+        0,
+      ),
+    };
+    const { client, assemble } = capturePrivateBuild();
+    const genesisHash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
+    const address = vi.fn(async () => recipient);
+    const before = serializeWallet(wallet);
+    await expect(
+      buildTransferTransaction({
+        client: {
+          ...client,
+          getAccount: async () => (assemble.mock.calls.length > 0 ? record : undefined),
+          getGenesisHash: async () => genesisHash,
+        },
+        wallet,
+        keys: localKeys(keypair),
+        feePayer: keypair.shieldedAddress().solanaAddress(),
+        recipient: owner,
+        amount: 25n,
+        decryptionService: { address, genesisHash },
+      }),
+    ).rejects.toMatchObject({
+      code: "WALLET_BUILD_TRANSFER",
+      causeCode: "WALLET_DECRYPTION_RECIPIENT_MISMATCH",
+    });
+    expect(assemble).toHaveBeenCalledOnce();
+    expect(address).toHaveBeenCalledOnce();
+    expect(serializeWallet(wallet)).toEqual(before);
+  });
+
   it("applies split defaults without mutating the wallet", async () => {
     const keypair = spendingKeypair();
     const payer = keypair.shieldedAddress().solanaAddress();
