@@ -1,5 +1,7 @@
 use std::{
     fs,
+    os::unix::fs::{symlink, FileTypeExt},
+    process::Command,
     sync::{
         atomic::{AtomicU64, Ordering},
         mpsc,
@@ -367,6 +369,45 @@ fn concurrent_clients_cannot_restore_or_replace_a_checkpoint() {
         Err(NitroPolicyError::Rollback),
     ));
     assert_eq!(store.current(&trust).unwrap(), Some(current));
+}
+
+#[test]
+fn rejects_nonregular_checkpoint_and_lock_files_without_waiting() {
+    for extension in ["json", "lock"] {
+        for is_symlink in [false, true] {
+            let fixture = Fixture::load();
+            let trust = fixture.trust();
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join(format!(
+                "devnet-{}.{extension}",
+                hex::encode(trust.security_domain_id())
+            ));
+            if is_symlink {
+                symlink(directory.path().join("missing"), &path).unwrap();
+            } else {
+                assert!(
+                    Command::new("mkfifo")
+                        .arg(&path)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+            let store = UnixNitroCheckpointStore::open(directory.path()).unwrap();
+            let (finished, result) = mpsc::channel();
+            thread::spawn(move || {
+                let accepted = fixture.accept(&trust, &store, "genesis", "genesis");
+                let _ = finished.send(accepted.map(|_| ()));
+            });
+            assert!(matches!(
+                result.recv_timeout(Duration::from_secs(3)).unwrap(),
+                Err(NitroPolicyError::Storage)
+            ));
+            let file_type = fs::symlink_metadata(&path).unwrap().file_type();
+            assert_eq!(file_type.is_symlink(), is_symlink);
+            assert_eq!(file_type.is_fifo(), !is_symlink);
+        }
+    }
 }
 
 #[test]

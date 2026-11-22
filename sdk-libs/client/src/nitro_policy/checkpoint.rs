@@ -18,7 +18,7 @@ pub use unix::UnixNitroCheckpointStore;
 mod unix {
     use std::{
         fs::{File, OpenOptions, TryLockError},
-        io::{ErrorKind, Read},
+        io::{self, ErrorKind, Read},
         os::unix::fs::OpenOptionsExt,
         path::{Path, PathBuf},
         thread,
@@ -32,6 +32,19 @@ mod unix {
     const MAX_CHECKPOINT_BYTES: u64 = 1024;
     const LOCK_TIMEOUT: Duration = Duration::from_secs(1);
     const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(10);
+
+    fn open_regular(options: &mut OpenOptions, path: &Path) -> io::Result<File> {
+        let file = options
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)?;
+        if !file.metadata()?.is_file() {
+            return Err(io::Error::new(
+                ErrorKind::InvalidData,
+                "expected a regular checkpoint file",
+            ));
+        }
+        Ok(file)
+    }
 
     /// File-backed storage for an application-owned directory on a local Unix filesystem.
     /// The lock file stays in place across atomic replacements. A busy lock has a one-second deadline.
@@ -60,14 +73,16 @@ mod unix {
                 trust.network().as_str(),
                 hex::encode(trust.security_domain_id())
             );
-            let lock = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .mode(0o600)
-                .open(self.directory.join(format!("{name}.lock")))
-                .map_err(|_| NitroPolicyError::Storage)?;
+            let lock = open_regular(
+                OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .mode(0o600),
+                &self.directory.join(format!("{name}.lock")),
+            )
+            .map_err(|_| NitroPolicyError::Storage)?;
             let deadline = Instant::now() + LOCK_TIMEOUT;
             loop {
                 match lock.try_lock() {
@@ -86,7 +101,7 @@ mod unix {
         }
 
         fn read(path: &Path) -> Result<Option<NitroCheckpoint>, NitroPolicyError> {
-            let file = match File::open(path) {
+            let file = match open_regular(OpenOptions::new().read(true), path) {
                 Ok(file) => file,
                 Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
                 Err(_) => return Err(NitroPolicyError::Storage),

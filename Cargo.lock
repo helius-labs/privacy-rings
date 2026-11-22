@@ -9911,6 +9911,7 @@ dependencies = [
  "hpke",
  "http 1.5.0",
  "httpdate",
+ "libc",
  "num-bigint",
  "num-traits",
  "p256",

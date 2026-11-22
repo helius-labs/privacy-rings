@@ -82,6 +82,7 @@ solana-transaction-status-client-types = { workspace = true }
 tokio = { workspace = true, features = ["time", "rt", "macros", "sync"] }
 
 [target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
 tempfile = "3"
 
 [dev-dependencies]
