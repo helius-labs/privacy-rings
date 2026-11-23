@@ -215,8 +215,8 @@ clap = { version = "4.5.53", features = ["derive", "env"] }
 console = "0.16"
 coset = "0.4.2"
 dashmap = "6.1.0"
-# At least 0.6.5 for CVE-2026-22696, since collateral arrives from the prover.
-dcap-qvl = { version = "0.6.6", default-features = false, features = ["std", "rustcrypto", "default-x509"] }
+# 0.7.1 requires Intel's root to issue the collateral signing certificates.
+dcap-qvl = { version = "0.7.1", default-features = false, features = ["std", "rustcrypto", "default-x509"] }
 darling = "0.21"
 dialoguer = { version = "0.12", default-features = false }
 env_logger = "0.11"

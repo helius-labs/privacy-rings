@@ -47,6 +47,7 @@ Changed
 
 Fixed
 
+- The Intel TDX verifier checks the TDX module, requires Intel's root CA to issue collateral signing certificates directly, and bounds certificate parsing work.
 - Service-backed payments recheck the RPC genesis after resolving recipients, then confirm service keys and payment policy for unregistered recipients before broadcast.
 - Wallet sync rechecks the RPC genesis before committing an expired payment settlement. A network change leaves the pending payment and its input reservation intact.
 - Wallet sync wipes plaintext buffers returned by `ShieldedKeys.decrypt`, including on cancellation and malformed replies. Custom key holders must return fresh buffers and transfer their ownership to the caller.
