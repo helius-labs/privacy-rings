@@ -334,14 +334,12 @@ pub fn fetch_user_record_checked<R: Rpc>(
     rpc: &R,
     owner: Pubkey,
 ) -> Result<UserRecord, ClientError> {
-    let (record_pda, bump) = user_record_pda(&owner);
-    let account = rpc
-        .get_account(Address::new_from_array(record_pda.to_bytes()))?
-        .ok_or(ClientError::UserRegistryRecordNotFound {
+    fetch_user_record_optional_checked(rpc, owner)?.ok_or_else(|| {
+        ClientError::UserRegistryRecordNotFound {
             owner,
-            record: record_pda,
-        })?;
-    parse_user_record_account(owner, record_pda, bump, &account)
+            record: user_record_pda(&owner).0,
+        }
+    })
 }
 
 pub fn fetch_user_record_optional_checked<R: Rpc>(
@@ -349,12 +347,8 @@ pub fn fetch_user_record_optional_checked<R: Rpc>(
     owner: Pubkey,
 ) -> Result<Option<UserRecord>, ClientError> {
     let (record_pda, bump) = user_record_pda(&owner);
-    let Some(account) = rpc.get_account(Address::new_from_array(record_pda.to_bytes()))? else {
-        return Ok(None);
-    };
-    Ok(Some(parse_user_record_account(
-        owner, record_pda, bump, &account,
-    )?))
+    let account = rpc.get_account(Address::new_from_array(record_pda.to_bytes()))?;
+    parse_optional_user_record(owner, record_pda, bump, account.as_ref())
 }
 
 pub async fn fetch_user_record_optional_checked_async<R: AsyncRpc>(
@@ -362,15 +356,10 @@ pub async fn fetch_user_record_optional_checked_async<R: AsyncRpc>(
     owner: Pubkey,
 ) -> Result<Option<UserRecord>, ClientError> {
     let (record_pda, bump) = user_record_pda(&owner);
-    let Some(account) = rpc
+    let account = rpc
         .get_account(Address::new_from_array(record_pda.to_bytes()))
-        .await?
-    else {
-        return Ok(None);
-    };
-    Ok(Some(parse_user_record_account(
-        owner, record_pda, bump, &account,
-    )?))
+        .await?;
+    parse_optional_user_record(owner, record_pda, bump, account.as_ref())
 }
 
 /// Reads the whole registry. A record this version cannot decode is skipped.
@@ -421,12 +410,18 @@ pub fn decode_user_record_account(
     })
 }
 
-pub(crate) fn parse_user_record_account(
+pub(crate) fn parse_optional_user_record(
     owner: Pubkey,
     record_pda: Pubkey,
     bump: u8,
-    account: &solana_account::Account,
-) -> Result<UserRecord, ClientError> {
+    account: Option<&solana_account::Account>,
+) -> Result<Option<UserRecord>, ClientError> {
+    let Some(account) = account else {
+        return Ok(None);
+    };
+    if account.owner == Pubkey::default() && account.data.is_empty() && !account.executable {
+        return Ok(None);
+    }
     let record = decode_user_record_account(account)?;
     if record.owner.to_bytes() != owner.to_bytes() {
         return Err(ClientError::Rpc(format!(
@@ -439,7 +434,7 @@ pub(crate) fn parse_user_record_account(
             record.bump
         )));
     }
-    Ok(record)
+    Ok(Some(record))
 }
 
 pub fn validate_registered_keypair<R: Rpc>(
@@ -742,6 +737,42 @@ mod tests {
         let record = fetch_user_record_optional_checked(&rpc, owner).expect("optional fetch");
 
         assert_eq!(record, None);
+    }
+
+    #[tokio::test]
+    async fn prefunded_registry_pda_is_absent_until_initialized() {
+        let owner = Pubkey::new_unique();
+        let pda = user_record_pda(&owner).0;
+        let account = Account {
+            lamports: 1_000_000,
+            ..Account::default()
+        };
+        let address = Address::new_from_array(pda.to_bytes());
+        let mut rpc = MockRpc {
+            account: Some((address, account.clone())),
+        };
+        assert_eq!(
+            fetch_user_record_optional_checked(&rpc, owner).unwrap(),
+            None
+        );
+        assert_eq!(
+            fetch_user_record_optional_checked_async(&rpc, owner)
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(matches!(
+            fetch_user_record_checked(&rpc, owner),
+            Err(ClientError::UserRegistryRecordNotFound { .. })
+        ));
+        rpc.account = Some((
+            address,
+            Account {
+                owner: Pubkey::new_unique(),
+                ..account
+            },
+        ));
+        assert!(fetch_user_record_optional_checked(&rpc, owner).is_err());
     }
 
     #[test]

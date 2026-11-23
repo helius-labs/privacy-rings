@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
+  lamports,
   signTransactionWithSigners,
   type Signature,
   type TransactionModifyingSigner,
@@ -38,7 +39,11 @@ import {
   type WithdrawalTransactionParams,
 } from "../../src/index.js";
 import type { ApprovalHandler } from "../../src/transaction/wallet/intent.js";
-import { getAssociatedTokenAddress, getSplAssetVaultAddress } from "../../src/addresses.js";
+import {
+  getAssociatedTokenAddress,
+  getSplAssetVaultAddress,
+  getUserRecordAddress,
+} from "../../src/addresses.js";
 import type { SprClient } from "../../src/client/client.js";
 import { compileUnsignedTransaction } from "../../src/flows/compile.js";
 import {
@@ -814,6 +819,10 @@ describe("live SDK lifecycle", { concurrent: false }, () => {
     const { client } = harness;
     const sender = await actor(client, 141);
     const recipient = await actor(client, 142);
+    const recordPda = await getUserRecordAddress(recipient.signer.address);
+    const prefund = await client.solanaRpc.requestAirdrop(recordPda, lamports(1_000_000n)).send();
+    await waitForSignature(client.solanaRpc, prefund);
+    expect(await client.getBalance(recipient.signer.address)).toBe(0n);
     await fund(client, sender);
     await register(client, sender);
     await deposit({

@@ -33,7 +33,7 @@ use crate::{
         now_ms, read_limited, AcceptedNitroPolicy, NitroCheckpointStore, NitroNetwork,
         NitroPolicyError, NitroPolicyReader, NitroTarget, NitroTrust,
     },
-    user_registry::{parse_user_record_account, resolved_address_from_record},
+    user_registry::{parse_optional_user_record, resolved_address_from_record},
     AsyncRpc, ClientError, Rpc,
 };
 
@@ -389,11 +389,8 @@ fn registry_address(
     if slot < floor {
         return Err(NitroDecryptionError::PaymentContextStale.into());
     }
-    account
-        .map(|account| {
-            let record = parse_user_record_account(owner, pda, bump, &account)?;
-            Ok(resolved_address_from_record(owner, &record)?.address)
-        })
+    parse_optional_user_record(owner, pda, bump, account.as_ref())?
+        .map(|record| Ok(resolved_address_from_record(owner, &record)?.address))
         .transpose()
 }
 

@@ -29,7 +29,11 @@ import {
   getSetMergeEncryptionInstructionAsync,
 } from "../src/instructions.js";
 import type { Bytes32, Bytes33 } from "../src/interface/index.js";
-import { decodeUserRecordAccount, internalUserRecordPda } from "../src/wallet/registry.js";
+import {
+  decodeUserRecordAccount,
+  fetchUserRecord,
+  internalUserRecordPda,
+} from "../src/wallet/registry.js";
 
 const OWNER = address("4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi");
 const PAYER = address("trEEbaNobcTESNmtsPBj3FX27q5sDCQePV2kb12FYho");
@@ -42,6 +46,22 @@ const blockhashClient = {
   getLatestBlockhash: vi.fn(async () => ({ blockhash: BLOCKHASH, lastValidBlockHeight: 1n })),
 };
 const emptyRegistry = { getAccount: vi.fn(async () => undefined), ...blockhashClient };
+
+it("treats only an empty system-owned registry PDA as uninitialized", async () => {
+  const account: { owner: Address; data: Uint8Array; lamports: bigint } = {
+    owner: SYSTEM_PROGRAM,
+    data: new Uint8Array(),
+    lamports: 1_000_000n,
+  };
+  const getAccount = vi.fn(async () => account);
+  const input = { rpc: { getAccount }, owner: OWNER };
+  await expect(fetchUserRecord(input)).resolves.toBeUndefined();
+  expect(getAccount).toHaveBeenCalledWith(await getUserRecordAddress(OWNER), undefined);
+  getAccount.mockResolvedValueOnce({ ...account, owner: PAYER });
+  await expect(fetchUserRecord(input)).rejects.toMatchObject({
+    causeCode: "WALLET_USER_RECORD_PROGRAM_MISMATCH",
+  });
+});
 
 function signingKey(seed: number): SigningKey {
   return SigningKey.fromEd25519Bytes(new Uint8Array(32).fill(seed) as Bytes32);

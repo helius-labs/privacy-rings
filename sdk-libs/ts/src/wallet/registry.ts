@@ -238,7 +238,9 @@ async function fetchDecodedUserRecordAt(
   context?: RequestContext,
 ): Promise<DecodedUserRecord | undefined> {
   const account = await input.rpc.getAccount(input.pda.address, context);
-  if (account === undefined) return undefined;
+  if (account === undefined || (account.owner === SYSTEM_PROGRAM && account.data.length === 0)) {
+    return undefined;
+  }
   return decodeRecord(account, input.owner, input.pda.bump);
 }
 
