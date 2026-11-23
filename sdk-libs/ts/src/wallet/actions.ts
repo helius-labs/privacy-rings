@@ -3,6 +3,7 @@ import { equalBytes, bytesKey } from "../interface/bytes.js";
 import {
   type Address,
   type Bytes32,
+  type Instruction,
   type RequestContext,
   TransactWithdrawal,
 } from "../interface/types.js";
@@ -154,6 +155,7 @@ export type TransferRecipient =
 export interface CreatedTransfer {
   readonly transaction: UnsignedPrivateTransaction;
   readonly recipient: TransferRecipient;
+  readonly recipientAssertions: readonly Instruction[];
   readonly revalidateRecipients: (
     context?: RequestContext,
     minContextSlot?: bigint,
@@ -171,6 +173,7 @@ export interface CreatedMultiTransfer {
   readonly transaction: UnsignedPrivateTransaction;
   /** In payment order. */
   readonly recipients: readonly TransferRecipient[];
+  readonly recipientAssertions: readonly Instruction[];
   readonly revalidateRecipients: (
     context?: RequestContext,
     minContextSlot?: bigint,
@@ -335,11 +338,13 @@ export async function createTransfer(
 ): Promise<CreatedTransfer> {
   u64Amount(params.amount);
   try {
-    const { resolve, revalidate } = paymentRecipientResolver(params, context);
+    const { resolve, revalidate, assertions } = paymentRecipientResolver(params, context);
     const recipient = await resolve(params.recipient);
+    const recipientAssertions = assertions([recipient]);
     return Object.freeze({
       transaction: createPayments(params, [{ recipient, amount: params.amount }]),
       recipient,
+      recipientAssertions,
       revalidateRecipients: revalidate,
     });
   } catch (cause) {
@@ -378,16 +383,18 @@ export async function createMultiTransfer(
     });
     u64Amount(total);
     // Every lookup finishes before a UTXO is reserved, so a refusal reserves nothing.
-    const { resolve, revalidate } = paymentRecipientResolver(params, context);
+    const { resolve, revalidate, assertions } = paymentRecipientResolver(params, context);
     const resolved = await Promise.all(
       params.payments.map(async (payment) => ({
         recipient: await resolve(payment.recipient),
         amount: payment.amount,
       })),
     );
+    const recipientAssertions = assertions(resolved.map(({ recipient }) => recipient));
     return Object.freeze({
       transaction: createPayments(params, resolved),
       recipients: Object.freeze(resolved.map((payment) => payment.recipient)),
+      recipientAssertions,
       revalidateRecipients: revalidate,
     });
   } catch (cause) {

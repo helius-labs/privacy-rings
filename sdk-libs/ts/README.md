@@ -350,6 +350,10 @@ returned message and signatures, then repeats the freshness checks before
 broadcast. Each registry recheck uses a slot at least as recent as that
 owner's preceding registry read and the corresponding blockhash check.
 RPC preflight uses the newest registry or blockhash slot checked by the wallet.
+The signed message ends with a registry assertion for each resolved owner.
+A registration or key rotation that changes the selected destination before
+execution reverts the payment. Use this flow on a network with the updated
+user-registry program.
 Custom payment clients implement `getAccountWithContext` and report the slot
 even when the registry record is absent. `getBlockhashValidity` reports the
 slot of the exact blockhash check, and `broadcastTransaction` passes

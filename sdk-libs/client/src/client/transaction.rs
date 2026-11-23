@@ -2,6 +2,7 @@ use std::{future::Future, sync::Arc, time::Duration};
 
 use solana_address::Address;
 use solana_hash::Hash;
+use solana_instruction::Instruction;
 use solana_keypair::Signer;
 use solana_message::VersionedMessage;
 use solana_pubkey::Pubkey;
@@ -266,6 +267,16 @@ impl<'a> Submission<'a> {
         &self,
         client: &AsyncSprClient<R, I>,
     ) -> Result<UnsignedMessage, ClientError> {
+        self.finish_unsigned_with(client, &[], client.compute_budget())
+            .await
+    }
+
+    pub(super) async fn finish_unsigned_with<R: AsyncRpc, I: AsyncIndexer>(
+        &self,
+        client: &AsyncSprClient<R, I>,
+        final_instructions: &[Instruction],
+        compute_budget: ComputeBudgetConfig,
+    ) -> Result<UnsignedMessage, ClientError> {
         let mut owner_signers = submission_owner_signers(self.signed, self.fee_payer)?;
         if let Some(owner) = self.confidential_eddsa_owner {
             let owner = Address::new_from_array(owner.public_key().as_ed25519()?);
@@ -339,15 +350,22 @@ impl<'a> Submission<'a> {
         };
         let ((trees, data), (recent_blockhash, last_valid_block_height)) =
             prove_with_blockhash(client.rpc(), proving).await?;
+        let instruction = build_transact_instruction(
+            self.fee_payer,
+            trees,
+            owner_signers,
+            self.signed.settlement_transfers.clone(),
+            data,
+        )?;
+        let mut instructions = Vec::with_capacity(1 + final_instructions.len());
+        instructions.push(instruction);
+        instructions.extend_from_slice(final_instructions);
         Ok(UnsignedMessage {
-            message: build_unsigned_message(
-                client.compute_budget(),
-                self.fee_payer,
-                trees,
-                owner_signers,
-                self.signed.settlement_transfers.clone(),
-                data,
+            message: compile_message(
+                &self.fee_payer,
+                &instructions,
                 recent_blockhash,
+                compute_budget,
             )?,
             last_valid_block_height,
         })
@@ -482,15 +500,13 @@ fn transact_trees(assembled: &AssembledTransfer, transaction: &SppProofInputs) -
     }
 }
 
-fn build_unsigned_message(
-    compute_budget: ComputeBudgetConfig,
+fn build_transact_instruction(
     fee_payer: Pubkey,
     trees: TransactTrees,
     owner_signers: Vec<Pubkey>,
     settlement_transfers: Vec<TransactInterfaceTransferAccounts>,
     transact_data: spr_interface::instruction::instruction_data::transact::TransactIxData,
-    recent_blockhash: Hash,
-) -> Result<VersionedMessage, ClientError> {
+) -> Result<Instruction, ClientError> {
     SettlementAccountValidation {
         transfers: &transact_data.interface_transfers,
         accounts: &settlement_transfers,
@@ -509,19 +525,10 @@ fn build_unsigned_message(
         interface_transfer_accounts: settlement_transfers,
         data: transact_data,
     };
-    let transact_ix = match trees.read_cache {
+    Ok(match trees.read_cache {
         Some(cache) => transact.instruction_with_cache_read(cache),
         None => transact.instruction(),
-    };
-    // The transact is the only instruction: a v1 message states its compute
-    // ceiling and its priority fee in the header, so nothing rides along to
-    // set them.
-    compile_message(
-        &fee_payer,
-        core::slice::from_ref(&transact_ix),
-        recent_blockhash,
-        compute_budget,
-    )
+    })
 }
 
 #[cfg(all(test, feature = "reqwest"))]

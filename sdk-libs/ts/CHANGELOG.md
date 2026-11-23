@@ -31,7 +31,7 @@ Breaking
 
 Added
 
-- `buildDepositTransaction`, `buildTransferTransaction`, and `buildMultiTransferTransaction` accept a verified `decryptionService` and return a `PreparedPayment` that checks the chain, blockhash and recipients before signing and broadcast. Solana preflight must reach the latest registry or blockhash slot the wallet checked.
+- `buildDepositTransaction`, `buildTransferTransaction`, and `buildMultiTransferTransaction` accept a verified `decryptionService` and return a `PreparedPayment` that checks the chain, blockhash and recipients before signing and broadcast. Solana preflight must reach the latest checked slot, and the signed payment asserts the registry state at execution. Guarded payments require the updated user-registry program.
 - `ProgramProofInputs` types the prover input map of a `ProgramTransaction`, and `TransactionErrorCode.TRANSACTION_PROGRAM_PUBLIC_HASH_MISMATCH` reports proof inputs bound to another public hash.
 - `ClientErrorCode.CLIENT_INDEXER_RESPONSE_TOO_LARGE` reports an indexer response above 10 MiB, the most Photon sends, whether the SDK or Photon (`-32008`) refuses it.
 - `SprClient.proveAnonymousRingTransact(input)` accepts a `TransactOwnerSigner` or an owner signature prepared over `transactMessageDigest(proofInputs)`.

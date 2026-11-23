@@ -523,8 +523,47 @@ describe("private transaction construction", () => {
       registered.toBytes(),
       registered.toBytes(),
     ]);
+    expect(result.recipientAssertions).toHaveLength(1);
+    expect(result.recipientAssertions[0]?.data).toEqual(
+      Uint8Array.of(
+        3,
+        ...getAddressEncoder().encode(owner),
+        1,
+        ...registered.nullifierPublicKey,
+        ...registered.viewingPublicKey.toBytes(),
+      ),
+    );
     expect(getAccount).toHaveBeenCalledTimes(2);
     expect(address).toHaveBeenCalledOnce();
+  });
+
+  it("rejects explicit keys that would override another output's resolved keys for the same owner", async () => {
+    const recipient = ShieldedKeypair.generate().shieldedAddress();
+    const other = ShieldedKeypair.generate().shieldedAddress();
+    const conflicting = ShieldedAddress.fromPublicKeys(
+      recipient.signingPublicKey,
+      recipient.nullifierPublicKey,
+      other.viewingPublicKey,
+    );
+    const wallet = fundedWallet(ShieldedKeypair.generate(), [100n]);
+    const before = serializeWallet(wallet);
+    await expect(
+      createMultiTransfer({
+        client: {
+          ...registryReads(async () => undefined),
+          getGenesisHash: async () => genesisHash,
+        },
+        decryptionService: { address: async () => recipient, genesisHash },
+        wallet,
+        payer: PAYER,
+        asset: SOL_MINT,
+        payments: [
+          { recipient: recipient.solanaAddress(), amount: 5n },
+          { recipient: conflicting, amount: 10n },
+        ],
+      }),
+    ).rejects.toMatchObject({ causeCode: "WALLET_DECRYPTION_RECIPIENT_MISMATCH" });
+    expect(serializeWallet(wallet)).toEqual(before);
   });
 
   it("reserves nothing when the final registry read fails after resolving valid service keys", async () => {

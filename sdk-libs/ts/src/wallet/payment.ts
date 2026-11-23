@@ -1,13 +1,17 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import {
   assertIsSendableTransaction,
+  appendTransactionMessageInstructions,
   address,
+  compileTransaction,
+  decompileTransactionMessage,
   getAddressEncoder,
   getCompiledTransactionMessageDecoder,
   getSignatureFromTransaction,
   getTransactionDecoder,
   getTransactionEncoder,
   isTransactionWithBlockhashLifetime,
+  setTransactionMessageConfig,
   signatureBytes,
   type SendableTransaction,
 } from "@solana/kit";
@@ -15,12 +19,15 @@ import {
 import { withRequestSignal, type LatestBlockhash } from "../client/kit.js";
 import type { PreparedPayment, TransactionBroadcaster } from "../client/ports.js";
 import { equalBytes } from "../interface/bytes.js";
-import type { RequestContext, Signature, Transaction } from "../interface/types.js";
+import { MAX_COMPUTE_UNIT_LIMIT } from "../flows/internal.js";
+import { checkedTransactionSize } from "../interface/transaction-size.js";
+import type { Instruction, RequestContext, Signature, Transaction } from "../interface/types.js";
 import { WalletError, wrapWalletError } from "./error.js";
 
 const addressEncoder = getAddressEncoder();
 const encoder = getTransactionEncoder();
 const decoder = getTransactionDecoder();
+const COMPUTE_UNITS_PER_RECIPIENT_ASSERTION = 20_000;
 
 function checkedSignatureTransaction(
   prepared: Transaction,
@@ -69,6 +76,7 @@ export function prepareServicePayment(
   transaction: Transaction,
   client: TransactionBroadcaster,
   revalidate: (context?: RequestContext, minContextSlot?: bigint) => Promise<bigint>,
+  assertions: readonly Instruction[],
   reservation?: Readonly<{
     assertActive(): void;
     stage(
@@ -83,14 +91,33 @@ export function prepareServicePayment(
   if (!isTransactionWithBlockhashLifetime(transaction))
     throw new WalletError("WALLET_PAYMENT_BLOCKHASH");
   const { blockhash, lastValidBlockHeight } = transaction.lifetimeConstraint;
+  const compiled = getCompiledTransactionMessageDecoder().decode(transaction.messageBytes);
   if (
     lastValidBlockHeight < 0n ||
     lastValidBlockHeight > 0xffff_ffff_ffff_ffffn ||
-    getCompiledTransactionMessageDecoder().decode(transaction.messageBytes).lifetimeToken !==
-      blockhash
+    compiled.lifetimeToken !== blockhash
   )
     throw new WalletError("WALLET_PAYMENT_BLOCKHASH");
-  const unsigned = Uint8Array.from(encoder.encode(transaction));
+  if (compiled.version !== 1) throw new WalletError("WALLET_INTENT_MISMATCH");
+  let prepared: Transaction = transaction;
+  if (assertions.length > 0) {
+    const message = decompileTransactionMessage(compiled, { lastValidBlockHeight });
+    const configured = setTransactionMessageConfig(
+      {
+        ...message.config,
+        computeUnitLimit: Math.min(
+          (message.config?.computeUnitLimit ?? 0) +
+            assertions.length * COMPUTE_UNITS_PER_RECIPIENT_ASSERTION,
+          MAX_COMPUTE_UNIT_LIMIT,
+        ),
+      },
+      message,
+    );
+    prepared = checkedTransactionSize(
+      compileTransaction(appendTransactionMessageInstructions(assertions, configured)),
+    );
+  }
+  const unsigned = Uint8Array.from(encoder.encode(prepared));
   const getBlockhashValidity = client.getBlockhashValidity.bind(client);
   async function validAtSlot(signal: AbortSignal, minimum = 0n): Promise<bigint> {
     const { slot, valid } = await getBlockhashValidity(blockhash, { signal });

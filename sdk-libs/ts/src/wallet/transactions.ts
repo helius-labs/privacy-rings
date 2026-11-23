@@ -118,7 +118,11 @@ export async function buildTransferTransaction(
       created.transaction,
       [],
       context,
-      payment && { ...payment, revalidate: created.revalidateRecipients },
+      payment && {
+        ...payment,
+        revalidate: created.revalidateRecipients,
+        assertions: created.recipientAssertions,
+      },
     );
   } catch (cause) {
     throw wrapWalletError("WALLET_BUILD_TRANSFER", cause);
@@ -156,7 +160,11 @@ export async function buildMultiTransferTransaction(
       created.transaction,
       [],
       context,
-      payment && { ...payment, revalidate: created.revalidateRecipients },
+      payment && {
+        ...payment,
+        revalidate: created.revalidateRecipients,
+        assertions: created.recipientAssertions,
+      },
     );
   } catch (cause) {
     throw wrapWalletError("WALLET_BUILD_TRANSFER", cause);
@@ -211,12 +219,13 @@ type PaymentChecks = Readonly<{
   client: TransactionBroadcaster;
   genesisHash: string;
   persistence: WalletPersistence | undefined;
+  assertions: readonly Instruction[];
   revalidate(context?: RequestContext, minContextSlot?: bigint): Promise<bigint>;
 }>;
 
 function servicePaymentOptions(
   input: TransferTransactionParams | MultiTransferTransactionParams,
-): Omit<PaymentChecks, "revalidate"> | undefined {
+): Omit<PaymentChecks, "revalidate" | "assertions"> | undefined {
   if (input.decryptionService === undefined) {
     if (input.persistence !== undefined) throw new WalletError("WALLET_INVALID_PAYMENT");
     return undefined;
@@ -290,6 +299,7 @@ async function buildAuthorizedTransaction(
       assembled,
       payment.client,
       payment.revalidate,
+      payment.assertions,
       reservationId === undefined
         ? undefined
         : {

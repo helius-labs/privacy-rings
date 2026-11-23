@@ -1,10 +1,14 @@
+use std::collections::HashMap;
+
 use futures::future::try_join_all;
 use solana_hash::Hash;
+use solana_instruction::Instruction;
 use solana_keypair::Signer;
 use solana_pubkey::Pubkey;
 use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
 use spr_keypair::ShieldedAddress;
+use spr_user_registry_interface::instruction::{assert_payment_target, RegisterData};
 
 use crate::{
     nitro_decryption::{NitroDecryptionError, NitroDecryptionService},
@@ -17,11 +21,14 @@ use super::{
     SprClient, Submission, UnsignedMessage,
 };
 
+const COMPUTE_UNITS_PER_RECIPIENT_ASSERTION: u32 = 20_000;
+
 /// A resolved payment recipient that retains the lookup for the final policy check.
 pub struct NitroPaymentRecipient {
     service: NitroDecryptionService,
     owner: Pubkey,
     address: ShieldedAddress,
+    from_service: bool,
     registry_slot: u64,
 }
 
@@ -30,12 +37,14 @@ impl NitroPaymentRecipient {
         service: NitroDecryptionService,
         owner: Pubkey,
         address: ShieldedAddress,
+        from_service: bool,
         registry_slot: u64,
     ) -> Self {
         Self {
             service,
             owner,
             address,
+            from_service,
             registry_slot,
         }
     }
@@ -43,6 +52,14 @@ impl NitroPaymentRecipient {
     /// Use these keys to prepare the transaction output, then attach this recipient to its submission.
     pub fn address(&self) -> ShieldedAddress {
         self.address
+    }
+
+    fn assertion(&self) -> Instruction {
+        let expected_keys = (!self.from_service).then(|| RegisterData {
+            nullifier_pubkey: self.address.nullifier_pubkey,
+            viewing_pubkey: *self.address.viewing_pubkey.as_bytes(),
+        });
+        assert_payment_target(self.owner, expected_keys)
     }
 
     async fn revalidate<R: AsyncRpc>(
@@ -54,7 +71,7 @@ impl NitroPaymentRecipient {
             .service
             .resolve_recipient_address(rpc, self.owner, floor)
             .await?;
-        if address != self.address {
+        if address != self.address || from_service != self.from_service {
             return Err(NitroDecryptionError::PaymentRecipientChanged.into());
         }
         Ok((from_service, slot))
@@ -65,6 +82,7 @@ impl NitroPaymentRecipient {
 pub struct NitroPaymentSubmission<'a> {
     submission: Submission<'a>,
     recipients: &'a [NitroPaymentRecipient],
+    assertions: Vec<Instruction>,
 }
 
 /// A signed payment whose transaction ID is available before broadcast.
@@ -87,7 +105,16 @@ impl<'a> Submission<'a> {
         if recipients.is_empty() {
             return Err(NitroDecryptionError::PaymentRecipientsRequired.into());
         }
+        let mut origins = HashMap::new();
+        let mut assertions = Vec::new();
         for recipient in recipients {
+            match origins.insert(recipient.owner, recipient.from_service) {
+                Some(origin) if origin != recipient.from_service => {
+                    return Err(NitroDecryptionError::PaymentRecipientMismatch.into());
+                }
+                Some(_) => {}
+                None => assertions.push(recipient.assertion()),
+            }
             let mut matches = self
                 .signed
                 .transaction
@@ -118,6 +145,7 @@ impl<'a> Submission<'a> {
         Ok(NitroPaymentSubmission {
             submission: self,
             recipients,
+            assertions,
         })
     }
 }
@@ -141,7 +169,13 @@ impl<'a> NitroPaymentSubmission<'a> {
         client: &AsyncSprClient<R, I>,
         sign: impl AsyncFnOnce(&UnsignedMessage) -> Result<VersionedTransaction, ClientError>,
     ) -> Result<SignedNitroPayment<'a>, ClientError> {
-        let unsigned = self.submission.finish_unsigned(client).await?;
+        let compute_budget = client.compute_budget().with_extra_units(
+            (self.assertions.len() as u32) * COMPUTE_UNITS_PER_RECIPIENT_ASSERTION,
+        );
+        let unsigned = self
+            .submission
+            .finish_unsigned_with(client, &self.assertions, compute_budget)
+            .await?;
         self.sign_unsigned(client.rpc(), unsigned, sign).await
     }
 

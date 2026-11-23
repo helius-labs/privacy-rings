@@ -59,6 +59,15 @@ impl ComputeBudgetConfig {
         self
     }
 
+    #[cfg(feature = "reqwest")]
+    pub(crate) fn with_extra_units(mut self, units: u32) -> Self {
+        self.cu_limit = self
+            .cu_limit
+            .saturating_add(units)
+            .min(MAX_COMPUTE_UNIT_LIMIT);
+        self
+    }
+
     pub fn transaction_config(&self) -> v1::TransactionConfig {
         let config = v1::TransactionConfig::empty()
             .with_compute_unit_limit(self.cu_limit)

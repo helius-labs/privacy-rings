@@ -1,4 +1,5 @@
 import {
+  AccountRole,
   address,
   decompileTransactionMessage,
   getAddressEncoder,
@@ -14,6 +15,7 @@ import {
   InstructionTag,
   SHIELDED_POOL_PROGRAM_ID,
   SPL_TOKEN_2022_PROGRAM_ID,
+  USER_REGISTRY_PROGRAM_ID,
 } from "../src/interface/index.js";
 import { decodeProtocolConfigAccount } from "../src/interface/codecs/index.js";
 import { SYSTEM_PROGRAM } from "../src/interface/instructions/index.js";
@@ -30,6 +32,7 @@ import type { RpcAccount } from "../src/client/rpc.js";
 import type { Instruction, Transaction } from "../src/interface/types.js";
 
 import { depositClient } from "./helpers/clients.js";
+import { getUserRecordAddress } from "../src/addresses.js";
 
 const PAYER = address("4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi");
 const OTHER = address("8qbHbw2BbbTHBW1sbeqakYXV9q2RZ1R6MUi6nEZa6wJk");
@@ -108,7 +111,7 @@ function tagsOf(transaction: Transaction): number[] {
 
 const CREATE_THEN_DEPOSIT = [InstructionTag.createSplInterface, InstructionTag.deposit];
 
-it("builds the same SOL deposit with a service-resolved recipient as with explicit keys", async () => {
+it("appends a registry absence assertion to a service-resolved SOL deposit", async () => {
   const payer = await generateKeyPairSigner();
   const recipient = ShieldedKeypair.generate().shieldedAddress();
   const getAccount = vi.fn(async () => undefined);
@@ -142,7 +145,18 @@ it("builds the same SOL deposit with a service-resolved recipient as with explic
   expect(broadcastTransaction).not.toHaveBeenCalled();
   await resolved.send(async (transaction) => {
     expect(address).toHaveBeenCalledTimes(5);
-    expect(transaction.messageBytes).toEqual(explicit.messageBytes);
+    const instructions = instructionsOf(transaction);
+    expect(instructions.slice(0, -1)).toEqual(instructionsOf(explicit));
+    expect(instructions.at(-1)).toEqual({
+      programAddress: USER_REGISTRY_PROGRAM_ID,
+      accounts: [
+        {
+          address: await getUserRecordAddress(recipient.solanaAddress()),
+          role: AccountRole.READONLY,
+        },
+      ],
+      data: Uint8Array.of(3, ...getAddressEncoder().encode(recipient.solanaAddress()), 0),
+    });
     return signTransactionWithSigners([payer], transaction);
   });
   expect(address).toHaveBeenCalledTimes(9);

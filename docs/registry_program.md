@@ -39,9 +39,8 @@ this on the confidential default ring, where the output already names the
 recipient. An anonymous policy-ring payment would disclose its recipient by
 including this instruction. The wallet checks service policy separately.
 
-The program change adds this instruction. Guarded wallet builders currently
-check the registry before signing and broadcast. Execution-time enforcement
-requires the builders to include the assertion and the network to run the
-updated registry program.
+Guarded wallet builders include one assertion per resolved owner. These
+payments require a network running the updated registry program.
 
-[Execution tests](../program-tests/user-registry/tests/payment_target.rs)
+[Program tests](../program-tests/user-registry/tests/payment_target.rs) ·
+[Wallet localnet tests](../sdk-libs/ts/test/e2e/private-flow.live.test.ts)

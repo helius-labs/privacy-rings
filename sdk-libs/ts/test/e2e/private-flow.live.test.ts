@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
+  getBase64EncodedWireTransaction,
   lamports,
   signTransactionWithSigners,
   type Signature,
@@ -15,10 +16,12 @@ import {
   LocalKeys,
   MergeEncryptionScheme,
   SOL_MINT,
+  ShieldedAddress,
   ShieldedKeypair,
   SPL_TOKEN_2022_PROGRAM_ID,
   Wallet,
   buildDepositTransaction,
+  buildKeyUpdateTransaction,
   buildMergeTransaction,
   buildRegistrationTransaction,
   buildSetMergeEncryptionTransaction,
@@ -896,6 +899,88 @@ describe("live SDK lifecycle", { concurrent: false }, () => {
     expect(await fetchUserRecord({ rpc: client, owner: recipient.signer.address })).toBeUndefined();
     expect(await client.getBalance(recipient.signer.address)).toBe(0n);
   }, 1_200_000);
+
+  it.each(["registration", "rotation"] as const)(
+    "rejects a signed payment on-chain after recipient %s",
+    async (change) => {
+      const { client } = harness;
+      const rotation = change === "rotation";
+      const sender = await actor(client, rotation ? 153 : 151);
+      const recipient = await actor(client, rotation ? 154 : 152);
+      await fund(client, sender, recipient);
+      await register(client, sender);
+      if (rotation) await register(client, recipient);
+      await deposit({
+        client,
+        feePayer: sender.signer,
+        recipient: sender.signer.address,
+        amount: 50_000_000n,
+      });
+      await sync(client, sender);
+      const inputHash = hex(unspent(sender)[0]!.outputContext.hash);
+      const recipientAddress = recipient.keypair.shieldedAddress();
+      const payment = await buildTransferTransaction({
+        client: {
+          proofDataSource: client.proofDataSource,
+          assembleAuthorizedPrivateTransaction:
+            client.assembleAuthorizedPrivateTransaction.bind(client),
+          getAccount: client.getAccount.bind(client),
+          getAccountWithContext: client.getAccountWithContext.bind(client),
+          getGenesisHash: client.getGenesisHash.bind(client),
+          getBlockhashValidity: client.getBlockhashValidity.bind(client),
+          async broadcastTransaction(signed) {
+            if (rotation) {
+              const updated = ShieldedAddress.fromPublicKeys(
+                recipientAddress.signingPublicKey,
+                recipientAddress.nullifierPublicKey,
+                ShieldedKeypair.generate().shieldedAddress().viewingPublicKey,
+              );
+              const update = await buildKeyUpdateTransaction({
+                client,
+                owner: recipient.signer.address,
+                address: updated,
+              });
+              if (update === undefined) throw new Error("expected rotated keys");
+              await signSendAndConfirm(client, update, [recipient.signer]);
+            } else {
+              await register(client, recipient);
+            }
+            return client.solanaRpc
+              .sendTransaction(getBase64EncodedWireTransaction(signed), {
+                encoding: "base64",
+                skipPreflight: true,
+              })
+              .send();
+          },
+        },
+        wallet: sender.wallet,
+        keys: sender.keys,
+        feePayer: sender.signer.address,
+        recipient: recipient.signer.address,
+        amount: 10_000_000n,
+        decryptionService: {
+          genesisHash: await client.getGenesisHash(),
+          async address() {
+            if (rotation) throw new Error("registered payment contacted the service");
+            return recipientAddress;
+          },
+        },
+      });
+      const signature = await payment.send((transaction) =>
+        signTransactionWithSigners([sender.signer], transaction),
+      );
+      // The shielded transfer runs first. Registry PaymentTargetChanged reverts it.
+      await expect
+        .poll(async () => {
+          const { value } = await client.solanaRpc.getSignatureStatuses([signature]).send();
+          return value[0]?.err;
+        })
+        .toEqual({ InstructionError: [1n, { Custom: 6n }] });
+      await sync(client, sender);
+      expect(unspent(sender).map((entry) => hex(entry.outputContext.hash))).toEqual([inputHash]);
+    },
+    1_200_000,
+  );
 
   it("keeps wallet spend state unchanged across build and signing failures", async () => {
     const owner = await actor(harness.client, 111);

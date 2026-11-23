@@ -92,7 +92,10 @@ keys.
 Call `sign` or use a sign-only callback with `sign_with`. The client checks
 the exact blockhash, chain and current recipients after proving and before
 requesting Solana signatures. It verifies the returned message and every
-signature. Record the signed transaction ID, blockhash and last valid block
+signature. The signed message asserts the registry state for each resolved
+owner after the transfer instruction. A registration or key change before
+execution reverts the payment. The network must run the updated user-registry
+program. Record the signed transaction ID, blockhash and last valid block
 height before calling `send` so you can reconcile after cancellation.
 `send` consumes the signed payment and repeats those RPC checks before
 broadcast. Registry rechecks use a context slot at least as recent as the

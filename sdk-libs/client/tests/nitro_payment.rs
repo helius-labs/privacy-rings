@@ -81,6 +81,7 @@ fn attachment_requires_exact_keys_on_every_output_for_the_owner() {
         service.clone(),
         payer.pubkey(),
         address,
+        false,
         0,
     )];
     for outputs in [
@@ -119,11 +120,24 @@ fn attachment_requires_exact_keys_on_every_output_for_the_owner() {
     let other_owner = Pubkey::new_from_array(other.signing_pubkey.as_ed25519().unwrap());
     let all_recipients = [
         first,
-        NitroPaymentRecipient::new(service, other_owner, other, 0),
+        NitroPaymentRecipient::new(service, other_owner, other, true, 0),
     ];
-    assert!(Submission::new(&signed, payer.pubkey(), &keys)
+    let payment = Submission::new(&signed, payer.pubkey(), &keys)
         .with_nitro_recipients(&all_recipients, &[])
-        .is_ok());
+        .expect("all targets declared");
+    assert_eq!(
+        payment.assertions,
+        [
+            assert_payment_target(
+                payer.pubkey(),
+                Some(RegisterData {
+                    nullifier_pubkey: address.nullifier_pubkey,
+                    viewing_pubkey: *address.viewing_pubkey.as_bytes(),
+                }),
+            ),
+            assert_payment_target(other_owner, None),
+        ],
+    );
     let recipients = &all_recipients[..1];
     let same_owner_wrong_keys = transaction(payer.pubkey(), &[address, rotated]);
     assert!(

@@ -196,6 +196,7 @@ impl NitroDecryptionService {
             self.clone(),
             owner,
             address,
+            from_service,
             slot,
         ))
     }
@@ -256,6 +257,7 @@ impl NitroDecryptionService {
             self.clone(),
             owner,
             address,
+            from_service,
             slot,
         ))
     }

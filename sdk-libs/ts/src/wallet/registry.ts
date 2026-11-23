@@ -53,6 +53,7 @@ const RECORD_SEED = new TextEncoder().encode("zolana/registry/v0");
 const REGISTER = 0;
 const SET_MERGE_ENCRYPTION = 1;
 const UPDATE_KEYS = 2;
+const ASSERT_PAYMENT_TARGET = 3;
 const USER_RECORD_SIZE = 100;
 const addressDecoder = getAddressDecoder();
 const addressEncoder = getAddressEncoder();
@@ -78,6 +79,32 @@ const setMergeEncryptionDataEncoder = getStructEncoder([
   ["discriminator", getU8Encoder()],
   ["scheme", getU8Encoder()],
 ]);
+
+const assertTargetHeaderEncoder = getStructEncoder([
+  ["discriminator", getU8Encoder()],
+  ["owner", addressEncoder],
+  ["registered", getU8Encoder()],
+]);
+
+async function paymentTargetAssertion(
+  owner: Address,
+  keys: ShieldedAddress | undefined,
+): Promise<Instruction> {
+  const record = await userRecordAddress(owner);
+  const header = assertTargetHeaderEncoder.encode({
+    discriminator: ASSERT_PAYMENT_TARGET,
+    owner,
+    registered: keys === undefined ? 0 : 1,
+  });
+  return {
+    programAddress: USER_REGISTRY_PROGRAM_ID,
+    accounts: [{ address: record.address, role: AccountRole.READONLY }],
+    data:
+      keys === undefined
+        ? header
+        : Uint8Array.of(...header, ...keys.nullifierPublicKey, ...keys.viewingPublicKey.toBytes()),
+  };
+}
 
 export interface ResolvedAddress {
   readonly owner: Address;
@@ -350,7 +377,10 @@ export function paymentRecipientResolver(
           account: input.client.getAccountWithContext.bind(input.client),
           genesisHash: input.decryptionService.genesisHash,
         };
-  const paymentAddresses = new Map<Address, ShieldedAddress>();
+  const paymentAddresses = new Map<
+    Address,
+    { address: ShieldedAddress; registered: boolean; assertion: Instruction }
+  >();
   const registrySlots = new Map<Address, bigint>();
   const networkMismatch = () => new WalletError("WALLET_DECRYPTION_NETWORK_MISMATCH");
   function requireActive(request?: RequestContext): void {
@@ -447,8 +477,15 @@ export function paymentRecipientResolver(
     }
     let lookup = lookups.get(recipient);
     if (!lookup) {
-      lookup = resolveOwner(recipient, requireServiceChain, context).then((resolved) => {
-        if (service !== undefined) paymentAddresses.set(recipient, resolved.address);
+      lookup = resolveOwner(recipient, requireServiceChain, context).then(async (resolved) => {
+        if (service !== undefined) {
+          const registered = resolved.kind === "registered";
+          const assertion = await paymentTargetAssertion(
+            recipient,
+            registered ? resolved.address : undefined,
+          );
+          paymentAddresses.set(recipient, { address: resolved.address, registered, assertion });
+        }
         return resolved;
       });
       lookups.set(recipient, lookup);
@@ -472,7 +509,10 @@ export function paymentRecipientResolver(
           request,
           minContextSlot,
         );
-        requireSame(current.address, original);
+        requireSame(current.address, original.address);
+        if ((current.kind === "registered") !== original.registered) {
+          throw new WalletError("WALLET_DECRYPTION_RECIPIENT_MISMATCH");
+        }
         return current.kind === "shielded" ? entry : undefined;
       }),
     );
@@ -482,7 +522,7 @@ export function paymentRecipientResolver(
       fallbackRecipients.map(async (entry) => {
         if (entry === undefined) return;
         const [owner, original] = entry;
-        requireSame(await readServiceAddress(service, owner, request), original);
+        requireSame(await readServiceAddress(service, owner, request), original.address);
       }),
     );
     let floor = minContextSlot;
@@ -491,7 +531,22 @@ export function paymentRecipientResolver(
     }
     return floor;
   }
-  return { resolve, revalidate };
+  function assertions(recipients: readonly { address: ShieldedAddress }[]): readonly Instruction[] {
+    for (const { address } of recipients) {
+      if (address.signingPublicKey.signatureType() !== "ed25519") continue;
+      const resolved = paymentAddresses.get(address.solanaAddress());
+      if (resolved !== undefined && !equalBytes(address.toBytes(), resolved.address.toBytes())) {
+        throw new WalletError("WALLET_DECRYPTION_RECIPIENT_MISMATCH");
+      }
+    }
+    return Object.freeze(
+      [...lookups.keys()].flatMap((owner) => {
+        const payment = paymentAddresses.get(owner);
+        return payment === undefined ? [] : [payment.assertion];
+      }),
+    );
+  }
+  return { resolve, revalidate, assertions };
 }
 
 export async function resolveRegisteredAddress(
