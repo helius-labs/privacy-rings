@@ -76,6 +76,16 @@ export interface DecryptionRecipientProvider {
   /** Full base58 Solana genesis hash bound to the service keys. */
   readonly genesisHash: string;
   address(owner: Address, context?: RequestContext): Promise<ShieldedAddress>;
+  /**
+   * Confirms `expected` is still the payment address for `owner`.
+   * A provider that tracks a published policy checks that policy instead of
+   * downloading the keys again.
+   */
+  confirmAddress?(
+    owner: Address,
+    expected: ShieldedAddress,
+    context?: RequestContext,
+  ): Promise<void>;
 }
 
 export interface GenesisHashReader {
@@ -116,7 +126,8 @@ export interface PreparedPayment {
     sign: (transaction: Transaction, signal: AbortSignal) => Promise<Transaction>,
     context?: RequestContext,
   ): Promise<Signature>;
-  cancel(): void;
+  /** Drops an unused payment and persists that release when a snapshot is open. */
+  cancel(): Promise<void>;
 }
 
 export type PaymentBuildResult<Input> =

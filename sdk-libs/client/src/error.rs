@@ -101,7 +101,7 @@ pub enum ClientError {
     TransactionSignatureMismatch,
 
     /// The send path was entered. Reconcile this signature before rebuilding the payment.
-    #[cfg(feature = "reqwest")]
+    #[cfg(feature = "nitro")]
     #[error("could not complete submission of payment {signature}: {source}")]
     NitroPaymentSend {
         signature: solana_signature::Signature,
@@ -144,7 +144,7 @@ pub enum ClientError {
     #[error("address resolution error: {0}")]
     AddressResolution(String),
 
-    #[cfg(feature = "reqwest")]
+    #[cfg(feature = "nitro")]
     #[error(transparent)]
     NitroDecryption(#[from] crate::nitro_decryption::NitroDecryptionError),
 

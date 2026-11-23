@@ -59,7 +59,7 @@ impl ComputeBudgetConfig {
         self
     }
 
-    #[cfg(feature = "reqwest")]
+    #[cfg(feature = "nitro")]
     pub(crate) fn with_extra_units(mut self, units: u32) -> Self {
         self.cu_limit = self
             .cu_limit

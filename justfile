@@ -79,7 +79,7 @@ check:
 # Check the entire workspace. `spr-client/proofs` keeps its prover-backed
 # test binaries in the type check without letting `cargo test` run them.
 check-all:
-    cargo check --workspace --all-targets --features spr-client/proofs
+    cargo check --workspace --all-targets --features spr-client/proofs,spr-client/nitro
     cargo check -p spr-test-utils --features parallel --all-targets
     # A wallet that brings its own HTTP client links neither crate's reqwest.
     cargo check -p spr-api -p spr-client --no-default-features
@@ -193,7 +193,7 @@ test-sdk-libs:
     cargo test --doc -p spr-keypair
     cargo nextest run -p spr-event-parser
     cargo nextest run -p spr-transaction
-    cargo nextest run -p spr-client --features client
+    cargo nextest run -p spr-client --features client,nitro
     # The TEE wire contract, its signed-policy vectors, and the policy tool
     # that signs and serves them.
     cargo nextest run -p spr-prover-tee -p spr-tee-policy
@@ -1408,7 +1408,7 @@ fmt-check:
     cargo fmt --all -- --check
 
 clippy:
-    cargo clippy --workspace --all-targets --features spr-client/proofs -- -D warnings
+    cargo clippy --workspace --all-targets --features spr-client/proofs,spr-client/nitro -- -D warnings
     # Not covered by `--workspace`: an optional feature's module is only
     # compiled when the feature is on.
     cargo clippy -p spr-test-utils --features parallel --all-targets -- -D warnings

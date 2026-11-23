@@ -267,9 +267,14 @@ impl NitroDecryptionService {
         owner: Pubkey,
         expected: ShieldedAddress,
     ) -> Result<(), ClientError> {
-        if self.address(owner).await? != expected {
+        let observed = expected
+            .solana_address()
+            .map_err(|_| NitroDecryptionError::PaymentRecipientChanged)?;
+        if observed != owner {
             return Err(NitroDecryptionError::PaymentRecipientChanged.into());
         }
+        let session = self.0.session().await?;
+        self.0.require_lookup_policy(&session, true).await?;
         Ok(())
     }
 

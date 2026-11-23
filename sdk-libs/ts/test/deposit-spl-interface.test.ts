@@ -133,19 +133,19 @@ it("appends a registry absence assertion to a service-resolved SOL deposit", asy
     recipient: recipient.solanaAddress(),
     decryptionService: { address, genesisHash },
   });
-  expect(getAccount).toHaveBeenCalledTimes(4);
+  expect(getAccount).toHaveBeenCalledTimes(3);
   expect(getGenesisHash).toHaveBeenCalledTimes(3);
   expect(getGenesisHash.mock.invocationCallOrder[2]).toBeGreaterThan(
-    getAccount.mock.invocationCallOrder[3]!,
+    getAccount.mock.invocationCallOrder.at(-1)!,
   );
   expect(address).toHaveBeenCalledWith(recipient.solanaAddress(), undefined);
-  expect(address).toHaveBeenCalledTimes(3);
-  expect(address.mock.invocationCallOrder[2]).toBeGreaterThan(
-    getGenesisHash.mock.invocationCallOrder[2]!,
+  expect(address).toHaveBeenCalledTimes(2);
+  expect(address.mock.invocationCallOrder.at(-1)).toBeGreaterThan(
+    getGenesisHash.mock.invocationCallOrder[0]!,
   );
   expect(broadcastTransaction).not.toHaveBeenCalled();
   await resolved.send(async (transaction) => {
-    expect(address).toHaveBeenCalledTimes(5);
+    expect(address).toHaveBeenCalledTimes(3);
     const instructions = instructionsOf(transaction);
     const record = await getUserRecordAddress(recipient.solanaAddress());
     expect(instructions.slice(0, -1)).toEqual(instructionsOf(explicit));
@@ -169,7 +169,7 @@ it("appends a registry absence assertion to a service-resolved SOL deposit", asy
     });
     return signTransactionWithSigners([payer], transaction);
   });
-  expect(address).toHaveBeenCalledTimes(9);
+  expect(address).toHaveBeenCalledTimes(4);
   expect(broadcastTransaction).toHaveBeenCalledOnce();
 });
 

@@ -76,6 +76,7 @@ export function prepareServicePayment(
   transaction: Transaction,
   client: TransactionBroadcaster,
   revalidate: (context?: RequestContext, minContextSlot?: bigint) => Promise<bigint>,
+  confirm: (context?: RequestContext) => Promise<void>,
   assertions: readonly Instruction[],
   reservation?: Readonly<{
     assertActive(): void;
@@ -85,7 +86,7 @@ export function prepareServicePayment(
       signal: AbortSignal,
     ): Promise<void>;
     assertPending(signature: Signature): void;
-    release(): void;
+    release(): Promise<void>;
   }>,
 ): PreparedPayment {
   if (!isTransactionWithBlockhashLifetime(transaction))
@@ -155,6 +156,8 @@ export function prepareServicePayment(
             signal.throwIfAborted();
             await revalidate({ signal }, blockhashValidAtSlot);
             signal.throwIfAborted();
+            await confirm({ signal });
+            signal.throwIfAborted();
             reservation?.assertActive();
             const signed = await sign(decoder.decode(unsigned.slice()), signal);
             signal.throwIfAborted();
@@ -170,7 +173,7 @@ export function prepareServicePayment(
               );
             }
             signal.throwIfAborted();
-            await revalidate({ signal }, blockhashValidAtSlot);
+            await confirm({ signal });
             signal.throwIfAborted();
             const broadcastSlot = await validAtSlot(signal, blockhashValidAtSlot);
             signal.throwIfAborted();
@@ -187,7 +190,7 @@ export function prepareServicePayment(
           },
         );
       } catch (cause) {
-        if (attempted === undefined) reservation?.release();
+        if (attempted === undefined) void reservation?.release().catch(() => undefined);
         throw wrapWalletError(
           "WALLET_SUBMIT_PAYMENT",
           cause,
@@ -195,10 +198,10 @@ export function prepareServicePayment(
         );
       }
     },
-    cancel() {
+    async cancel() {
       if (used) return;
       used = true;
-      reservation?.release();
+      await reservation?.release();
     },
   });
 }

@@ -16,9 +16,13 @@ default = ["reqwest"]
 # `with_client` over the application's own transport. `solana-rpc` still
 # links reqwest through `solana-rpc-client`.
 reqwest = [
-    "dep:aes-gcm", "dep:ed25519-dalek", "dep:hkdf", "dep:hmac",
-    "dep:reqwest", "p256/ecdh", "p256/getrandom", "spr-api/reqwest",
-    "solana-transaction/verify",
+    "dep:reqwest", "spr-api/reqwest", "solana-transaction/verify",
+]
+# Standalone Nitro decryption and its policy verifier. Off unless a wallet
+# asks for it, so an ordinary client does not link that cryptography.
+nitro = [
+    "reqwest",
+    "dep:aes-gcm", "dep:ed25519-dalek", "dep:hkdf", "dep:hmac", "dep:p256",
 ]
 socks = ["reqwest", "reqwest/socks"]
 solana-rpc = ["dep:bs58", "dep:base64", "dep:solana-rpc-client", "dep:solana-commitment-config"]
@@ -50,7 +54,7 @@ solana-address = { workspace = true }
 thiserror = { workspace = true }
 hex = { workspace = true, features = ["serde"] }
 sha2 = { workspace = true }
-p256 = { workspace = true, features = ["ecdsa"] }
+p256 = { workspace = true, optional = true, features = ["ecdsa", "ecdh", "getrandom"] }
 httpdate = { workspace = true }
 rand_core = { workspace = true }
 http = { workspace = true }

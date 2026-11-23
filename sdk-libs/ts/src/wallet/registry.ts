@@ -437,38 +437,10 @@ export function paymentRecipientResolver(
     request?: RequestContext,
     minContextSlot = 0n,
   ) {
-    requireActive(request);
-    if (client === undefined) throw new WalletError("WALLET_RECIPIENT_CLIENT_REQUIRED");
-    const accountReader = client;
-    async function readRegistration() {
-      const previous = registrySlots.get(recipient) ?? 0n;
-      const floor = previous > minContextSlot ? previous : minContextSlot;
-      let observed: bigint | undefined;
-      const rpc =
-        network === undefined
-          ? accountReader
-          : {
-              async getAccount(address: Address, context?: RequestContext) {
-                const { slot, account } = await network.account(address, floor, context);
-                observed = slot;
-                return account;
-              },
-            };
-      const record = await resolveRegisteredAddress({ rpc, owner: recipient }, request);
-      requireActive(request);
-      if (network !== undefined) {
-        if (
-          typeof observed !== "bigint" ||
-          observed < floor ||
-          observed > 0xffff_ffff_ffff_ffffn ||
-          observed < (registrySlots.get(recipient) ?? 0n)
-        ) {
-          throw new WalletError("WALLET_RECIPIENT_CONTEXT_STALE");
-        }
-        registrySlots.set(recipient, observed);
-      }
+    const readRegistration = async () => {
+      const record = await registrationAt(recipient, request, minContextSlot);
       return record && { kind: "registered" as const, ...record };
-    }
+    };
     const registered = await readRegistration();
     if (registered) return registered;
     if (service === undefined) {
@@ -479,6 +451,41 @@ export function paymentRecipientResolver(
     const latestRegistration = await readRegistration();
     if (latestRegistration) return latestRegistration;
     return { kind: "shielded" as const, address, viewTag: address.confidentialViewTag() };
+  }
+  async function registrationAt(
+    recipient: Address,
+    request: RequestContext | undefined,
+    minContextSlot: bigint,
+  ) {
+    requireActive(request);
+    if (client === undefined) throw new WalletError("WALLET_RECIPIENT_CLIENT_REQUIRED");
+    const previous = registrySlots.get(recipient) ?? 0n;
+    const floor = previous > minContextSlot ? previous : minContextSlot;
+    let observed: bigint | undefined;
+    const rpc =
+      network === undefined
+        ? client
+        : {
+            async getAccount(address: Address, context?: RequestContext) {
+              const { slot, account } = await network.account(address, floor, context);
+              observed = slot;
+              return account;
+            },
+          };
+    const record = await resolveRegisteredAddress({ rpc, owner: recipient }, request);
+    requireActive(request);
+    if (network !== undefined) {
+      if (
+        typeof observed !== "bigint" ||
+        observed < floor ||
+        observed > 0xffff_ffff_ffff_ffffn ||
+        observed < (registrySlots.get(recipient) ?? 0n)
+      ) {
+        throw new WalletError("WALLET_RECIPIENT_CONTEXT_STALE");
+      }
+      registrySlots.set(recipient, observed);
+    }
+    return record;
   }
   const requireServiceChain = chainCheckForBatch(context);
   const lookups = new Map<Address, ReturnType<typeof resolveOwner>>();
@@ -510,35 +517,19 @@ export function paymentRecipientResolver(
   }
   async function revalidate(request = context, minContextSlot = 0n): Promise<bigint> {
     if (service === undefined) return minContextSlot;
-    const requireCurrentServiceChain = chainCheckForBatch(request);
-    function requireSame(current: ShieldedAddress, original: ShieldedAddress): void {
-      if (!equalBytes(current.toBytes(), original.toBytes())) {
-        throw new WalletError("WALLET_DECRYPTION_RECIPIENT_MISMATCH");
-      }
-    }
-    const fallbackRecipients = await Promise.all(
-      [...paymentAddresses].map(async (entry) => {
-        const [owner, original] = entry;
-        const current = await resolveOwner(
-          owner,
-          requireCurrentServiceChain,
-          request,
-          minContextSlot,
-        );
-        requireSame(current.address, original.address);
-        if ((current.kind === "registered") !== original.registered) {
-          throw new WalletError("WALLET_DECRYPTION_RECIPIENT_MISMATCH");
-        }
-        return current.kind === "shielded" ? entry : undefined;
-      }),
-    );
-    await checkServiceChain(request);
-    // Payment policy can change while the final Solana RPC is in flight.
     await Promise.all(
-      fallbackRecipients.map(async (entry) => {
-        if (entry === undefined) return;
-        const [owner, original] = entry;
-        requireSame(await readServiceAddress(service, owner, request), original.address);
+      [...paymentAddresses].map(async ([owner, original]) => {
+        const registered = await registrationAt(owner, request, minContextSlot);
+        if (registered) {
+          if (
+            !original.registered ||
+            !equalBytes(registered.address.toBytes(), original.address.toBytes())
+          ) {
+            throw new WalletError("WALLET_DECRYPTION_RECIPIENT_MISMATCH");
+          }
+          return;
+        }
+        if (original.registered) throw new WalletError("WALLET_DECRYPTION_RECIPIENT_MISMATCH");
       }),
     );
     let floor = minContextSlot;
@@ -546,6 +537,27 @@ export function paymentRecipientResolver(
       if (slot > floor) floor = slot;
     }
     return floor;
+  }
+  async function confirm(request = context): Promise<void> {
+    if (service === undefined) return;
+    const fallbacks = [...paymentAddresses].filter(([, original]) => !original.registered);
+    if (fallbacks.length === 0) return;
+    await checkServiceChain(request);
+    await Promise.all(
+      fallbacks.map(async ([owner, original]) => {
+        requireActive(request);
+        if (service.confirmAddress) {
+          await service.confirmAddress(owner, original.address, request);
+          requireActive(request);
+          return;
+        }
+        const current = await readServiceAddress(service, owner, request);
+        if (!equalBytes(current.toBytes(), original.address.toBytes())) {
+          throw new WalletError("WALLET_DECRYPTION_RECIPIENT_MISMATCH");
+        }
+      }),
+    );
+    await checkServiceChain(request);
   }
   function assertions(recipients: readonly { address: ShieldedAddress }[]): readonly Instruction[] {
     for (const { address } of recipients) {
@@ -561,7 +573,7 @@ export function paymentRecipientResolver(
     });
     return targets.length === 0 ? [] : Object.freeze([paymentTargetAssertion(targets)]);
   }
-  return { resolve, revalidate, assertions };
+  return { resolve, revalidate, confirm, assertions };
 }
 
 export async function resolveRegisteredAddress(

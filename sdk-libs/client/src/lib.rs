@@ -14,6 +14,7 @@
 //!   traits, over an HTTP client the caller brings (`with_client`)
 //! - `reqwest` (default): the `reqwest` HTTP clients, the `new` and `local`
 //!   constructors, proxies and the local prover launcher
+//! - `nitro`: standalone Nitro decryption and its policy verifier
 //! - `solana-rpc`: concrete Solana RPC adapters
 //! - `client`: `solana-rpc`, the set the CLI and the examples enable
 
@@ -21,8 +22,9 @@ pub mod authority;
 pub mod client;
 pub mod error;
 pub mod indexer;
-#[cfg(feature = "reqwest")]
+#[cfg(feature = "nitro")]
 pub mod nitro_decryption;
+#[cfg(feature = "nitro")]
 pub mod nitro_policy;
 pub mod prover;
 pub mod rpc;

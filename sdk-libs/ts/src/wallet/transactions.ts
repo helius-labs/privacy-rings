@@ -121,6 +121,7 @@ export async function buildTransferTransaction(
       payment && {
         ...payment,
         revalidate: created.revalidateRecipients,
+        confirm: created.confirmRecipients,
         assertions: created.recipientAssertions,
       },
     );
@@ -163,6 +164,7 @@ export async function buildMultiTransferTransaction(
       payment && {
         ...payment,
         revalidate: created.revalidateRecipients,
+        confirm: created.confirmRecipients,
         assertions: created.recipientAssertions,
       },
     );
@@ -221,11 +223,12 @@ type PaymentChecks = Readonly<{
   persistence: WalletPersistence | undefined;
   assertions: readonly Instruction[];
   revalidate(context?: RequestContext, minContextSlot?: bigint): Promise<bigint>;
+  confirm(context?: RequestContext): Promise<void>;
 }>;
 
 function servicePaymentOptions(
   input: TransferTransactionParams | MultiTransferTransactionParams,
-): Omit<PaymentChecks, "revalidate" | "assertions"> | undefined {
+): Omit<PaymentChecks, "revalidate" | "assertions" | "confirm"> | undefined {
   if (input.decryptionService === undefined) {
     if (input.persistence !== undefined) throw new WalletError("WALLET_INVALID_PAYMENT");
     return undefined;
@@ -289,6 +292,7 @@ async function buildAuthorizedTransaction(
     );
     if (payment === undefined) return assembled;
     await payment.revalidate();
+    await payment.confirm();
     const authorizedMaterial = authorizedPrivateTransactionMaterial(authorized);
     if (authorizedMaterial === undefined) throw new WalletError("WALLET_INTENT_MISMATCH");
     const approvedIntent = intentHash(authorizedMaterial.intent);
@@ -299,6 +303,7 @@ async function buildAuthorizedTransaction(
       assembled,
       payment.client,
       payment.revalidate,
+      payment.confirm,
       payment.assertions,
       reservationId === undefined
         ? undefined
@@ -312,8 +317,24 @@ async function buildAuthorizedTransaction(
                 throw new WalletError("WALLET_UNSIGNED_INPUT_UNAVAILABLE");
               }
             },
-            release() {
-              wallet._settleSubmission(reservationId);
+            async release() {
+              if (persistence === undefined) {
+                wallet._settleSubmission(reservationId);
+                return;
+              }
+              try {
+                await wallet._withSyncLock(async () => {
+                  const staged = wallet
+                    .pendingSubmissions()
+                    .some((entry) => entry.id === reservationId);
+                  wallet._settleSubmission(reservationId);
+                  if (!staged) return;
+                  await saveWalletSnapshot(persistence, { signal: new AbortController().signal });
+                });
+              } catch {
+                // The payment result is already decided. A failed corrective save
+                // must not surface later as an unhandled rejection.
+              }
             },
             assertPending(signature) {
               if (!wallet._canBroadcastSubmission(reservationId, signature))

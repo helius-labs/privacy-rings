@@ -1375,7 +1375,6 @@ describe("unsigned public transaction builders", () => {
     const before = serializeWallet(wallet);
     const controller = new AbortController();
     let stored: string | undefined;
-    let checkedBlockhashAfterSave = false;
     let finishSave = () => {};
     const writing = new Promise<void>((resolve) => {
       finishSave = resolve;
@@ -1391,15 +1390,17 @@ describe("unsigned public transaction builders", () => {
       }),
     };
     const address = vi.fn(async () => {
-      if (outcome === "recipient changed" && stored !== undefined) return rotated;
-      if (outcome === "recipient changed during the blockhash check" && checkedBlockhashAfterSave) {
+      if (
+        (outcome === "recipient changed" ||
+          outcome === "recipient changed during the blockhash check") &&
+        stored !== undefined
+      ) {
         return rotated;
       }
       return recipient;
     });
     const getBlockhashValidity = vi.fn(async () => {
       if (stored === undefined) return { slot: 10n, valid: true };
-      checkedBlockhashAfterSave = true;
       return {
         slot: outcome === "RPC slot regressed" ? 9n : 11n,
         valid: outcome !== "blockhash expired",
@@ -1485,7 +1486,7 @@ describe("unsigned public transaction builders", () => {
     }
     if (outcome === "aborted") {
       const restored = await loadPersistedWallet({ store, cipher });
-      expect(restored?.pendingSubmissions()).toHaveLength(1);
+      expect(restored?.pendingSubmissions()).toEqual([]);
     }
   });
 

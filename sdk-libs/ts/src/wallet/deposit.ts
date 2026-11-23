@@ -210,7 +210,7 @@ export async function buildDepositTransaction(
   try {
     const input = { ...parameters };
     input.setupInstructions?.forEach(checkedSetupInstruction);
-    const { resolve, revalidate, assertions } = paymentRecipientResolver(input, context);
+    const { resolve, revalidate, confirm, assertions } = paymentRecipientResolver(input, context);
     const { address: recipient } = await resolve(input.recipient);
     const depositor = input.depositor ?? input.feePayer;
     const tree = input.tree ?? input.client.tree;
@@ -254,10 +254,12 @@ export async function buildDepositTransaction(
     });
     if (input.decryptionService === undefined) return transaction;
     await revalidate();
+    await confirm();
     return prepareServicePayment(
       transaction,
       input.client,
       revalidate,
+      confirm,
       assertions([{ address: recipient }]),
     );
   } catch (cause) {

@@ -758,7 +758,6 @@ async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
     let server = tokio::spawn(async move {
         for (i, result) in [
             owner_response.clone(),
-            owner_response.clone(),
             owner_response,
             boot_response,
             note_response.clone(),
@@ -787,7 +786,7 @@ async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
                     .windows(owner.to_string().len())
                     .any(|w| w == owner.to_string().as_bytes()));
                 let reply = json(&reply_for(&body, owner, result, session_expires_at_ms)).unwrap();
-                if i == 5 {
+                if i == 4 {
                     *publisher.0.policies.test_heads.lock().unwrap() =
                         Some([revocation.clone(), revocation]);
                 }

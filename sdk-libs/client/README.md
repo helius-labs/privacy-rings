@@ -48,6 +48,9 @@ Without the `reqwest` feature neither crate links reqwest and only
 
 ## Standalone decryption
 
+The `nitro` feature compiles this verifier and the decryption transport. It is
+off by default, and the default `reqwest` feature does not enable it.
+
 `nitro_policy::NitroPolicyReader` fetches the current policy from two
 independently owned S3 buckets named in the wallet's shipped trust pins. Both
 heads need the pinned release quorum and two of the three custody policy
