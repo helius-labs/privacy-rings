@@ -83,15 +83,19 @@ both signed policy heads after attestation and before sending the address. It
 checks them again after verifying the reply, before returning keys. A revoked,
 superseded or unavailable policy stops either lookup.
 
-Build each output with `recipient.address()` and pass at least one resolved
-recipient to `Submission::with_nitro_recipients`. Every output to an attached
-owner must use those keys. Call `sign` or `sign_with` to get a signed payment
-with the exact message and signatures verified. Record its transaction ID,
-blockhash and last valid block height before calling `send`. They let the
-application reconcile even if the send future is cancelled after dispatch.
-`send` consumes the signed payment and checks its blockhash at confirmed
-commitment, then rechecks the recipients before broadcast. Custom RPC
-implementations must support `is_blockhash_valid`. An error after entering the
+Build each resolved output with `recipient.address()` and attach the recipients
+with `Submission::with_nitro_recipients`. Pass any exact fixed addresses,
+including change, in `explicit_outputs`. Every shielded output must match one
+of these addresses. All outputs for a resolved owner use that owner's resolved
+keys.
+
+Call `sign` or use a sign-only callback with `sign_with`. The client checks
+the exact blockhash, chain and current recipients after proving and before
+requesting Solana signatures. It verifies the returned message and every
+signature. Record the signed transaction ID, blockhash and last valid block
+height before calling `send` so you can reconcile after cancellation.
+`send` consumes the signed payment and repeats those RPC checks before
+broadcast. Custom RPC implementations must support `is_blockhash_valid`. An error after entering the
 send path carries the same ID in `ClientError::NitroPaymentSend`.
 Blocking clients use `sign_sync` or `sign_with_sync`, then `send_sync`.
 

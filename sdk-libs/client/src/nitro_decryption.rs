@@ -84,13 +84,13 @@ pub enum NitroDecryptionError {
     NetworkMismatch,
     #[error("attach at least one resolved Nitro payment recipient")]
     PaymentRecipientsRequired,
-    #[error("the transaction output does not match the resolved Nitro payment recipient")]
+    #[error("a shielded output is missing its declared address or uses different recipient keys")]
     PaymentRecipientMismatch,
     #[error("the Nitro payment recipient changed during transaction preparation")]
     PaymentRecipientChanged,
     #[error("the signer changed the prepared Nitro payment message")]
     PaymentMessageChanged,
-    #[error("the signed Nitro payment blockhash is no longer valid")]
+    #[error("the Nitro payment blockhash is no longer valid")]
     PaymentBlockhashInvalid,
     #[error("the encrypted decryption request exceeds the service limit")]
     RequestTooLarge,

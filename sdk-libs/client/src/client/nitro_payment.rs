@@ -69,10 +69,12 @@ pub struct SignedNitroPayment<'a> {
 }
 
 impl<'a> Submission<'a> {
-    /// Attach each resolved recipient. All outputs for each attached owner must use the resolved keys.
+    /// Attach every resolved recipient. List any fixed addresses, including change, in `explicit_outputs`.
+    /// An attached owner's outputs always use that owner's resolved keys.
     pub fn with_nitro_recipients(
         self,
         recipients: &'a [NitroPaymentRecipient],
+        explicit_outputs: &[ShieldedAddress],
     ) -> Result<NitroPaymentSubmission<'a>, ClientError> {
         if recipients.is_empty() {
             return Err(NitroDecryptionError::PaymentRecipientsRequired.into());
@@ -89,6 +91,21 @@ impl<'a> Submission<'a> {
             if matches.peek().is_none() || matches.any(|address| address != recipient.address) {
                 return Err(NitroDecryptionError::PaymentRecipientMismatch.into());
             }
+        }
+        if self
+            .signed
+            .transaction
+            .output_utxos
+            .iter()
+            .filter_map(|output| output.owner_address)
+            .any(|address| {
+                !recipients
+                    .iter()
+                    .any(|recipient| recipient.address == address)
+                    && !explicit_outputs.contains(&address)
+            })
+        {
+            return Err(NitroDecryptionError::PaymentRecipientMismatch.into());
         }
         Ok(NitroPaymentSubmission {
             submission: self,
@@ -117,14 +134,16 @@ impl<'a> NitroPaymentSubmission<'a> {
         sign: impl AsyncFnOnce(&UnsignedMessage) -> Result<VersionedTransaction, ClientError>,
     ) -> Result<SignedNitroPayment<'a>, ClientError> {
         let unsigned = self.submission.finish_unsigned(client).await?;
-        self.sign_unsigned(unsigned, sign).await
+        self.sign_unsigned(client.rpc(), unsigned, sign).await
     }
 
-    async fn sign_unsigned(
+    async fn sign_unsigned<R: AsyncRpc>(
         self,
+        rpc: &R,
         unsigned: UnsignedMessage,
         sign: impl AsyncFnOnce(&UnsignedMessage) -> Result<VersionedTransaction, ClientError>,
     ) -> Result<SignedNitroPayment<'a>, ClientError> {
+        revalidate_payment(rpc, unsigned.message.recent_blockhash(), self.recipients).await?;
         let signed = sign(&unsigned).await?;
         if signed.message != unsigned.message {
             return Err(NitroDecryptionError::PaymentMessageChanged.into());
@@ -187,43 +206,13 @@ impl SignedNitroPayment<'_> {
         self,
         client: &AsyncSprClient<R, I>,
     ) -> Result<Signature, ClientError> {
-        if !client.rpc().is_blockhash_valid(self.blockhash()).await? {
-            return Err(NitroDecryptionError::PaymentBlockhashInvalid.into());
-        }
-        self.revalidate(client.rpc()).await?;
+        revalidate_payment(client.rpc(), self.blockhash(), self.recipients).await?;
         send_signed(client, self.transaction)
             .await
             .map_err(|source| ClientError::NitroPaymentSend {
                 signature: self.signature,
                 source: Box::new(source),
             })
-    }
-
-    async fn revalidate<R: AsyncRpc>(&self, rpc: &R) -> Result<(), ClientError> {
-        let from_service = try_join_all(
-            self.recipients
-                .iter()
-                .map(|recipient| recipient.revalidate(rpc)),
-        )
-        .await?;
-        let genesis = rpc.genesis_hash().await?;
-        for recipient in self.recipients {
-            recipient.service.require_chain(genesis)?;
-        }
-        // Payment policy can change while the final Solana RPC is in flight.
-        try_join_all(
-            self.recipients
-                .iter()
-                .zip(from_service)
-                .filter(|(_, from_service)| *from_service)
-                .map(|(recipient, _)| {
-                    recipient
-                        .service
-                        .confirm_payment_address(recipient.owner, recipient.address)
-                }),
-        )
-        .await?;
-        Ok(())
     }
 
     /// Blocking version of [`Self::send`].
@@ -233,6 +222,36 @@ impl SignedNitroPayment<'_> {
     ) -> Result<Signature, ClientError> {
         client.block_on(self.send(&client.client))
     }
+}
+
+async fn revalidate_payment<R: AsyncRpc>(
+    rpc: &R,
+    blockhash: &Hash,
+    recipients: &[NitroPaymentRecipient],
+) -> Result<(), ClientError> {
+    if !rpc.is_blockhash_valid(blockhash).await? {
+        return Err(NitroDecryptionError::PaymentBlockhashInvalid.into());
+    }
+    let from_service =
+        try_join_all(recipients.iter().map(|recipient| recipient.revalidate(rpc))).await?;
+    let genesis = rpc.genesis_hash().await?;
+    for recipient in recipients {
+        recipient.service.require_chain(genesis)?;
+    }
+    // Payment policy can change while the final Solana RPC is in flight.
+    try_join_all(
+        recipients
+            .iter()
+            .zip(from_service)
+            .filter(|(_, from_service)| *from_service)
+            .map(|(recipient, _)| {
+                recipient
+                    .service
+                    .confirm_payment_address(recipient.owner, recipient.address)
+            }),
+    )
+    .await?;
+    Ok(())
 }
 
 #[cfg(test)]

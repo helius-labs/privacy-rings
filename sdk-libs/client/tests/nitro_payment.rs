@@ -77,7 +77,11 @@ fn attachment_requires_exact_keys_on_every_output_for_the_owner() {
         .unwrap()
         .shielded_address()
         .unwrap();
-    let recipients = [NitroPaymentRecipient::new(service, payer.pubkey(), address)];
+    let recipients = [NitroPaymentRecipient::new(
+        service.clone(),
+        payer.pubkey(),
+        address,
+    )];
     for outputs in [
         vec![],
         vec![other],
@@ -87,7 +91,7 @@ fn attachment_requires_exact_keys_on_every_output_for_the_owner() {
     ] {
         let signed = transaction(payer.pubkey(), &outputs);
         assert!(matches!(
-            Submission::new(&signed, payer.pubkey(), &keys).with_nitro_recipients(&recipients),
+            Submission::new(&signed, payer.pubkey(), &keys).with_nitro_recipients(&recipients, &[]),
             Err(ClientError::NitroDecryption(
                 NitroDecryptionError::PaymentRecipientMismatch
             ))
@@ -95,14 +99,37 @@ fn attachment_requires_exact_keys_on_every_output_for_the_owner() {
     }
     let signed = transaction(payer.pubkey(), &[address, other, address]);
     assert!(matches!(
-        Submission::new(&signed, payer.pubkey(), &keys).with_nitro_recipients(&[]),
+        Submission::new(&signed, payer.pubkey(), &keys)
+            .with_nitro_recipients(&[], &[address, other]),
         Err(ClientError::NitroDecryption(
             NitroDecryptionError::PaymentRecipientsRequired
         ))
     ));
+    assert!(matches!(
+        Submission::new(&signed, payer.pubkey(), &keys).with_nitro_recipients(&recipients, &[]),
+        Err(ClientError::NitroDecryption(
+            NitroDecryptionError::PaymentRecipientMismatch
+        ))
+    ));
     assert!(Submission::new(&signed, payer.pubkey(), &keys)
-        .with_nitro_recipients(&recipients)
+        .with_nitro_recipients(&recipients, &[other])
         .is_ok());
+    let [first] = recipients;
+    let other_owner = Pubkey::new_from_array(other.signing_pubkey.as_ed25519().unwrap());
+    let all_recipients = [
+        first,
+        NitroPaymentRecipient::new(service, other_owner, other),
+    ];
+    assert!(Submission::new(&signed, payer.pubkey(), &keys)
+        .with_nitro_recipients(&all_recipients, &[])
+        .is_ok());
+    let recipients = &all_recipients[..1];
+    let same_owner_wrong_keys = transaction(payer.pubkey(), &[address, rotated]);
+    assert!(
+        Submission::new(&same_owner_wrong_keys, payer.pubkey(), &keys)
+            .with_nitro_recipients(recipients, &[rotated])
+            .is_err()
+    );
 }
 
 struct RegistryRpc {
@@ -241,7 +268,7 @@ async fn the_signed_payment_is_checked_before_broadcast() {
     let recipients = [recipient];
     let submission = || {
         Submission::new(&signed, payer.pubkey(), &keys)
-            .with_nitro_recipients(&recipients)
+            .with_nitro_recipients(&recipients, &[])
             .unwrap()
     };
     let unsigned = |blockhash| UnsignedMessage {
@@ -254,11 +281,49 @@ async fn the_signed_payment_is_checked_before_broadcast() {
         .unwrap(),
         last_valid_block_height: 1,
     };
+    let no_sign =
+        async |_: &UnsignedMessage| panic!("an invalid payment must not reach the signer");
+    client.rpc().rotated.store(true, SeqCst);
+    assert!(matches!(
+        submission()
+            .sign_unsigned(client.rpc(), unsigned(1), no_sign)
+            .await,
+        Err(ClientError::NitroDecryption(
+            NitroDecryptionError::PaymentRecipientChanged
+        ))
+    ));
+    client.rpc().rotated.store(false, SeqCst);
+    client.rpc().foreign_network.store(true, SeqCst);
+    assert!(matches!(
+        submission()
+            .sign_unsigned(client.rpc(), unsigned(1), no_sign)
+            .await,
+        Err(ClientError::NitroDecryption(
+            NitroDecryptionError::NetworkMismatch
+        ))
+    ));
+    client.rpc().foreign_network.store(false, SeqCst);
+    *client.rpc().blockhash_valid.lock().unwrap() = Ok(false);
+    assert!(matches!(
+        submission()
+            .sign_unsigned(client.rpc(), unsigned(1), no_sign)
+            .await,
+        Err(ClientError::NitroDecryption(
+            NitroDecryptionError::PaymentBlockhashInvalid
+        ))
+    ));
+    *client.rpc().blockhash_valid.lock().unwrap() = Ok(true);
+    assert_eq!(client.rpc().broadcasts.load(SeqCst), 0);
+
     let signer = RotatingSigner(&payer, &client.rpc().rotated);
     let payment = submission()
-        .sign_unsigned(unsigned(1), async |prepared: &UnsignedMessage| {
-            sign_transaction(prepared.message.clone(), &[&signer])
-        })
+        .sign_unsigned(
+            client.rpc(),
+            unsigned(1),
+            async |prepared: &UnsignedMessage| {
+                sign_transaction(prepared.message.clone(), &[&signer])
+            },
+        )
         .await
         .unwrap();
     assert_eq!(client.rpc().broadcasts.load(SeqCst), 0);
@@ -274,7 +339,7 @@ async fn the_signed_payment_is_checked_before_broadcast() {
     client.rpc().rotated.store(false, SeqCst);
     assert!(matches!(
         submission()
-            .sign_unsigned(unsigned(1), async |_: &UnsignedMessage| {
+            .sign_unsigned(client.rpc(), unsigned(1), async |_: &UnsignedMessage| {
                 sign_transaction(unsigned(2).message, &[&payer])
             })
             .await,
@@ -285,12 +350,16 @@ async fn the_signed_payment_is_checked_before_broadcast() {
     for signatures in [vec![], vec![Signature::default()]] {
         assert!(matches!(
             submission()
-                .sign_unsigned(unsigned(1), async move |prepared: &UnsignedMessage| {
-                    Ok(VersionedTransaction {
-                        message: prepared.message.clone(),
-                        signatures,
-                    })
-                })
+                .sign_unsigned(
+                    client.rpc(),
+                    unsigned(1),
+                    async move |prepared: &UnsignedMessage| {
+                        Ok(VersionedTransaction {
+                            message: prepared.message.clone(),
+                            signatures,
+                        })
+                    }
+                )
                 .await,
             Err(ClientError::SolanaTransactionSigning(_))
         ));
@@ -298,11 +367,15 @@ async fn the_signed_payment_is_checked_before_broadcast() {
     assert_eq!(client.rpc().broadcasts.load(SeqCst), 0);
 
     let result = submission()
-        .sign_unsigned(unsigned(1), async |prepared: &UnsignedMessage| {
-            let signed = sign_transaction(prepared.message.clone(), &[&payer])?;
-            client.rpc().foreign_network.store(true, SeqCst);
-            Ok(signed)
-        })
+        .sign_unsigned(
+            client.rpc(),
+            unsigned(1),
+            async |prepared: &UnsignedMessage| {
+                let signed = sign_transaction(prepared.message.clone(), &[&payer])?;
+                client.rpc().foreign_network.store(true, SeqCst);
+                Ok(signed)
+            },
+        )
         .await
         .unwrap()
         .send(&client)
@@ -328,7 +401,7 @@ async fn the_signed_payment_is_checked_before_broadcast() {
     let expected = signed_transaction.signatures[0];
     let sign = async || {
         submission()
-            .sign_unsigned(unsigned(1), async |_: &UnsignedMessage| {
+            .sign_unsigned(client.rpc(), unsigned(1), async |_: &UnsignedMessage| {
                 tokio::task::yield_now().await;
                 Ok(signed_transaction.clone())
             })
@@ -336,23 +409,27 @@ async fn the_signed_payment_is_checked_before_broadcast() {
             .unwrap()
     };
     let send = async || sign().await.send(&client).await;
+    let expired = sign().await;
     *client.rpc().blockhash_valid.lock().unwrap() = Ok(false);
     assert!(matches!(
-        send().await,
+        expired.send(&client).await,
         Err(ClientError::NitroDecryption(
             NitroDecryptionError::PaymentBlockhashInvalid
         ))
     ));
     assert_eq!(client.rpc().broadcasts.load(SeqCst), 0);
+    *client.rpc().blockhash_valid.lock().unwrap() = Ok(true);
+    let unchecked_hash = sign().await;
     *client.rpc().blockhash_valid.lock().unwrap() = Err("mock blockhash check");
     assert!(
-        matches!(send().await, Err(ClientError::Rpc(message)) if message == "mock blockhash check")
+        matches!(unchecked_hash.send(&client).await, Err(ClientError::Rpc(message)) if message == "mock blockhash check")
     );
     assert_eq!(client.rpc().broadcasts.load(SeqCst), 0);
     *client.rpc().blockhash_valid.lock().unwrap() = Ok(true);
+    let changing_recipient = sign().await;
     client.rpc().rotate_on_blockhash_check.store(true, SeqCst);
     assert!(matches!(
-        send().await,
+        changing_recipient.send(&client).await,
         Err(ClientError::NitroDecryption(
             NitroDecryptionError::PaymentRecipientChanged
         ))
