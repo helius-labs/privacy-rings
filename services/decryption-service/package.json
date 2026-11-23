@@ -1,0 +1,30 @@
+{
+  "name": "spr-tvc-workspace",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "description": "Attested decryption service for Solana Privacy Rings",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=24.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "build:ts": "pnpm --filter @heliuslabs/spr-decryption-service build",
+    "lint:ts": "eslint sdk example xtask eslint.config.js --max-warnings 0",
+    "test:ts": "pnpm --filter @heliuslabs/spr-decryption-service test",
+    "typecheck:ts": "pnpm --filter @heliuslabs/spr-decryption-service typecheck",
+    "ci:ts": "pnpm lint:ts && pnpm typecheck:ts && pnpm test:ts && pnpm build:ts && tsc -p xtask && pnpm typecheck:examples && pnpm test:examples",
+    "typecheck:examples": "pnpm --filter spr-tvc-typescript-client-example typecheck",
+    "test:examples": "pnpm --filter spr-tvc-typescript-client-example test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@turnkey/sdk-server": "8.3.0",
+    "@types/node": "^24.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.73.0",
+    "@typescript-eslint/parser": "^8.73.0",
+    "eslint": "^10.15.0",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,68 @@
+name: decryption service
+
+on:
+  pull_request:
+    paths:
+      - services/decryption-service/**
+      - sdk-tests/client/rust/**
+      - sdk-libs/keypair/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/decryption-service.yml
+      - .github/workflows/publish-decryption-service.yml
+  push:
+    branches: [main]
+    paths:
+      - services/decryption-service/**
+      - sdk-tests/client/rust/**
+      - sdk-libs/keypair/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/decryption-service.yml
+      - .github/workflows/publish-decryption-service.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          shared-key: decryption-service
+          private-libs-token: ${{ secrets.PRIVATE_LIBS_TOKEN }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+      - run: just ci
+        working-directory: services/decryption-service
+      - run: cargo check --locked -p client-example --features devnet-decryption --test devnet-decryption
+
+  image:
+    name: enclave image (${{ matrix.network }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        network: [devnet, mainnet]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: services/decryption-service/enclave/Dockerfile
+          platforms: linux/amd64
+          push: false
+          build-args: SPR_NETWORK=${{ matrix.network }}
+          cache-from: type=gha,scope=decryption-service-${{ matrix.network }}
+          cache-to: type=gha,mode=max,scope=decryption-service-${{ matrix.network }}

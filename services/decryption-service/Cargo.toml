@@ -1,0 +1,11 @@
+[workspace]
+members = ["enclave", "xtask"]
+exclude = ["protocol"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+qos_p256 = { version = "=0.16.3", default-features = false }

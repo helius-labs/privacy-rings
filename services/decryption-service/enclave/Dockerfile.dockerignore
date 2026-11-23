@@ -1,0 +1,17 @@
+# The workspace supplies the SPR keypair and its dependencies.
+**/.git
+**/.DS_Store
+**/.env
+**/.env.*
+**/operator.json
+**/target
+**/node_modules
+**/.pnpm-store
+**/dist
+.github
+prover/server/proving-keys
+prover/server/formal-verification
+test-ledger
+services/decryption-service/sdk
+services/decryption-service/example
+services/decryption-service/enclave/deploy
