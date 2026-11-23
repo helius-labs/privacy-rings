@@ -23,7 +23,7 @@ import {
   type ProofService,
   type TransactionBroadcaster,
 } from "../src/client/ports.js";
-import type { DepositClient, PrivateTransactionClient } from "../src/wallet/index.js";
+import type { DepositClient } from "../src/wallet/index.js";
 import {
   SPL_TOKEN_2022_PROGRAM_ID,
   type Bytes32,
@@ -65,7 +65,7 @@ import { ownerSignerAddresses } from "../src/client/prover/assembly.js";
 import { buildDepositTransaction, createDeposit } from "../src/wallet/deposit.js";
 import { loadPersistedWallet } from "../src/wallet/persisted.js";
 import { walletSnapshotCipher } from "../src/wallet/snapshot-cipher.js";
-import { depositClient, privateTransactionClient } from "./helpers/clients.js";
+import { depositClient, privateTransactionClient, registryReads } from "./helpers/clients.js";
 import { emptyTransaction } from "./helpers/transactions.js";
 import { approveIntent, type ApprovalRequest } from "../src/transaction/wallet/intent.js";
 import { MAX_SPEND_INPUTS } from "../src/flows/select.js";
@@ -186,7 +186,7 @@ function latestBlockhashClient(feeTree = TREE): DepositClient {
 }
 
 function capturePrivateBuild(transaction = TRANSACTION): Readonly<{
-  client: PrivateTransactionClient & TransactionBroadcaster;
+  client: ReturnType<typeof privateTransactionClient> & TransactionBroadcaster;
   assemble: ReturnType<typeof vi.fn>;
 }> {
   const assemble = vi.fn(
@@ -364,7 +364,7 @@ describe("private transaction construction", () => {
     const context = { signal: new AbortController().signal };
     const created = await createTransfer(
       {
-        client: { getAccount: async () => undefined, getGenesisHash: async () => genesisHash },
+        client: { ...registryReads(), getGenesisHash: async () => genesisHash },
         decryptionService: { address, genesisHash },
         wallet: fundedWallet(ShieldedKeypair.generate(), [100n]),
         payer: PAYER,
@@ -395,7 +395,11 @@ describe("private transaction construction", () => {
     const result = await createTransfer({
       wallet: fundedWallet(ShieldedKeypair.generate(), [100n]),
       client: {
-        getAccount: async () => ({ owner: USER_REGISTRY_PROGRAM_ID, data: record, lamports: 1n }),
+        ...registryReads(async () => ({
+          owner: USER_REGISTRY_PROGRAM_ID,
+          data: record,
+          lamports: 1n,
+        })),
         getGenesisHash,
       },
       decryptionService: { address, genesisHash },
@@ -408,6 +412,35 @@ describe("private transaction construction", () => {
     expect(result.recipient.address.toBytes()).toEqual(recipient.toBytes());
     expect(address).not.toHaveBeenCalled();
     expect(getGenesisHash).not.toHaveBeenCalled();
+  });
+
+  it("keeps a verified miss's context for the registry read after service lookup", async () => {
+    const recipient = ShieldedKeypair.generate().shieldedAddress();
+    const serviceAddress = vi.fn(async () => recipient);
+    const getAccountWithContext = vi
+      .fn()
+      .mockResolvedValueOnce({ account: undefined, slot: 10n })
+      .mockResolvedValueOnce({ account: undefined, slot: 9n });
+    const wallet = fundedWallet(ShieldedKeypair.generate(), [100n]);
+    const before = serializeWallet(wallet);
+    await expect(
+      createTransfer({
+        client: {
+          ...registryReads(),
+          getAccountWithContext,
+          getGenesisHash: async () => genesisHash,
+        },
+        decryptionService: { address: serviceAddress, genesisHash },
+        wallet,
+        recipient: recipient.solanaAddress(),
+        payer: PAYER,
+        asset: SOL_MINT,
+        amount: 10n,
+      }),
+    ).rejects.toMatchObject({ causeCode: "WALLET_RECIPIENT_CONTEXT_STALE" });
+    expect(getAccountWithContext.mock.calls.map((args) => args[1])).toEqual([0n, 10n]);
+    expect(serviceAddress).toHaveBeenCalledOnce();
+    expect(serializeWallet(wallet)).toEqual(before);
   });
 
   it("leaves spend state intact on registry failure or a mismatched service address", async () => {
@@ -426,9 +459,9 @@ describe("private transaction construction", () => {
       createTransfer({
         ...input,
         client: {
-          getAccount: async () => {
+          ...registryReads(async () => {
             throw new Error("RPC unavailable");
-          },
+          }),
           getGenesisHash: async () => genesisHash,
         },
       }),
@@ -437,7 +470,7 @@ describe("private transaction construction", () => {
     await expect(
       createTransfer({
         ...input,
-        client: { getAccount: async () => undefined, getGenesisHash: async () => genesisHash },
+        client: { ...registryReads(), getGenesisHash: async () => genesisHash },
       }),
     ).rejects.toMatchObject({
       code: "WALLET_CREATE_TRANSFER",
@@ -475,7 +508,7 @@ describe("private transaction construction", () => {
       return fallback;
     });
     const result = await createMultiTransfer({
-      client: { getAccount, getGenesisHash: async () => genesisHash },
+      client: { ...registryReads(getAccount), getGenesisHash: async () => genesisHash },
       decryptionService: { address, genesisHash },
       wallet: fundedWallet(ShieldedKeypair.generate(), [100n]),
       payer: PAYER,
@@ -505,7 +538,7 @@ describe("private transaction construction", () => {
     const address = vi.fn(async () => recipient);
     await expect(
       createTransfer({
-        client: { getAccount, getGenesisHash: async () => genesisHash },
+        client: { ...registryReads(getAccount), getGenesisHash: async () => genesisHash },
         decryptionService: { address, genesisHash },
         wallet,
         payer: PAYER,
@@ -543,7 +576,7 @@ describe("private transaction construction", () => {
       await expect(
         createTransfer(
           {
-            client: { getAccount, getGenesisHash },
+            client: { ...registryReads(getAccount), getGenesisHash },
             decryptionService: { address, genesisHash },
             wallet,
             payer: PAYER,
@@ -570,7 +603,7 @@ describe("private transaction construction", () => {
     for (const hash of [otherGenesis, "invalid"]) {
       await expect(
         createTransfer({
-          client: { getAccount: async () => undefined, getGenesisHash: async () => hash },
+          client: { ...registryReads(), getGenesisHash: async () => hash },
           decryptionService: { address, genesisHash },
           wallet,
           payer: PAYER,
@@ -595,7 +628,7 @@ describe("private transaction construction", () => {
       owner === first.solanaAddress() ? first : second,
     );
     const created = await createMultiTransfer({
-      client: { getAccount: async () => undefined, getGenesisHash },
+      client: { ...registryReads(), getGenesisHash },
       decryptionService: { address, genesisHash },
       wallet: fundedWallet(ShieldedKeypair.generate(), [100n]),
       payer: PAYER,
@@ -1147,7 +1180,7 @@ describe("unsigned public transaction builders", () => {
       buildTransferTransaction({
         client: {
           ...client,
-          getAccount: async () => (assemble.mock.calls.length > 0 ? record : undefined),
+          ...registryReads(async () => (assemble.mock.calls.length > 0 ? record : undefined)),
           getGenesisHash: async () => genesisHash,
         },
         wallet,
@@ -1215,7 +1248,7 @@ describe("unsigned public transaction builders", () => {
       const payment = await buildTransferTransaction({
         client: {
           ...client,
-          getAccount,
+          ...registryReads(getAccount),
           getGenesisHash: async () => genesisHash,
           getBlockhashValidity: async () => ({
             slot: 1n,

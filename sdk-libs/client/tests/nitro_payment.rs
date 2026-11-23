@@ -1,5 +1,5 @@
 use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::SeqCst},
     Arc, Mutex,
 };
 use std::time::Duration;
@@ -81,6 +81,7 @@ fn attachment_requires_exact_keys_on_every_output_for_the_owner() {
         service.clone(),
         payer.pubkey(),
         address,
+        0,
     )];
     for outputs in [
         vec![],
@@ -118,7 +119,7 @@ fn attachment_requires_exact_keys_on_every_output_for_the_owner() {
     let other_owner = Pubkey::new_from_array(other.signing_pubkey.as_ed25519().unwrap());
     let all_recipients = [
         first,
-        NitroPaymentRecipient::new(service, other_owner, other),
+        NitroPaymentRecipient::new(service, other_owner, other, 0),
     ];
     assert!(Submission::new(&signed, payer.pubkey(), &keys)
         .with_nitro_recipients(&all_recipients, &[])
@@ -138,6 +139,8 @@ struct RegistryRpc {
     rotated: AtomicBool,
     foreign_network: AtomicBool,
     blockhash_valid: Mutex<Result<bool, &'static str>>,
+    registry_slot: AtomicU64,
+    blockhash_slot: AtomicU64,
     rotate_on_blockhash_check: AtomicBool,
     broadcasts: AtomicUsize,
     stalled_broadcast: Mutex<Option<Signature>>,
@@ -178,6 +181,34 @@ impl AsyncRpc for RegistryRpc {
             owner: user_registry_program_id(),
             ..Default::default()
         }))
+    }
+
+    async fn get_account_with_context(
+        &self,
+        address: Pubkey,
+        min_context_slot: u64,
+    ) -> Result<(u64, Option<Account>), ClientError> {
+        let configured = self.registry_slot.load(SeqCst);
+        let slot = if configured == 0 {
+            min_context_slot
+        } else {
+            configured
+        };
+        Ok((slot, self.get_account(address).await?))
+    }
+
+    async fn blockhash_validity_with_context(
+        &self,
+        hash: &Hash,
+        min_context_slot: u64,
+    ) -> Result<(u64, bool), ClientError> {
+        let configured = self.blockhash_slot.load(SeqCst);
+        let slot = if configured == 0 {
+            min_context_slot
+        } else {
+            configured
+        };
+        Ok((slot, self.is_blockhash_valid(hash).await?))
     }
 
     async fn is_blockhash_valid(&self, hash: &Hash) -> Result<bool, ClientError> {
@@ -248,6 +279,8 @@ async fn the_signed_payment_is_checked_before_broadcast() {
             rotated: AtomicBool::default(),
             foreign_network: AtomicBool::default(),
             blockhash_valid: Mutex::new(Ok(true)),
+            registry_slot: AtomicU64::default(),
+            blockhash_slot: AtomicU64::default(),
             rotate_on_blockhash_check: AtomicBool::default(),
             broadcasts: AtomicUsize::default(),
             stalled_broadcast: Mutex::default(),
@@ -314,6 +347,38 @@ async fn the_signed_payment_is_checked_before_broadcast() {
     ));
     *client.rpc().blockhash_valid.lock().unwrap() = Ok(true);
     assert_eq!(client.rpc().broadcasts.load(SeqCst), 0);
+
+    client.rpc().blockhash_slot.store(10, SeqCst);
+    client.rpc().registry_slot.store(9, SeqCst);
+    assert!(matches!(
+        submission()
+            .sign_unsigned(client.rpc(), unsigned(1), no_sign)
+            .await,
+        Err(ClientError::NitroDecryption(
+            NitroDecryptionError::PaymentContextStale
+        ))
+    ));
+    client.rpc().registry_slot.store(20, SeqCst);
+    let payment = submission()
+        .sign_unsigned(
+            client.rpc(),
+            unsigned(1),
+            async |prepared: &UnsignedMessage| {
+                sign_transaction(prepared.message.clone(), &[&payer])
+            },
+        )
+        .await
+        .unwrap();
+    client.rpc().blockhash_slot.store(19, SeqCst);
+    assert!(matches!(
+        payment.send(&client).await,
+        Err(ClientError::NitroDecryption(
+            NitroDecryptionError::PaymentContextStale
+        ))
+    ));
+    assert_eq!(client.rpc().broadcasts.load(SeqCst), 0);
+    client.rpc().registry_slot.store(0, SeqCst);
+    client.rpc().blockhash_slot.store(0, SeqCst);
 
     let signer = RotatingSigner(&payer, &client.rpc().rotated);
     let payment = submission()
@@ -409,6 +474,18 @@ async fn the_signed_payment_is_checked_before_broadcast() {
             .unwrap()
     };
     let send = async || sign().await.send(&client).await;
+    let stale_registry = sign().await;
+    client.rpc().blockhash_slot.store(10, SeqCst);
+    client.rpc().registry_slot.store(9, SeqCst);
+    assert!(matches!(
+        stale_registry.send(&client).await,
+        Err(ClientError::NitroDecryption(
+            NitroDecryptionError::PaymentContextStale
+        ))
+    ));
+    assert_eq!(client.rpc().broadcasts.load(SeqCst), 0);
+    client.rpc().registry_slot.store(0, SeqCst);
+    client.rpc().blockhash_slot.store(0, SeqCst);
     let expired = sign().await;
     *client.rpc().blockhash_valid.lock().unwrap() = Ok(false);
     assert!(matches!(

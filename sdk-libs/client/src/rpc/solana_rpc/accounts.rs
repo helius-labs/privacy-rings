@@ -6,7 +6,7 @@ use solana_pubkey::Pubkey;
 use solana_rpc_client::api::{
     config::{RpcAccountInfoConfig, RpcProgramAccountsConfig, UiAccountEncoding},
     filter::{Memcmp, MemcmpEncodedBytes, RpcFilterType},
-    response::UiAccount,
+    response::{Response, UiAccount, UiAccountData},
 };
 
 use crate::error::ClientError;
@@ -57,6 +57,44 @@ pub(super) fn filtered_program_accounts(
             Ok((address, account))
         })
         .collect()
+}
+
+pub(super) fn account_read_config(min_context_slot: u64) -> RpcAccountInfoConfig {
+    RpcAccountInfoConfig {
+        encoding: Some(UiAccountEncoding::Base64),
+        commitment: Some(CommitmentConfig::confirmed()),
+        min_context_slot: Some(min_context_slot),
+        ..RpcAccountInfoConfig::default()
+    }
+}
+
+pub(super) fn account_with_slot(
+    response: Response<Option<UiAccount>>,
+    min_context_slot: u64,
+) -> Result<(u64, Option<Account>), ClientError> {
+    let slot = response.context.slot;
+    if slot < min_context_slot {
+        return Err(ClientError::Rpc(
+            "getAccountInfo returned an older context slot".into(),
+        ));
+    }
+    let account = response
+        .value
+        .map(|ui| {
+            if !matches!(
+                &ui.data,
+                UiAccountData::Binary(_, UiAccountEncoding::Base64)
+            ) {
+                return Err(ClientError::Rpc(
+                    "getAccountInfo did not return a base64 account".into(),
+                ));
+            }
+            ui.to_account().ok_or_else(|| {
+                ClientError::Rpc("getAccountInfo returned invalid account data".into())
+            })
+        })
+        .transpose()?;
+    Ok((slot, account))
 }
 
 pub(super) fn pubkey_from_address(address: &Address) -> Pubkey {

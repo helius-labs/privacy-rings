@@ -13,6 +13,7 @@ export { LocalKeys } from "../client/keys.js";
 export type {
   DecryptionRecipientProvider,
   GenesisHashReader,
+  AccountContextReader,
   PaymentBuildResult,
   PaymentLookup,
   PreparedPayment,

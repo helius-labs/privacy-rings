@@ -79,6 +79,15 @@ impl<T: Rpc + Send + Sync + 'static> AsyncRpc for Blocking<T> {
         self.run(move |rpc| rpc.get_account(address)).await
     }
 
+    async fn get_account_with_context(
+        &self,
+        address: Address,
+        min_context_slot: u64,
+    ) -> Result<(u64, Option<Account>), ClientError> {
+        self.run(move |rpc| rpc.get_account_with_context(address, min_context_slot))
+            .await
+    }
+
     async fn get_multiple_accounts(
         &self,
         addresses: Vec<Address>,
@@ -110,6 +119,16 @@ impl<T: Rpc + Send + Sync + 'static> AsyncRpc for Blocking<T> {
     async fn is_blockhash_valid(&self, blockhash: &Hash) -> Result<bool, ClientError> {
         let blockhash = Hash::new_from_array(blockhash.to_bytes());
         self.run(move |rpc| rpc.is_blockhash_valid(&blockhash))
+            .await
+    }
+
+    async fn blockhash_validity_with_context(
+        &self,
+        blockhash: &Hash,
+        min_context_slot: u64,
+    ) -> Result<(u64, bool), ClientError> {
+        let blockhash = *blockhash;
+        self.run(move |rpc| rpc.blockhash_validity_with_context(&blockhash, min_context_slot))
             .await
     }
 

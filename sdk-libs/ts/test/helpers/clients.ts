@@ -1,6 +1,11 @@
 import { blockhash, type Commitment } from "@solana/kit";
 
-import type { ChainReader, IndexerReader, KitRpcAccess } from "../../src/client/index.js";
+import type {
+  AccountContextReader,
+  ChainReader,
+  IndexerReader,
+  KitRpcAccess,
+} from "../../src/client/index.js";
 import type { LatestBlockhash, SolanaRpc } from "../../src/client/kit.js";
 import type {
   GetEncryptedUtxosByTagsResponse,
@@ -92,14 +97,25 @@ export function signatureReads(
   return reads;
 }
 
+export function registryReads(
+  getAccount: ChainReader["getAccount"] = async () => undefined,
+): Pick<ChainReader, "getAccount"> & AccountContextReader {
+  return {
+    getAccount,
+    async getAccountWithContext(address, minContextSlot, context) {
+      return { account: await getAccount(address, context), slot: minContextSlot };
+    },
+  };
+}
+
 export function depositClient(
-  overrides: Partial<DepositClient & TransactionBroadcaster> = {},
-): DepositClient & TransactionBroadcaster {
+  overrides: Partial<DepositClient & TransactionBroadcaster & AccountContextReader> = {},
+): DepositClient & TransactionBroadcaster & AccountContextReader {
   return {
     tree: TREE,
     treeId: TREE_ID,
     getLatestBlockhash: async () => BLOCKHASH,
-    getAccount: async () => undefined,
+    ...registryReads(overrides.getAccount),
     broadcastTransaction: notImplemented("broadcastTransaction"),
     getBlockhashValidity: async () => ({ slot: 1n, valid: true }),
     ...overrides,
@@ -107,11 +123,11 @@ export function depositClient(
 }
 
 export function privateTransactionClient(
-  overrides: Partial<PrivateTransactionClient> = {},
-): PrivateTransactionClient {
+  overrides: Partial<PrivateTransactionClient & AccountContextReader> = {},
+): PrivateTransactionClient & AccountContextReader {
   return {
     proofDataSource: "client",
-    getAccount: async () => undefined,
+    ...registryReads(overrides.getAccount),
     assembleAuthorizedPrivateTransaction: notImplemented("assembleAuthorizedPrivateTransaction"),
     ...overrides,
   };

@@ -62,6 +62,15 @@ export interface ChainReader {
   getBalance(address: Address, context?: RequestContext): Promise<bigint>;
 }
 
+/** An account read that reports its Solana context even when the account is absent. */
+export interface AccountContextReader {
+  getAccountWithContext(
+    address: Address,
+    minContextSlot: bigint,
+    context?: RequestContext,
+  ): Promise<Readonly<{ account: RpcAccount | undefined; slot: bigint }>>;
+}
+
 /** A verified service that publishes shielded addresses for Solana owners. */
 export interface DecryptionRecipientProvider {
   /** Full base58 Solana genesis hash bound to the service keys. */
@@ -77,7 +86,7 @@ export interface GenesisHashReader {
 export type RecipientLookup<Client> =
   | Readonly<{ client?: Client; decryptionService?: undefined }>
   | Readonly<{
-      client: Client & GenesisHashReader;
+      client: Client & GenesisHashReader & AccountContextReader;
       decryptionService: DecryptionRecipientProvider;
     }>;
 
@@ -96,7 +105,7 @@ export interface TransactionBroadcaster {
 export type PaymentLookup<Client, Persistence = never> =
   | Readonly<{ decryptionService?: undefined; persistence?: undefined }>
   | Readonly<{
-      client: Client & GenesisHashReader & TransactionBroadcaster;
+      client: Client & GenesisHashReader & AccountContextReader & TransactionBroadcaster;
       decryptionService: DecryptionRecipientProvider;
       persistence?: Persistence;
     }>;

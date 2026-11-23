@@ -1,12 +1,17 @@
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use serde_json::json;
 use solana_account::Account;
 use solana_address::Address;
 use solana_commitment_config::CommitmentConfig;
 use solana_hash::Hash;
 use solana_rpc_client::{
-    api::config::{RpcSendTransactionConfig, RpcTransactionConfig},
+    api::{
+        config::{RpcContextConfig, RpcSendTransactionConfig, RpcTransactionConfig},
+        request::RpcRequest,
+        response::Response,
+    },
     nonblocking::rpc_client::RpcClient as NonblockingRpcClient,
 };
 use solana_signature::Signature;
@@ -18,7 +23,10 @@ use solana_transaction_status_client_types::{
 use crate::{error::ClientError, rpc::AsyncRpc};
 
 use super::{
-    accounts::{filtered_program_accounts, pubkey_from_address, ProgramAccountsFilter},
+    accounts::{
+        account_read_config, account_with_slot, filtered_program_accounts, pubkey_from_address,
+        ProgramAccountsFilter,
+    },
     transaction::{
         instruction_groups_from_confirmed_transaction,
         transact_output_view_tags_from_instruction_groups, ConfirmedInstructionGroups,
@@ -140,12 +148,23 @@ impl AsyncRpc for AsyncSolanaRpc {
     }
 
     async fn get_account(&self, address: Address) -> Result<Option<Account>, ClientError> {
-        let pubkey = pubkey_from_address(&address);
-        self.client
-            .get_account_with_commitment(&pubkey, CommitmentConfig::confirmed())
+        self.get_account_with_context(address, 0)
             .await
-            .map(|response| response.value)
-            .map_err(|err| ClientError::Rpc(format!("get_account {pubkey}: {err}")))
+            .map(|(_, account)| account)
+    }
+
+    async fn get_account_with_context(
+        &self,
+        address: Address,
+        min_context_slot: u64,
+    ) -> Result<(u64, Option<Account>), ClientError> {
+        let pubkey = pubkey_from_address(&address);
+        let response = self
+            .client
+            .get_ui_account_with_config(&pubkey, account_read_config(min_context_slot))
+            .await
+            .map_err(|err| ClientError::Rpc(format!("get_account {pubkey}: {err}")))?;
+        account_with_slot(response, min_context_slot)
     }
 
     async fn get_program_accounts(
@@ -217,6 +236,31 @@ impl AsyncRpc for AsyncSolanaRpc {
             .is_blockhash_valid(blockhash, CommitmentConfig::confirmed())
             .await
             .map_err(|err| ClientError::Rpc(format!("is_blockhash_valid: {err}")))
+    }
+
+    async fn blockhash_validity_with_context(
+        &self,
+        blockhash: &Hash,
+        min_context_slot: u64,
+    ) -> Result<(u64, bool), ClientError> {
+        let config = RpcContextConfig {
+            commitment: Some(CommitmentConfig::confirmed()),
+            min_context_slot: Some(min_context_slot),
+        };
+        let response: Response<bool> = self
+            .client
+            .send(
+                RpcRequest::IsBlockhashValid,
+                json!([blockhash.to_string(), config]),
+            )
+            .await
+            .map_err(|err| ClientError::Rpc(format!("is_blockhash_valid: {err}")))?;
+        if response.context.slot < min_context_slot {
+            return Err(ClientError::Rpc(
+                "isBlockhashValid returned an older context slot".into(),
+            ));
+        }
+        Ok((response.context.slot, response.value))
     }
 
     async fn get_block_height(&self) -> Result<u64, ClientError> {

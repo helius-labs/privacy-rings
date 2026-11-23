@@ -105,6 +105,7 @@ export {
   type DepositTransactionParams,
   type DecryptionRecipientProvider,
   type GenesisHashReader,
+  type AccountContextReader,
   type PaymentBuildResult,
   type PaymentLookup,
   type PreparedPayment,

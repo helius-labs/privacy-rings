@@ -154,11 +154,12 @@ fn reply_for(body: &[u8], owner: Pubkey, result: Value, session_expires_at_ms: u
 struct PaymentRpc([u8; 32], Option<Box<dyn Fn() + Send + Sync>>);
 
 impl crate::Rpc for PaymentRpc {
-    fn get_account(
+    fn get_account_with_context(
         &self,
         _: Pubkey,
-    ) -> Result<Option<solana_account::Account>, crate::ClientError> {
-        Ok(None)
+        min_context_slot: u64,
+    ) -> Result<(u64, Option<solana_account::Account>), crate::ClientError> {
+        Ok((min_context_slot, None))
     }
 
     fn genesis_hash(&self) -> Result<[u8; 32], crate::ClientError> {
@@ -171,11 +172,12 @@ impl crate::Rpc for PaymentRpc {
 
 #[async_trait::async_trait]
 impl crate::AsyncRpc for PaymentRpc {
-    async fn get_account(
+    async fn get_account_with_context(
         &self,
         _: Pubkey,
-    ) -> Result<Option<solana_account::Account>, crate::ClientError> {
-        Ok(None)
+        min_context_slot: u64,
+    ) -> Result<(u64, Option<solana_account::Account>), crate::ClientError> {
+        Ok((min_context_slot, None))
     }
 
     async fn genesis_hash(&self) -> Result<[u8; 32], crate::ClientError> {

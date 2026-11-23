@@ -22,6 +22,7 @@ pub struct NitroPaymentRecipient {
     service: NitroDecryptionService,
     owner: Pubkey,
     address: ShieldedAddress,
+    registry_slot: u64,
 }
 
 impl NitroPaymentRecipient {
@@ -29,11 +30,13 @@ impl NitroPaymentRecipient {
         service: NitroDecryptionService,
         owner: Pubkey,
         address: ShieldedAddress,
+        registry_slot: u64,
     ) -> Self {
         Self {
             service,
             owner,
             address,
+            registry_slot,
         }
     }
 
@@ -42,15 +45,19 @@ impl NitroPaymentRecipient {
         self.address
     }
 
-    async fn revalidate<R: AsyncRpc>(&self, rpc: &R) -> Result<bool, ClientError> {
-        let (address, from_service) = self
+    async fn revalidate<R: AsyncRpc>(
+        &self,
+        rpc: &R,
+        floor: u64,
+    ) -> Result<(bool, u64), ClientError> {
+        let (address, from_service, slot) = self
             .service
-            .resolve_recipient_address(rpc, self.owner)
+            .resolve_recipient_address(rpc, self.owner, floor)
             .await?;
         if address != self.address {
             return Err(NitroDecryptionError::PaymentRecipientChanged.into());
         }
-        Ok(from_service)
+        Ok((from_service, slot))
     }
 }
 
@@ -66,6 +73,7 @@ pub struct SignedNitroPayment<'a> {
     transaction: VersionedTransaction,
     signature: Signature,
     last_valid_block_height: u64,
+    registry_slot: u64,
 }
 
 impl<'a> Submission<'a> {
@@ -143,7 +151,19 @@ impl<'a> NitroPaymentSubmission<'a> {
         unsigned: UnsignedMessage,
         sign: impl AsyncFnOnce(&UnsignedMessage) -> Result<VersionedTransaction, ClientError>,
     ) -> Result<SignedNitroPayment<'a>, ClientError> {
-        revalidate_payment(rpc, unsigned.message.recent_blockhash(), self.recipients).await?;
+        let floor = self
+            .recipients
+            .iter()
+            .map(|recipient| recipient.registry_slot)
+            .max()
+            .unwrap_or(0);
+        let registry_slot = revalidate_payment(
+            rpc,
+            unsigned.message.recent_blockhash(),
+            self.recipients,
+            floor,
+        )
+        .await?;
         let signed = sign(&unsigned).await?;
         if signed.message != unsigned.message {
             return Err(NitroDecryptionError::PaymentMessageChanged.into());
@@ -162,6 +182,7 @@ impl<'a> NitroPaymentSubmission<'a> {
             transaction: signed,
             signature,
             last_valid_block_height: unsigned.last_valid_block_height,
+            registry_slot,
         })
     }
 
@@ -206,7 +227,13 @@ impl SignedNitroPayment<'_> {
         self,
         client: &AsyncSprClient<R, I>,
     ) -> Result<Signature, ClientError> {
-        revalidate_payment(client.rpc(), self.blockhash(), self.recipients).await?;
+        revalidate_payment(
+            client.rpc(),
+            self.blockhash(),
+            self.recipients,
+            self.registry_slot,
+        )
+        .await?;
         send_signed(client, self.transaction)
             .await
             .map_err(|source| ClientError::NitroPaymentSend {
@@ -228,12 +255,23 @@ async fn revalidate_payment<R: AsyncRpc>(
     rpc: &R,
     blockhash: &Hash,
     recipients: &[NitroPaymentRecipient],
-) -> Result<(), ClientError> {
-    if !rpc.is_blockhash_valid(blockhash).await? {
+    min_context_slot: u64,
+) -> Result<u64, ClientError> {
+    let (slot, valid) = rpc
+        .blockhash_validity_with_context(blockhash, min_context_slot)
+        .await?;
+    if slot < min_context_slot {
+        return Err(NitroDecryptionError::PaymentContextStale.into());
+    }
+    if !valid {
         return Err(NitroDecryptionError::PaymentBlockhashInvalid.into());
     }
-    let from_service =
-        try_join_all(recipients.iter().map(|recipient| recipient.revalidate(rpc))).await?;
+    let observed = try_join_all(
+        recipients
+            .iter()
+            .map(|recipient| recipient.revalidate(rpc, slot)),
+    )
+    .await?;
     let genesis = rpc.genesis_hash().await?;
     for recipient in recipients {
         recipient.service.require_chain(genesis)?;
@@ -242,8 +280,8 @@ async fn revalidate_payment<R: AsyncRpc>(
     try_join_all(
         recipients
             .iter()
-            .zip(from_service)
-            .filter(|(_, from_service)| *from_service)
+            .zip(&observed)
+            .filter(|(_, (from_service, _))| *from_service)
             .map(|(recipient, _)| {
                 recipient
                     .service
@@ -251,7 +289,11 @@ async fn revalidate_payment<R: AsyncRpc>(
             }),
     )
     .await?;
-    Ok(())
+    Ok(observed
+        .into_iter()
+        .map(|(_, registry_slot)| registry_slot)
+        .max()
+        .unwrap_or(slot))
 }
 
 #[cfg(test)]

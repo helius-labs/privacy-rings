@@ -6,6 +6,7 @@ export type {
   BlockhashProvider,
   SlotReader,
   ChainReader,
+  AccountContextReader,
   GenesisHashReader,
   IndexerReader,
   KitRpcAccess,

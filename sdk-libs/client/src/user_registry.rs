@@ -421,7 +421,7 @@ pub fn decode_user_record_account(
     })
 }
 
-fn parse_user_record_account(
+pub(crate) fn parse_user_record_account(
     owner: Pubkey,
     record_pda: Pubkey,
     bump: u8,

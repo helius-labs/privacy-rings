@@ -211,7 +211,7 @@ type PaymentChecks = Readonly<{
   client: TransactionBroadcaster;
   genesisHash: string;
   persistence: WalletPersistence | undefined;
-  revalidate(context?: RequestContext): Promise<void>;
+  revalidate(context?: RequestContext, minContextSlot?: bigint): Promise<void>;
 }>;
 
 function servicePaymentOptions(

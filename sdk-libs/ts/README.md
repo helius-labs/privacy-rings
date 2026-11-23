@@ -347,10 +347,12 @@ With a `decryptionService`, the builder returns a `PreparedPayment`. Pass a
 sign-only callback to `send`. The SDK checks the exact blockhash, Solana
 network and current recipients before invoking the signer. It verifies the
 returned message and signatures, then repeats the freshness checks before
-broadcast. Solana
-enforces blockhash validity when it processes the transaction. Custom
-payment clients return the RPC slot with `getBlockhashValidity`. Explicit
-shielded addresses keep their original keys.
+broadcast. Each registry recheck uses a slot at least as recent as that
+owner's preceding registry read and the corresponding blockhash check.
+Custom payment clients implement `getAccountWithContext` and report the slot
+even when the registry record is absent. `getBlockhashValidity` reports the
+slot of the exact blockhash check. Solana enforces expiry when it processes
+the transaction. Explicit shielded addresses keep their original keys.
 Each prepared payment can be sent once. `cancel()`
 releases a transfer's reserved inputs before signing starts. A failure
 before broadcast also releases them. Once broadcast starts, the wallet tracks

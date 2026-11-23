@@ -144,6 +144,22 @@ describe("Solana RPC through the configured fetch", () => {
     expect(global).not.toHaveBeenCalled();
   });
 
+  it("preserves the slot of an absent account and rejects an old context", async () => {
+    const { fetch, seen } = solanaRpcFetch();
+    const client = rpcClient(fetch);
+    await expect(client.getAccountWithContext(ACCOUNT, 1n)).resolves.toEqual({
+      slot: 1n,
+      account: undefined,
+    });
+    await expect(client.getAccountWithContext(ACCOUNT, 2n)).rejects.toMatchObject({
+      code: "CLIENT_INVALID_RPC_RESPONSE",
+      details: { method: "getAccountInfo", path: "context.slot" },
+    });
+    expect(JSON.parse(seen[1]!.body)).toMatchObject({
+      params: [ACCOUNT, { commitment: "confirmed", encoding: "base64", minContextSlot: 2 }],
+    });
+  });
+
   it("lets a fetch wrapper retry a rate-limited signature status poll", async () => {
     refusedGlobalFetch();
     const { fetch: upstream, seen } = solanaRpcFetch(1);

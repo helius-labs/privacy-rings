@@ -12,12 +12,14 @@ use std::{
 
 use futures::{stream::FuturesUnordered, StreamExt};
 use reqwest::{header::CONTENT_TYPE, Client, StatusCode};
+use solana_account::Account;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
 use spr_api::{BlockingInsideRuntime, BlockingRuntime};
 use spr_hasher::primitives::is_canonical_bn254_scalar_be;
 use spr_keypair::{NullifierKey, PublicKey, ShieldedAddress, X25519Pubkey};
 use spr_transaction::DecryptRequest;
+use spr_user_registry_interface::user_record_pda;
 use thiserror::Error;
 use tokio::{
     sync::{oneshot, Mutex, Semaphore},
@@ -31,9 +33,7 @@ use crate::{
         now_ms, read_limited, AcceptedNitroPolicy, NitroCheckpointStore, NitroNetwork,
         NitroPolicyError, NitroPolicyReader, NitroTarget, NitroTrust,
     },
-    user_registry::{
-        resolve_shielded_recipient_with_source, resolve_shielded_recipient_with_source_async,
-    },
+    user_registry::{parse_user_record_account, resolved_address_from_record},
     AsyncRpc, ClientError, Rpc,
 };
 
@@ -88,6 +88,8 @@ pub enum NitroDecryptionError {
     PaymentRecipientMismatch,
     #[error("the Nitro payment recipient changed during transaction preparation")]
     PaymentRecipientChanged,
+    #[error("the payment RPC returned an older Solana context")]
+    PaymentContextStale,
     #[error("the signer changed the prepared Nitro payment message")]
     PaymentMessageChanged,
     #[error("the Nitro payment blockhash is no longer valid")]
@@ -185,24 +187,41 @@ impl NitroDecryptionService {
         rpc: &R,
         owner: Pubkey,
     ) -> Result<NitroPaymentRecipient, ClientError> {
-        let (address, from_service) = self.resolve_recipient_address(rpc, owner).await?;
+        let (address, from_service, slot) = self.resolve_recipient_address(rpc, owner, 0).await?;
         self.require_chain(rpc.genesis_hash().await?)?;
         if from_service {
             self.confirm_payment_address(owner, address).await?;
         }
-        Ok(NitroPaymentRecipient::new(self.clone(), owner, address))
+        Ok(NitroPaymentRecipient::new(
+            self.clone(),
+            owner,
+            address,
+            slot,
+        ))
     }
 
     pub(crate) async fn resolve_recipient_address<R: AsyncRpc>(
         &self,
         rpc: &R,
         owner: Pubkey,
-    ) -> Result<(ShieldedAddress, bool), ClientError> {
-        resolve_shielded_recipient_with_source_async(rpc, owner, |owner| async move {
-            self.require_chain(rpc.genesis_hash().await?)?;
-            self.address(owner).await.map_err(ClientError::from)
-        })
-        .await
+        min_context_slot: u64,
+    ) -> Result<(ShieldedAddress, bool, u64), ClientError> {
+        let registry = user_record_pda(&owner);
+        let read = async |floor| {
+            let (slot, account) = rpc.get_account_with_context(registry.0, floor).await?;
+            Ok::<_, ClientError>((
+                registry_address(owner, registry, account, slot, floor)?,
+                slot,
+            ))
+        };
+        let (registered, slot) = read(min_context_slot).await?;
+        if let Some(address) = registered {
+            return Ok((address, false, slot));
+        }
+        self.require_chain(rpc.genesis_hash().await?)?;
+        let fallback = self.address(owner).await?;
+        let (registered, slot) = read(slot).await?;
+        Ok(registered.map_or((fallback, true, slot), |address| (address, false, slot)))
     }
 
     /// Blocking recipient resolution for wallets using a blocking Solana RPC.
@@ -211,19 +230,34 @@ impl NitroDecryptionService {
         rpc: &R,
         owner: Pubkey,
     ) -> Result<NitroPaymentRecipient, ClientError> {
-        let (address, from_service) =
-            resolve_shielded_recipient_with_source(rpc, owner, |owner| {
-                self.require_chain(rpc.genesis_hash()?)?;
-                self.runtime()
-                    .block_on(self.address(owner))
-                    .map_err(ClientError::from)
-            })?;
+        let registry = user_record_pda(&owner);
+        let read = |floor| {
+            let (slot, account) = rpc.get_account_with_context(registry.0, floor)?;
+            Ok::<_, ClientError>((
+                registry_address(owner, registry, account, slot, floor)?,
+                slot,
+            ))
+        };
+        let (registered, slot) = read(0)?;
+        let (address, from_service, slot) = if let Some(address) = registered {
+            (address, false, slot)
+        } else {
+            self.require_chain(rpc.genesis_hash()?)?;
+            let fallback = self.runtime().block_on(self.address(owner))?;
+            let (registered, slot) = read(slot)?;
+            registered.map_or((fallback, true, slot), |address| (address, false, slot))
+        };
         self.require_chain(rpc.genesis_hash()?)?;
         if from_service {
             self.runtime()
                 .block_on(self.confirm_payment_address(owner, address))?;
         }
-        Ok(NitroPaymentRecipient::new(self.clone(), owner, address))
+        Ok(NitroPaymentRecipient::new(
+            self.clone(),
+            owner,
+            address,
+            slot,
+        ))
     }
 
     pub(crate) async fn confirm_payment_address(
@@ -343,6 +377,24 @@ impl NitroDecryptionService {
         }
         Ok((NullifierKey::from_secret(*secret), decoded))
     }
+}
+
+fn registry_address(
+    owner: Pubkey,
+    (pda, bump): (Pubkey, u8),
+    account: Option<Account>,
+    slot: u64,
+    floor: u64,
+) -> Result<Option<ShieldedAddress>, ClientError> {
+    if slot < floor {
+        return Err(NitroDecryptionError::PaymentContextStale.into());
+    }
+    account
+        .map(|account| {
+            let record = parse_user_record_account(owner, pda, bump, &account)?;
+            Ok(resolved_address_from_record(owner, &record)?.address)
+        })
+        .transpose()
 }
 
 async fn retry_public_keys<T>(

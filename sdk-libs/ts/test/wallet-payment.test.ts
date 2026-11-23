@@ -3,6 +3,7 @@ import {
   getSignatureFromTransaction,
   signTransactionWithSigners,
   signatureBytes,
+  type Address,
   type Transaction,
 } from "@solana/kit";
 import { expect, it, vi } from "vitest";
@@ -22,10 +23,15 @@ async function payment() {
   );
   const getBlockhashValidity = vi.fn(async () => ({ slot: 1n, valid: true }));
   const getGenesisHash = vi.fn(async () => GENESIS);
+  const getAccountWithContext = vi.fn(async (_address: Address, minContextSlot: bigint) => ({
+    account: undefined,
+    slot: minContextSlot,
+  }));
   const prepared = await buildDepositTransaction({
     client: {
       ...depositClient({ broadcastTransaction, getBlockhashValidity }),
       getGenesisHash,
+      getAccountWithContext,
     },
     decryptionService: { address, genesisHash: GENESIS },
     feePayer: payer.address,
@@ -42,6 +48,7 @@ async function payment() {
     broadcastTransaction,
     getBlockhashValidity,
     getGenesisHash,
+    getAccountWithContext,
   };
 }
 
@@ -84,6 +91,40 @@ it.each([
   expect(signer).not.toHaveBeenCalled();
   expect(broadcastTransaction).not.toHaveBeenCalled();
 });
+
+it.each(["signing", "broadcast"] as const)(
+  "requires a registry context at or beyond the blockhash read before %s",
+  async (stage) => {
+    const {
+      prepared,
+      sign,
+      address,
+      getBlockhashValidity,
+      getAccountWithContext,
+      broadcastTransaction,
+    } = await payment();
+    if (stage === "signing") {
+      getBlockhashValidity.mockResolvedValueOnce({ slot: 10n, valid: true });
+      getAccountWithContext.mockResolvedValueOnce({ account: undefined, slot: 9n });
+    }
+    const signPayment = vi.fn(async (transaction: Transaction) => {
+      getBlockhashValidity.mockResolvedValueOnce({ slot: 10n, valid: true });
+      getAccountWithContext.mockImplementation(async (_address, minContextSlot) => ({
+        account: undefined,
+        slot: minContextSlot === 10n ? 9n : minContextSlot,
+      }));
+      return sign(transaction);
+    });
+    address.mockClear();
+    await expect(prepared.send(signPayment)).rejects.toMatchObject({
+      causeCode: "WALLET_RECIPIENT_CONTEXT_STALE",
+    });
+    expect(getAccountWithContext.mock.calls.at(-1)?.[1]).toBe(10n);
+    expect(signPayment).toHaveBeenCalledTimes(stage === "signing" ? 0 : 1);
+    if (stage === "signing") expect(address).not.toHaveBeenCalled();
+    expect(broadcastTransaction).not.toHaveBeenCalled();
+  },
+);
 
 it("refuses a different Solana message from the signing callback", async () => {
   const { prepared, payer, sign, address, broadcastTransaction } = await payment();

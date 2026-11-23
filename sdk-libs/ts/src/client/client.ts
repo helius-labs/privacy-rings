@@ -5,7 +5,6 @@ import {
   assertIsAddress,
   assertIsSendableTransaction,
   assertIsSignature,
-  getBase64Encoder,
   getBase64EncodedWireTransaction,
   type Address,
   type Blockhash,
@@ -51,6 +50,7 @@ import {
   type AuthorizedPrivateTransactionMaterial,
   type BlockhashProvider,
   type ChainReader,
+  type AccountContextReader,
   type IndexedProofAuthority,
   type IndexerReader,
   type KitRpcAccess,
@@ -213,6 +213,7 @@ export type {
 export class SprClient
   implements
     ChainReader,
+    AccountContextReader,
     BlockhashProvider,
     IndexerReader,
     ProofReader,
@@ -352,13 +353,40 @@ export class SprClient
   }
 
   async getAccount(address: Address, context?: RequestContext): Promise<RpcAccount | undefined> {
+    return (await this.getAccountWithContext(address, 0n, context)).account;
+  }
+
+  async getAccountWithContext(address: Address, minContextSlot: bigint, context?: RequestContext) {
     checkedAddress(address, "address");
-    const { value } = await runKitRpc("getAccountInfo", context, (abortSignal) =>
+    const method = "getAccountInfo";
+    const invalid = (reason: string) =>
+      new ClientError("CLIENT_INVALID_RPC_RESPONSE", { details: { method, path: reason } });
+    if (
+      typeof minContextSlot !== "bigint" ||
+      minContextSlot < 0n ||
+      minContextSlot > 0xffff_ffff_ffff_ffffn
+    ) {
+      throw new ClientError("CLIENT_INVALID_CONTEXT", {
+        details: { method, field: "minContextSlot" },
+      });
+    }
+    const response: unknown = await runKitRpc(method, context, (abortSignal) =>
       this.solanaRpc
-        .getAccountInfo(address, { commitment: this.commitment, encoding: "base64" })
+        .getAccountInfo(address, {
+          commitment: this.commitment,
+          encoding: "base64",
+          ...(minContextSlot === 0n ? {} : { minContextSlot }),
+        })
         .send({ abortSignal }),
     );
-    return value === null ? undefined : decodeRpcAccount(value, "getAccountInfo");
+    const decode = wireDecoder(invalid);
+    const result = decode.record(response, "result");
+    const slot = decode.record(result["context"], "context")["slot"];
+    if (typeof slot !== "bigint" || slot < minContextSlot || slot > 0xffff_ffff_ffff_ffffn) {
+      throw invalid("context.slot");
+    }
+    const value = result["value"];
+    return { slot, account: value === null ? undefined : decodeRpcAccount(value, method) };
   }
 
   /** Every account of one program, as Rust's `Rpc::get_program_accounts`. */
@@ -1372,26 +1400,22 @@ function commitmentReached(reached: Commitment | null, required: Commitment): bo
   return COMMITMENT_RANK[reached] >= COMMITMENT_RANK[required];
 }
 
-function decodeRpcAccount(
-  account: Readonly<{
-    owner: Address;
-    lamports: bigint;
-    data: readonly [string, "base64"];
-  }>,
-  method: string,
-): RpcAccount {
-  try {
-    return Object.freeze({
-      owner: account.owner,
-      data: new Uint8Array(getBase64Encoder().encode(account.data[0])),
-      lamports: account.lamports,
-    });
-  } catch (cause) {
-    throw new ClientError("CLIENT_INVALID_RPC_RESPONSE", {
-      details: { method, path: "result.value.data" },
-      cause,
-    });
+function decodeRpcAccount(value: unknown, method: string): RpcAccount {
+  const invalid = (path: string) =>
+    new ClientError("CLIENT_INVALID_RPC_RESPONSE", { details: { method, path } });
+  const decode = wireDecoder(invalid);
+  const account = decode.record(value, "result.value");
+  const data = decode.list(account["data"], "result.value.data");
+  if (data.length !== 2 || data[1] !== "base64") throw invalid("result.value.data");
+  const lamports = account["lamports"];
+  if (typeof lamports !== "bigint" || lamports < 0n || lamports > 0xffff_ffff_ffff_ffffn) {
+    throw invalid("result.value.lamports");
   }
+  return Object.freeze({
+    owner: decode.address(account["owner"], "result.value.owner"),
+    data: decode.base64(data[0], "result.value.data"),
+    lamports,
+  });
 }
 
 /** The one field pair the assembler binds, the rest of `ProvedMerge` stays unclaimed. */

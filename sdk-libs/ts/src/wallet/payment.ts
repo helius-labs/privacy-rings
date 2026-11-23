@@ -68,7 +68,7 @@ function checkedSignatureTransaction(
 export function prepareServicePayment(
   transaction: Transaction,
   client: TransactionBroadcaster,
-  revalidate: (context?: RequestContext) => Promise<void>,
+  revalidate: (context?: RequestContext, minContextSlot?: bigint) => Promise<void>,
   reservation?: Readonly<{
     assertActive(): void;
     stage(
@@ -122,7 +122,7 @@ export function prepareServicePayment(
             reservation?.assertActive();
             let blockhashValidAtSlot = await validAtSlot(signal);
             signal.throwIfAborted();
-            await revalidate({ signal });
+            await revalidate({ signal }, blockhashValidAtSlot);
             signal.throwIfAborted();
             reservation?.assertActive();
             const signed = await sign(decoder.decode(unsigned.slice()), signal);
@@ -139,11 +139,11 @@ export function prepareServicePayment(
               );
             }
             signal.throwIfAborted();
-            await revalidate({ signal });
+            await revalidate({ signal }, blockhashValidAtSlot);
             signal.throwIfAborted();
-            await validAtSlot(signal, blockhashValidAtSlot);
+            const broadcastSlot = await validAtSlot(signal, blockhashValidAtSlot);
             signal.throwIfAborted();
-            await revalidate({ signal });
+            await revalidate({ signal }, broadcastSlot);
             signal.throwIfAborted();
             reservation?.assertPending(expected);
             attempted = expected;

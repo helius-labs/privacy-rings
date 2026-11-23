@@ -34,6 +34,15 @@ pub trait Rpc {
         Err(unsupported("get_account"))
     }
 
+    /// Read an account at or above the minimum context, including for a missing account.
+    fn get_account_with_context(
+        &self,
+        address: Address,
+        min_context_slot: u64,
+    ) -> Result<(u64, Option<Account>), ClientError> {
+        Err(unsupported("get_account_with_context"))
+    }
+
     fn get_multiple_accounts(
         &self,
         addresses: Vec<Address>,
@@ -76,6 +85,15 @@ pub trait Rpc {
     /// Check this exact recent blockhash at the commitment used to fetch it.
     fn is_blockhash_valid(&self, _blockhash: &Hash) -> Result<bool, ClientError> {
         Err(unsupported("is_blockhash_valid"))
+    }
+
+    /// Report the RPC context of the exact blockhash validity result.
+    fn blockhash_validity_with_context(
+        &self,
+        blockhash: &Hash,
+        min_context_slot: u64,
+    ) -> Result<(u64, bool), ClientError> {
+        Err(unsupported("blockhash_validity_with_context"))
     }
 
     fn get_block_height(&self) -> Result<u64, ClientError> {
@@ -294,6 +312,15 @@ pub trait AsyncRpc: Send + Sync {
         Err(unsupported("get_account"))
     }
 
+    /// Read an account at or above the minimum context, including for a missing account.
+    async fn get_account_with_context(
+        &self,
+        address: Address,
+        min_context_slot: u64,
+    ) -> Result<(u64, Option<Account>), ClientError> {
+        Err(unsupported("get_account_with_context"))
+    }
+
     async fn get_multiple_accounts(
         &self,
         addresses: Vec<Address>,
@@ -323,6 +350,15 @@ pub trait AsyncRpc: Send + Sync {
     /// As [`Rpc::is_blockhash_valid`].
     async fn is_blockhash_valid(&self, _blockhash: &Hash) -> Result<bool, ClientError> {
         Err(unsupported("is_blockhash_valid"))
+    }
+
+    /// Report the RPC context of the exact blockhash validity result.
+    async fn blockhash_validity_with_context(
+        &self,
+        blockhash: &Hash,
+        min_context_slot: u64,
+    ) -> Result<(u64, bool), ClientError> {
+        Err(unsupported("blockhash_validity_with_context"))
     }
 
     async fn get_block_height(&self) -> Result<u64, ClientError> {

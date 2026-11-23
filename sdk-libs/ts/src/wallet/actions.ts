@@ -154,7 +154,10 @@ export type TransferRecipient =
 export interface CreatedTransfer {
   readonly transaction: UnsignedPrivateTransaction;
   readonly recipient: TransferRecipient;
-  readonly revalidateRecipients: (context?: RequestContext) => Promise<void>;
+  readonly revalidateRecipients: (
+    context?: RequestContext,
+    minContextSlot?: bigint,
+  ) => Promise<void>;
 }
 
 export type MultiTransferParams = RecipientLookup<Pick<ChainReader, "getAccount">> & {
@@ -168,7 +171,10 @@ export interface CreatedMultiTransfer {
   readonly transaction: UnsignedPrivateTransaction;
   /** In payment order. */
   readonly recipients: readonly TransferRecipient[];
-  readonly revalidateRecipients: (context?: RequestContext) => Promise<void>;
+  readonly revalidateRecipients: (
+    context?: RequestContext,
+    minContextSlot?: bigint,
+  ) => Promise<void>;
 }
 
 export interface CreatedWithdrawal {

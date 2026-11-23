@@ -95,7 +95,11 @@ requesting Solana signatures. It verifies the returned message and every
 signature. Record the signed transaction ID, blockhash and last valid block
 height before calling `send` so you can reconcile after cancellation.
 `send` consumes the signed payment and repeats those RPC checks before
-broadcast. Custom RPC implementations must support `is_blockhash_valid`. An error after entering the
+broadcast. Registry rechecks use a context slot at least as recent as the
+current blockhash check and the recipient evidence already observed. Custom
+RPC implementations must support `get_account_with_context` and
+`blockhash_validity_with_context`. An absent registry account still carries
+its context slot. An error after entering the
 send path carries the same ID in `ClientError::NitroPaymentSend`.
 Blocking clients use `sign_sync` or `sign_with_sync`, then `send_sync`.
 

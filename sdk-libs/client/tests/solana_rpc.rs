@@ -44,6 +44,77 @@ fn get_account_returns_none_for_missing_account() {
     assert!(account.is_none());
 }
 
+fn account_response(value: Value) -> Mocks {
+    [(
+        RpcRequest::GetAccountInfo,
+        json!({ "context": { "slot": 42 }, "value": value }),
+    )]
+    .into_iter()
+    .collect()
+}
+
+fn malformed_binary_account() -> Value {
+    json!({
+        "owner": Address::default().to_string(),
+        "data": ["!", "base64"],
+        "executable": false,
+        "lamports": 1,
+        "rentEpoch": 0,
+        "space": 1,
+    })
+}
+
+#[test]
+fn blocking_registry_reads_reject_old_context_and_malformed_accounts() {
+    let check = |value, floor| {
+        SolanaRpc::with_client(RpcClient::new_mock_with_mocks(
+            "succeeds",
+            account_response(value),
+        ))
+        .get_account_with_context(Address::default(), floor)
+    };
+    assert_eq!(check(Value::Null, 42).unwrap(), (42, None));
+    assert!(
+        matches!(check(Value::Null, 43), Err(ClientError::Rpc(error)) if error.contains("older context slot"))
+    );
+    assert!(
+        matches!(check(malformed_binary_account(), 42), Err(ClientError::Rpc(error)) if error.contains("invalid account data"))
+    );
+    let rpc = SolanaRpc::with_client(RpcClient::new_mock_with_mocks(
+        "succeeds",
+        account_response(malformed_binary_account()),
+    ));
+    assert!(
+        matches!(rpc.get_account(Address::default()), Err(ClientError::Rpc(error)) if error.contains("invalid account data"))
+    );
+}
+
+#[tokio::test]
+async fn async_registry_reads_reject_old_context_and_malformed_accounts() {
+    let check = async |value, floor| {
+        AsyncSolanaRpc::with_client(NonblockingRpcClient::new_mock_with_mocks(
+            "succeeds".to_owned(),
+            account_response(value),
+        ))
+        .get_account_with_context(Address::default(), floor)
+        .await
+    };
+    assert_eq!(check(Value::Null, 42).await.unwrap(), (42, None));
+    assert!(
+        matches!(check(Value::Null, 43).await, Err(ClientError::Rpc(error)) if error.contains("older context slot"))
+    );
+    assert!(
+        matches!(check(malformed_binary_account(), 42).await, Err(ClientError::Rpc(error)) if error.contains("invalid account data"))
+    );
+    let rpc = AsyncSolanaRpc::with_client(NonblockingRpcClient::new_mock_with_mocks(
+        "succeeds".to_owned(),
+        account_response(malformed_binary_account()),
+    ));
+    assert!(
+        matches!(rpc.get_account(Address::default()).await, Err(ClientError::Rpc(error)) if error.contains("invalid account data"))
+    );
+}
+
 #[test]
 fn get_program_accounts_wraps_the_underlying_client() {
     // The mock client returns an empty program-accounts set; this exercises the
@@ -85,7 +156,18 @@ fn blocking_blockhash_check_preserves_invalidity() {
         "succeeds",
         invalid_blockhash_response(),
     ));
-    assert!(!rpc.is_blockhash_valid(&Hash::default()).unwrap());
+    assert_eq!(
+        rpc.blockhash_validity_with_context(&Hash::default(), 42)
+            .unwrap(),
+        (42, false)
+    );
+    let rpc = SolanaRpc::with_client(RpcClient::new_mock_with_mocks(
+        "succeeds",
+        invalid_blockhash_response(),
+    ));
+    assert!(
+        matches!(rpc.blockhash_validity_with_context(&Hash::default(), 43), Err(ClientError::Rpc(error)) if error.contains("older context slot"))
+    );
 }
 
 #[tokio::test]
@@ -94,7 +176,19 @@ async fn async_blockhash_check_preserves_invalidity() {
         "succeeds".to_owned(),
         invalid_blockhash_response(),
     ));
-    assert!(!rpc.is_blockhash_valid(&Hash::default()).await.unwrap());
+    assert_eq!(
+        rpc.blockhash_validity_with_context(&Hash::default(), 42)
+            .await
+            .unwrap(),
+        (42, false)
+    );
+    let rpc = AsyncSolanaRpc::with_client(NonblockingRpcClient::new_mock_with_mocks(
+        "succeeds".to_owned(),
+        invalid_blockhash_response(),
+    ));
+    assert!(
+        matches!(rpc.blockhash_validity_with_context(&Hash::default(), 43).await, Err(ClientError::Rpc(error)) if error.contains("older context slot"))
+    );
 }
 
 #[test]
