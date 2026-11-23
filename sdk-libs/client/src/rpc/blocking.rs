@@ -127,7 +127,7 @@ impl<T: Rpc + Send + Sync + 'static> AsyncRpc for Blocking<T> {
         blockhash: &Hash,
         min_context_slot: u64,
     ) -> Result<(u64, bool), ClientError> {
-        let blockhash = *blockhash;
+        let blockhash = Hash::new_from_array(blockhash.to_bytes());
         self.run(move |rpc| rpc.blockhash_validity_with_context(&blockhash, min_context_slot))
             .await
     }
