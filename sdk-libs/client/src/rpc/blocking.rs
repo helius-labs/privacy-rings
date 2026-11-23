@@ -107,6 +107,12 @@ impl<T: Rpc + Send + Sync + 'static> AsyncRpc for Blocking<T> {
         self.run(|rpc| rpc.get_latest_blockhash()).await
     }
 
+    async fn is_blockhash_valid(&self, blockhash: &Hash) -> Result<bool, ClientError> {
+        let blockhash = Hash::new_from_array(blockhash.to_bytes());
+        self.run(move |rpc| rpc.is_blockhash_valid(&blockhash))
+            .await
+    }
+
     async fn get_block_height(&self) -> Result<u64, ClientError> {
         self.run(|rpc| rpc.get_block_height()).await
     }

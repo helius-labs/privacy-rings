@@ -53,7 +53,7 @@ impl NitroPaymentRecipient {
     }
 }
 
-/// A private transaction with resolved Nitro payment recipients checked at the send boundary.
+/// A single submission attempt with resolved Nitro recipients checked at the send boundary.
 pub struct NitroPaymentSubmission<'a> {
     submission: Submission<'a>,
     recipients: &'a [NitroPaymentRecipient],
@@ -65,6 +65,9 @@ impl<'a> Submission<'a> {
         self,
         recipients: &'a [NitroPaymentRecipient],
     ) -> Result<NitroPaymentSubmission<'a>, ClientError> {
+        if recipients.is_empty() {
+            return Err(NitroDecryptionError::PaymentRecipientsRequired.into());
+        }
         for recipient in recipients {
             let mut matches = self
                 .signed
@@ -86,9 +89,9 @@ impl<'a> Submission<'a> {
 }
 
 impl NitroPaymentSubmission<'_> {
-    /// Prove, sign, recheck the recipients, then submit and confirm.
+    /// Prove, sign, check the blockhash and recipients, then submit and confirm.
     pub async fn send<R: AsyncRpc, I: AsyncIndexer>(
-        &self,
+        self,
         client: &AsyncSprClient<R, I>,
         signers: &[&dyn Signer],
     ) -> Result<Signature, ClientError> {
@@ -103,7 +106,7 @@ impl NitroPaymentSubmission<'_> {
     /// A send or confirmation failure carries the signed transaction ID in
     /// [`ClientError::NitroPaymentSend`] for reconciliation before retrying.
     pub async fn send_with_signer<R: AsyncRpc, I: AsyncIndexer>(
-        &self,
+        self,
         client: &AsyncSprClient<R, I>,
         sign: impl AsyncFnOnce(&UnsignedMessage) -> Result<VersionedTransaction, ClientError>,
     ) -> Result<Signature, ClientError> {
@@ -112,7 +115,7 @@ impl NitroPaymentSubmission<'_> {
     }
 
     async fn send_unsigned<R: AsyncRpc, I: AsyncIndexer>(
-        &self,
+        self,
         client: &AsyncSprClient<R, I>,
         unsigned: UnsignedMessage,
         sign: impl AsyncFnOnce(&UnsignedMessage) -> Result<VersionedTransaction, ClientError>,
@@ -130,6 +133,13 @@ impl NitroPaymentSubmission<'_> {
         let signature = signed.signatures.first().copied().ok_or_else(|| {
             ClientError::SolanaTransactionSigning("missing fee payer signature".into())
         })?;
+        if !client
+            .rpc()
+            .is_blockhash_valid(signed.message.recent_blockhash())
+            .await?
+        {
+            return Err(NitroDecryptionError::PaymentBlockhashInvalid.into());
+        }
         self.revalidate(client.rpc()).await?;
         send_signed(client, signed)
             .await
@@ -146,11 +156,9 @@ impl NitroPaymentSubmission<'_> {
                 .map(|recipient| recipient.revalidate(rpc)),
         )
         .await?;
-        if !self.recipients.is_empty() {
-            let genesis = rpc.genesis_hash().await?;
-            for recipient in self.recipients {
-                recipient.service.require_chain(genesis)?;
-            }
+        let genesis = rpc.genesis_hash().await?;
+        for recipient in self.recipients {
+            recipient.service.require_chain(genesis)?;
         }
         // Payment policy can change while the final Solana RPC is in flight.
         try_join_all(
@@ -170,7 +178,7 @@ impl NitroPaymentSubmission<'_> {
 
     /// Blocking version of [`Self::send_with_signer`].
     pub fn send_with_signer_sync<R: BlockingRpc, I: BlockingIndexer>(
-        &self,
+        self,
         client: &SprClient<R, I>,
         sign: impl FnOnce(&UnsignedMessage) -> Result<VersionedTransaction, ClientError>,
     ) -> Result<Signature, ClientError> {
@@ -179,7 +187,7 @@ impl NitroPaymentSubmission<'_> {
 
     /// See [`Self::send`].
     pub fn send_sync<R: BlockingRpc, I: BlockingIndexer>(
-        &self,
+        self,
         client: &SprClient<R, I>,
         signers: &[&dyn Signer],
     ) -> Result<Signature, ClientError> {

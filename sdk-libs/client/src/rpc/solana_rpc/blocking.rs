@@ -237,6 +237,12 @@ impl Rpc for SolanaRpc {
             .map_err(|err| ClientError::Rpc(format!("get_latest_blockhash: {err}")))
     }
 
+    fn is_blockhash_valid(&self, blockhash: &Hash) -> Result<bool, ClientError> {
+        self.client
+            .is_blockhash_valid(blockhash, CommitmentConfig::confirmed())
+            .map_err(|err| ClientError::Rpc(format!("is_blockhash_valid: {err}")))
+    }
+
     fn get_block_height(&self) -> Result<u64, ClientError> {
         self.client
             .get_block_height()

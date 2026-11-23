@@ -70,6 +70,33 @@ fn latest_blockhash_preserves_last_valid_block_height() {
     assert_ne!(last_valid_block_height, 0);
 }
 
+fn invalid_blockhash_response() -> Mocks {
+    [(
+        RpcRequest::IsBlockhashValid,
+        json!({ "context": { "slot": 42 }, "value": false }),
+    )]
+    .into_iter()
+    .collect()
+}
+
+#[test]
+fn blocking_blockhash_check_preserves_invalidity() {
+    let rpc = SolanaRpc::with_client(RpcClient::new_mock_with_mocks(
+        "succeeds",
+        invalid_blockhash_response(),
+    ));
+    assert!(!rpc.is_blockhash_valid(&Hash::default()).unwrap());
+}
+
+#[tokio::test]
+async fn async_blockhash_check_preserves_invalidity() {
+    let rpc = AsyncSolanaRpc::with_client(NonblockingRpcClient::new_mock_with_mocks(
+        "succeeds".to_owned(),
+        invalid_blockhash_response(),
+    ));
+    assert!(!rpc.is_blockhash_valid(&Hash::default()).await.unwrap());
+}
+
 #[test]
 fn common_chain_state_methods_are_supported() {
     let rpc = SolanaRpc::with_client(RpcClient::new_mock("succeeds".to_owned()));

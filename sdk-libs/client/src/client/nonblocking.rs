@@ -67,6 +67,10 @@ impl<R: AsyncRpc, I: AsyncIndexer> AsyncRpc for AsyncSprClient<R, I> {
         self.rpc.get_latest_blockhash().await
     }
 
+    async fn is_blockhash_valid(&self, blockhash: &Hash) -> Result<bool, ClientError> {
+        self.rpc.is_blockhash_valid(blockhash).await
+    }
+
     async fn get_block_height(&self) -> Result<u64, ClientError> {
         self.rpc.get_block_height().await
     }

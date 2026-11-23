@@ -73,6 +73,11 @@ pub trait Rpc {
         Err(unsupported("get_latest_blockhash"))
     }
 
+    /// Check this exact recent blockhash at the commitment used to fetch it.
+    fn is_blockhash_valid(&self, _blockhash: &Hash) -> Result<bool, ClientError> {
+        Err(unsupported("is_blockhash_valid"))
+    }
+
     fn get_block_height(&self) -> Result<u64, ClientError> {
         Err(unsupported("get_block_height"))
     }
@@ -313,6 +318,11 @@ pub trait AsyncRpc: Send + Sync {
 
     async fn get_latest_blockhash(&self) -> Result<(Hash, u64), ClientError> {
         Err(unsupported("get_latest_blockhash"))
+    }
+
+    /// As [`Rpc::is_blockhash_valid`].
+    async fn is_blockhash_valid(&self, _blockhash: &Hash) -> Result<bool, ClientError> {
+        Err(unsupported("is_blockhash_valid"))
     }
 
     async fn get_block_height(&self) -> Result<u64, ClientError> {

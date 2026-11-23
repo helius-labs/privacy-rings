@@ -83,14 +83,15 @@ both signed policy heads after attestation and before sending the address. It
 checks them again after verifying the reply, before returning keys. A revoked,
 superseded or unavailable policy stops either lookup.
 
-Build each output with `recipient.address()` and pass the resolved recipients
-to `Submission::with_nitro_recipients`. It checks that every output to an
-attached owner uses the resolved keys. Its `send` and `send_sync` methods resolve
-the recipients again after signing and before broadcast. A changed registration,
-changed keys, or a payment refusal aborts the send. Use `send_with_signer` or
-`send_with_signer_sync` with an external signer. Return the signed transaction
-from the signing callback so the SDK can check its message and recipients
-before it broadcasts.
+Build each output with `recipient.address()` and pass at least one resolved
+recipient to `Submission::with_nitro_recipients`. Every output to an attached
+owner must use those keys. Each send consumes the submission. After signing,
+the SDK verifies the exact message and signatures, checks its blockhash at
+confirmed commitment, then rechecks the recipients before broadcast. Custom RPC
+implementations must support `is_blockhash_valid`. Use `send_with_signer` or
+`send_with_signer_sync` to return a signed transaction from an external signer.
+If `ClientError::NitroPaymentSend` carries a transaction ID, reconcile it before
+building another payment.
 
 Use `NitroDecryptionService::open` with the owner's Solana signer to recover notes
 under the service keys. The returned handle implements `ShieldedKeys` for

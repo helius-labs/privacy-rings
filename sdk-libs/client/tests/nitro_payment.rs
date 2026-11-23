@@ -93,6 +93,12 @@ fn attachment_requires_exact_keys_on_every_output_for_the_owner() {
         ));
     }
     let signed = transaction(payer.pubkey(), &[address, other, address]);
+    assert!(matches!(
+        Submission::new(&signed, payer.pubkey(), &keys).with_nitro_recipients(&[]),
+        Err(ClientError::NitroDecryption(
+            NitroDecryptionError::PaymentRecipientsRequired
+        ))
+    ));
     assert!(Submission::new(&signed, payer.pubkey(), &keys)
         .with_nitro_recipients(&recipients)
         .is_ok());
@@ -103,6 +109,8 @@ struct RegistryRpc {
     addresses: [ShieldedAddress; 2],
     rotated: AtomicBool,
     foreign_network: AtomicBool,
+    blockhash_valid: Mutex<Result<bool, &'static str>>,
+    rotate_on_blockhash_check: AtomicBool,
     broadcasts: AtomicUsize,
     confirmations: Mutex<Vec<Signature>>,
     broadcast_reply: Mutex<Result<Signature, &'static str>>,
@@ -139,6 +147,17 @@ impl AsyncRpc for RegistryRpc {
             owner: user_registry_program_id(),
             ..Default::default()
         }))
+    }
+
+    async fn is_blockhash_valid(&self, hash: &Hash) -> Result<bool, ClientError> {
+        assert_eq!(hash.as_bytes(), &[1; 32]);
+        if self.rotate_on_blockhash_check.swap(false, SeqCst) {
+            self.rotated.store(true, SeqCst);
+        }
+        self.blockhash_valid
+            .lock()
+            .unwrap()
+            .map_err(|message| ClientError::Rpc(message.into()))
     }
 
     async fn process_transaction(&self, _: VersionedTransaction) -> Result<Signature, ClientError> {
@@ -189,6 +208,8 @@ async fn the_signed_payment_is_checked_before_broadcast() {
             addresses: [address, rotated],
             rotated: AtomicBool::default(),
             foreign_network: AtomicBool::default(),
+            blockhash_valid: Mutex::new(Ok(true)),
+            rotate_on_blockhash_check: AtomicBool::default(),
             broadcasts: AtomicUsize::default(),
             confirmations: Mutex::default(),
             broadcast_reply: Mutex::new(Err("mock broadcast")),
@@ -203,9 +224,11 @@ async fn the_signed_payment_is_checked_before_broadcast() {
     assert_eq!(recipient.address(), address);
     let signed = transaction(payer.pubkey(), &[recipient.address()]);
     let recipients = [recipient];
-    let submission = Submission::new(&signed, payer.pubkey(), &keys)
-        .with_nitro_recipients(&recipients)
-        .unwrap();
+    let submission = || {
+        Submission::new(&signed, payer.pubkey(), &keys)
+            .with_nitro_recipients(&recipients)
+            .unwrap()
+    };
     let unsigned = |blockhash| UnsignedMessage {
         message: compile_message(
             &payer.pubkey(),
@@ -218,7 +241,7 @@ async fn the_signed_payment_is_checked_before_broadcast() {
     };
     let signer = RotatingSigner(&payer, &client.rpc().rotated);
     assert!(matches!(
-        submission
+        submission()
             .send_unsigned(&client, unsigned(1), async |prepared: &UnsignedMessage| {
                 sign_transaction(prepared.message.clone(), &[&signer])
             })
@@ -232,7 +255,7 @@ async fn the_signed_payment_is_checked_before_broadcast() {
 
     client.rpc().rotated.store(false, SeqCst);
     assert!(matches!(
-        submission
+        submission()
             .send_unsigned(&client, unsigned(1), async |_: &UnsignedMessage| {
                 sign_transaction(unsigned(2).message, &[&payer])
             })
@@ -243,7 +266,7 @@ async fn the_signed_payment_is_checked_before_broadcast() {
     ));
     for signatures in [vec![], vec![Signature::default()]] {
         assert!(matches!(
-            submission
+            submission()
                 .send_unsigned(
                     &client,
                     unsigned(1),
@@ -260,7 +283,7 @@ async fn the_signed_payment_is_checked_before_broadcast() {
     }
     assert_eq!(client.rpc().broadcasts.load(SeqCst), 0);
 
-    let result = submission
+    let result = submission()
         .send_unsigned(&client, unsigned(1), async |prepared: &UnsignedMessage| {
             let signed = sign_transaction(prepared.message.clone(), &[&payer])?;
             client.rpc().foreign_network.store(true, SeqCst);
@@ -284,14 +307,37 @@ async fn the_signed_payment_is_checked_before_broadcast() {
     ));
     client.rpc().foreign_network.store(false, SeqCst);
 
-    let signed = sign_transaction(unsigned(1).message, &[&payer]).unwrap();
-    let expected = signed.signatures[0];
+    let signed_transaction = sign_transaction(unsigned(1).message, &[&payer]).unwrap();
+    let expected = signed_transaction.signatures[0];
     let send = || {
-        submission.send_unsigned(&client, unsigned(1), async |_: &UnsignedMessage| {
+        submission().send_unsigned(&client, unsigned(1), async |_: &UnsignedMessage| {
             tokio::task::yield_now().await;
-            Ok(signed.clone())
+            Ok(signed_transaction.clone())
         })
     };
+    *client.rpc().blockhash_valid.lock().unwrap() = Ok(false);
+    assert!(matches!(
+        send().await,
+        Err(ClientError::NitroDecryption(
+            NitroDecryptionError::PaymentBlockhashInvalid
+        ))
+    ));
+    assert_eq!(client.rpc().broadcasts.load(SeqCst), 0);
+    *client.rpc().blockhash_valid.lock().unwrap() = Err("mock blockhash check");
+    assert!(
+        matches!(send().await, Err(ClientError::Rpc(message)) if message == "mock blockhash check")
+    );
+    assert_eq!(client.rpc().broadcasts.load(SeqCst), 0);
+    *client.rpc().blockhash_valid.lock().unwrap() = Ok(true);
+    client.rpc().rotate_on_blockhash_check.store(true, SeqCst);
+    assert!(matches!(
+        send().await,
+        Err(ClientError::NitroDecryption(
+            NitroDecryptionError::PaymentRecipientChanged
+        ))
+    ));
+    assert_eq!(client.rpc().broadcasts.load(SeqCst), 0);
+    client.rpc().rotated.store(false, SeqCst);
     assert!(matches!(
         send().await,
         Err(ClientError::NitroPaymentSend { signature, source })

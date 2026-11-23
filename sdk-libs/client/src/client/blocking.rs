@@ -61,6 +61,10 @@ impl<R: BlockingRpc, I: BlockingIndexer> Rpc for SprClient<R, I> {
         self.block_on(self.client.get_latest_blockhash())
     }
 
+    fn is_blockhash_valid(&self, blockhash: &Hash) -> Result<bool, ClientError> {
+        self.block_on(self.client.is_blockhash_valid(blockhash))
+    }
+
     fn get_block_height(&self) -> Result<u64, ClientError> {
         self.block_on(self.client.get_block_height())
     }

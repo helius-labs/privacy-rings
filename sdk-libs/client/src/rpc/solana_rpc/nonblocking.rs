@@ -212,6 +212,13 @@ impl AsyncRpc for AsyncSolanaRpc {
             .map_err(|err| ClientError::Rpc(format!("get_latest_blockhash: {err}")))
     }
 
+    async fn is_blockhash_valid(&self, blockhash: &Hash) -> Result<bool, ClientError> {
+        self.client
+            .is_blockhash_valid(blockhash, CommitmentConfig::confirmed())
+            .await
+            .map_err(|err| ClientError::Rpc(format!("is_blockhash_valid: {err}")))
+    }
+
     async fn get_block_height(&self) -> Result<u64, ClientError> {
         self.client
             .get_block_height()
