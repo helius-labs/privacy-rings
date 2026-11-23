@@ -61,7 +61,10 @@ hash, custody epoch and PCR0–4 for any replica.
 The reader commits the revision to a durable checkpoint before returning a
 replica. An observed head at the stored sequence must match its digest. An
 immediate successor must link to it. The custody floor can only rise and
-recovery-only mode is permanent. A signed revocation advances the checkpoint and returns no replica.
+recovery-only mode is permanent. A current revocation signed by both quorums
+can stop lookups when either pinned bucket serves it. The wallet persists
+the stop before returning, even if the other bucket is unavailable or has a
+conflicting head.
 The reader also keeps its latest accepted checkpoint in memory. Removing or
 restoring an older file during the reader's lifetime cannot reopen an older
 policy. A restarted reader uses the durable checkpoint and shipped pins.
@@ -73,10 +76,11 @@ inside their store transaction and persist `checkpoint()` before returning succe
 
 Use `NitroDecryptionService::resolve_recipient` for sends. The resolver uses
 service keys after a successful registry miss and matching Solana genesis
-hash. It checks the registry again before returning those keys. The client reads
-both signed policy heads before reusing an attested boot and after verifying
-its reply. A revoked, superseded, recovery-only or unavailable policy blocks
-the payment lookup.
+hash. It checks the registry again before returning those keys. A recovery-only
+policy blocks payment lookup. For payment and recovery lookups, the client reads
+both signed policy heads after attestation and before sending the address. It
+checks them again after verifying the reply, before returning keys. A revoked,
+superseded or unavailable policy stops either lookup.
 
 Build each output with `recipient.address()` and pass the resolved recipients
 to `Submission::with_nitro_recipients`. It checks that every output to an
