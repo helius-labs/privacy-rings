@@ -21,10 +21,11 @@ async function payment() {
     getSignatureFromTransaction(transaction),
   );
   const getBlockhashValidity = vi.fn(async () => ({ slot: 1n, valid: true }));
+  const getGenesisHash = vi.fn(async () => GENESIS);
   const prepared = await buildDepositTransaction({
     client: {
       ...depositClient({ broadcastTransaction, getBlockhashValidity }),
-      getGenesisHash: async () => GENESIS,
+      getGenesisHash,
     },
     decryptionService: { address, genesisHash: GENESIS },
     feePayer: payer.address,
@@ -32,7 +33,16 @@ async function payment() {
     amount: 5n,
   });
   const sign = (transaction: Transaction) => signTransactionWithSigners([payer], transaction);
-  return { prepared, payer, recipient, sign, address, broadcastTransaction, getBlockhashValidity };
+  return {
+    prepared,
+    payer,
+    recipient,
+    sign,
+    address,
+    broadcastTransaction,
+    getBlockhashValidity,
+    getGenesisHash,
+  };
 }
 
 it("refuses a different Solana message from the signing callback", async () => {
@@ -172,6 +182,31 @@ it("refuses a recipient change during the blockhash check", async () => {
     causeCode: "WALLET_DECRYPTION_RECIPIENT_MISMATCH",
   });
   expect(getBlockhashValidity).toHaveBeenCalledOnce();
+  expect(broadcastTransaction).not.toHaveBeenCalled();
+});
+
+it("refuses an RPC network change during the final recipient lookup", async () => {
+  const {
+    prepared,
+    sign,
+    recipient,
+    address,
+    broadcastTransaction,
+    getBlockhashValidity,
+    getGenesisHash,
+  } = await payment();
+  getBlockhashValidity.mockImplementationOnce(async () => {
+    address.mockImplementationOnce(async () => {
+      getGenesisHash.mockResolvedValue("5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d");
+      return recipient;
+    });
+    return { slot: 2n, valid: true };
+  });
+  await expect(prepared.send(sign)).rejects.toMatchObject({
+    code: "WALLET_SUBMIT_PAYMENT",
+    causeCode: "WALLET_DECRYPTION_NETWORK_MISMATCH",
+  });
+  expect(address).toHaveBeenCalledTimes(4);
   expect(broadcastTransaction).not.toHaveBeenCalled();
 });
 

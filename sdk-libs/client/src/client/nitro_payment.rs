@@ -137,6 +137,12 @@ impl NitroPaymentSubmission<'_> {
                 .map(|recipient| recipient.revalidate(rpc)),
         )
         .await?;
+        if !self.recipients.is_empty() {
+            let genesis = rpc.genesis_hash().await?;
+            for recipient in self.recipients {
+                recipient.service.require_chain(genesis)?;
+            }
+        }
         Ok(())
     }
 

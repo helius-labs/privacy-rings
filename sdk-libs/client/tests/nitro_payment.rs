@@ -102,11 +102,21 @@ struct RegistryRpc {
     owner: Pubkey,
     addresses: [ShieldedAddress; 2],
     rotated: AtomicBool,
+    foreign_network: AtomicBool,
     broadcasts: AtomicUsize,
 }
 
 #[async_trait::async_trait]
 impl AsyncRpc for RegistryRpc {
+    async fn genesis_hash(&self) -> Result<[u8; 32], ClientError> {
+        let genesis = if self.foreign_network.load(SeqCst) {
+            "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
+        } else {
+            "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"
+        };
+        Ok(genesis.parse::<Hash>().unwrap().to_bytes())
+    }
+
     async fn get_account(&self, address: Pubkey) -> Result<Option<Account>, ClientError> {
         let (pda, bump) = user_record_pda(&self.owner);
         assert_eq!(address, pda);
@@ -168,6 +178,7 @@ async fn the_signed_payment_is_checked_before_broadcast() {
             owner: payer.pubkey(),
             addresses: [address, rotated],
             rotated: AtomicBool::default(),
+            foreign_network: AtomicBool::default(),
             broadcasts: AtomicUsize::default(),
         },
         AsyncSprIndexer::new("http://127.0.0.1:1"),
@@ -236,6 +247,30 @@ async fn the_signed_payment_is_checked_before_broadcast() {
         ));
     }
     assert_eq!(client.rpc().broadcasts.load(SeqCst), 0);
+
+    let result = submission
+        .send_unsigned(&client, unsigned(1), async |prepared: &UnsignedMessage| {
+            let signed = sign_transaction(prepared.message.clone(), &[&payer])?;
+            client.rpc().foreign_network.store(true, SeqCst);
+            Ok(signed)
+        })
+        .await;
+    assert!(matches!(
+        result,
+        Err(ClientError::NitroDecryption(
+            NitroDecryptionError::NetworkMismatch
+        ))
+    ));
+    assert_eq!(client.rpc().broadcasts.load(SeqCst), 0);
+    assert!(matches!(
+        service
+            .resolve_recipient(client.rpc(), payer.pubkey())
+            .await,
+        Err(ClientError::NitroDecryption(
+            NitroDecryptionError::NetworkMismatch
+        ))
+    ));
+    client.rpc().foreign_network.store(false, SeqCst);
 
     assert!(matches!(
         submission

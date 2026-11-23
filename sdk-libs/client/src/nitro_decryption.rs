@@ -172,13 +172,15 @@ impl NitroDecryptionService {
         self.address_with_retry(owner, true).await
     }
 
-    /// Use the decryption service after a verified registry miss.
+    /// Resolve a registered recipient or use the service after a verified miss.
+    /// The RPC must match this service's Solana network in either case.
     pub async fn resolve_recipient<R: AsyncRpc>(
         &self,
         rpc: &R,
         owner: Pubkey,
     ) -> Result<NitroPaymentRecipient, ClientError> {
         let address = self.resolve_recipient_address(rpc, owner).await?;
+        self.require_chain(rpc.genesis_hash().await?)?;
         Ok(NitroPaymentRecipient::new(self.clone(), owner, address))
     }
 
@@ -206,10 +208,11 @@ impl NitroDecryptionService {
                 .block_on(self.address(owner))
                 .map_err(ClientError::from)
         })?;
+        self.require_chain(rpc.genesis_hash()?)?;
         Ok(NitroPaymentRecipient::new(self.clone(), owner, address))
     }
 
-    fn require_chain(&self, genesis_hash: [u8; 32]) -> Result<(), NitroDecryptionError> {
+    pub(crate) fn require_chain(&self, genesis_hash: [u8; 32]) -> Result<(), NitroDecryptionError> {
         // Solana's complete 32-byte genesis hashes, encoded as base58.
         let expected = match self.0.trust.network() {
             NitroNetwork::Devnet => "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",

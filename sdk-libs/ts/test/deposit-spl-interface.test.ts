@@ -130,7 +130,10 @@ it("builds the same SOL deposit with a service-resolved recipient as with explic
     decryptionService: { address, genesisHash },
   });
   expect(getAccount).toHaveBeenCalledTimes(4);
-  expect(getGenesisHash).toHaveBeenCalledTimes(2);
+  expect(getGenesisHash).toHaveBeenCalledTimes(3);
+  expect(getGenesisHash.mock.invocationCallOrder[2]).toBeGreaterThan(
+    getAccount.mock.invocationCallOrder[3]!,
+  );
   expect(address).toHaveBeenCalledWith(recipient.solanaAddress(), undefined);
   expect(address).toHaveBeenCalledTimes(2);
   expect(broadcastTransaction).not.toHaveBeenCalled();

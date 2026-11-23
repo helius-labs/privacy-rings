@@ -414,7 +414,6 @@ export function paymentRecipientResolver(
   async function revalidate(request = context): Promise<void> {
     if (network === undefined) return;
     const requireCurrentServiceChain = chainCheckForBatch(request);
-    await requireCurrentServiceChain();
     await Promise.all(
       [...paymentAddresses].map(async ([owner, original]) => {
         const { address: current } = await resolveOwner(owner, requireCurrentServiceChain, request);
@@ -423,6 +422,7 @@ export function paymentRecipientResolver(
         }
       }),
     );
+    await checkServiceChain(request);
   }
   return { resolve, revalidate };
 }
