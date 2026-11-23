@@ -17,10 +17,13 @@ base64 = { workspace = true }
 borsh = { workspace = true }
 bytemuck = { workspace = true }
 groth16-solana = { workspace = true }
+hex = { workspace = true }
 mollusk-svm = { workspace = true, optional = true }
 num-bigint = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 solana-account = { workspace = true }

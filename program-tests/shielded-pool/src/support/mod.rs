@@ -2,6 +2,7 @@
 //!
 //! - [`runtime`]: LiteSVM setup and account sizing.
 //! - [`fixtures`]: initialized pool environments and builders.
+//! - [`functional_vectors`]: runs the functional transact catalog on the default ring.
 //! - [`transact`]: transact fixtures and tree helpers.
 //! - [`cache`]: a transact that spends from a cache instead of the state tree.
 //! - [`merge`]: real merge proofs at every supported shape.
@@ -12,6 +13,7 @@
 
 pub mod cache;
 pub mod fixtures;
+pub mod functional_vectors;
 pub mod merge;
 pub mod mollusk;
 pub mod ring;
