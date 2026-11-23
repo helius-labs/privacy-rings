@@ -372,7 +372,39 @@ async fn cached_policy_expires_by_monotonic_time_even_if_wall_time_remains_valid
 }
 
 #[tokio::test]
+async fn revoked_cached_boot_does_not_receive_recovery_address() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/nitro/", listener.local_addr().unwrap());
+    let fixture: Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(UnixNitroCheckpointStore::open(directory.path()).unwrap());
+    let (trust, session, active) = accepted_boot(&fixture, &endpoint, now_ms().unwrap(), &store);
+    let service = NitroDecryptionService::new(trust, store).unwrap();
+    let revocation = revoke(&active, &session);
+    *service.0.policies.test_heads.lock().unwrap() = Some([revocation.clone(), revocation]);
+    service.0.cache.lock().await.session = Some(session);
+
+    let owner = Arc::new(Keypair::new_from_array([21; 32]));
+    tokio::select! {
+        response = service.open(owner) => assert!(matches!(
+            response,
+            Err(NitroDecryptionError::Policy(NitroPolicyError::Revoked))
+        )),
+        accepted = listener.accept() => panic!("revoked boot was contacted: {accepted:?}"),
+    }
+}
+
+#[tokio::test]
 async fn payment_lookup_discards_valid_reply_after_revocation() {
+    lookup_discards_valid_reply_after_revocation(true).await;
+}
+
+#[tokio::test]
+async fn recovery_lookup_discards_valid_reply_after_revocation() {
+    lookup_discards_valid_reply_after_revocation(false).await;
+}
+
+async fn lookup_discards_valid_reply_after_revocation(accepts_payment: bool) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}/nitro/", listener.local_addr().unwrap());
     let fixture: Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
@@ -416,7 +448,7 @@ async fn payment_lookup_discards_valid_reply_after_revocation() {
         .await
         .unwrap();
     };
-    let (lookup, ()) = tokio::join!(service.address(owner), reply);
+    let (lookup, ()) = tokio::join!(service.address_with_retry(owner, accepts_payment), reply);
     assert!(matches!(
         lookup,
         Err(NitroDecryptionError::Policy(NitroPolicyError::Revoked))

@@ -256,21 +256,17 @@ impl NitroDecryptionService {
     ) -> Result<ShieldedAddress, NitroDecryptionError> {
         wire::owner_key(owner)?;
         let result = retry_public_keys(async || {
-            let (session, cached) = self.0.session().await?;
-            if accepts_payment {
-                if cached {
-                    self.0.require_payment_policy(&session).await?;
-                } else if session.policy.checkpoint().recovery_only {
-                    return Err(NitroDecryptionError::RecoveryOnly);
-                }
-            }
+            let session = self.0.session().await?;
+            self.0
+                .require_lookup_policy(&session, accepts_payment)
+                .await?;
             let result = self
                 .0
                 .exchange(&session, Operation::public_keys(owner), None)
                 .await?;
-            if accepts_payment {
-                self.0.require_payment_policy(&session).await?;
-            }
+            self.0
+                .require_lookup_policy(&session, accepts_payment)
+                .await?;
             Ok(result)
         })
         .await?;
@@ -311,7 +307,7 @@ impl NitroDecryptionService {
         {
             return Err(NitroDecryptionError::RequestTooLarge);
         }
-        let (session, _) = self.0.session().await?;
+        let session = self.0.session().await?;
         let now = now_ms()?;
         let expires_at_ms = session.approval_expires_at(now);
         if expires_at_ms <= now {
@@ -410,11 +406,11 @@ async fn owner_call<T: Send + 'static>(
 mod owner_tests;
 
 impl Service {
-    async fn session(&self) -> Result<(Arc<Session>, bool), NitroDecryptionError> {
+    async fn session(&self) -> Result<Arc<Session>, NitroDecryptionError> {
         let mut cache = self.cache.lock().await;
         if let Some(session) = &cache.session {
             if self.require_current(session).await.is_ok() {
-                return Ok((session.clone(), true));
+                return Ok(session.clone());
             }
         }
 
@@ -428,7 +424,7 @@ impl Service {
             .map_err(|_| NitroDecryptionError::SessionExpired)??;
         cache.next_target = index + 1;
         cache.session = Some(session.clone());
-        Ok((session, false))
+        Ok(session)
     }
 
     async fn connect(
@@ -508,11 +504,15 @@ impl Service {
         Ok(())
     }
 
-    async fn require_payment_policy(&self, session: &Session) -> Result<(), NitroDecryptionError> {
+    async fn require_lookup_policy(
+        &self,
+        session: &Session,
+        accepts_payment: bool,
+    ) -> Result<(), NitroDecryptionError> {
         let published = timeout_at(session.window.deadline, self.policies.read())
             .await
             .map_err(|_| NitroDecryptionError::SessionExpired)??;
-        if published.checkpoint().recovery_only {
+        if accepts_payment && published.checkpoint().recovery_only {
             return Err(NitroDecryptionError::RecoveryOnly);
         }
         self.require_current(session).await
