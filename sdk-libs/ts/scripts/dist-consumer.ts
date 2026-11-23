@@ -54,6 +54,7 @@ export type {
   ProofService,
   ProvedMerge,
   ProverInputs,
+  RingTransfers,
   TransactionAssembler,
   TreeContext,
   WalletKeys,
@@ -63,6 +64,8 @@ export type {
   DecryptRequest,
   DeriveRequest,
   MergeOutputCiphertext,
+  RingCodec,
+  RingOpening,
   ShieldedKeys,
   TransactionKeyRequest,
 } from "@heliuslabs/spr/transaction";
@@ -81,12 +84,17 @@ export type {
   DepositClient,
   MergeClient,
   PrivateTransactionClient,
+  RingPaymentTransactionParams,
   SyncClient,
   SyncPersistedWalletResult,
   SyncWalletInput,
   WalletStateStore,
 } from "@heliuslabs/spr/wallet";
-export { syncPersistedWallet, syncWallet } from "@heliuslabs/spr/wallet";
+export {
+  buildRingPaymentTransaction,
+  syncPersistedWallet,
+  syncWallet,
+} from "@heliuslabs/spr/wallet";
 export type {
   SerializedSyncCheckpoint,
   SerializedNoteReservation,

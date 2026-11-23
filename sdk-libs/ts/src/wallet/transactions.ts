@@ -1,10 +1,18 @@
+import { isSignerRole } from "@solana/kit";
+
 import type {
+  BlockhashProvider,
   ChainReader,
+  IndexedProofAuthority,
+  IndexedProofInputs,
   ProofDataSourceContext,
+  RingTransfers,
   TransactionAssembler,
   WalletKeys,
 } from "../client/ports.js";
-import type { TransactOwnerSigner } from "../client/prover/types.js";
+import { bytesField, hasIndexedMethod } from "../client/internal.js";
+import { signTransactMessage } from "../client/prover/assembly.js";
+import type { PreparedOwnerSignature, TransactOwnerSigner } from "../client/prover/types.js";
 import { withProofDataRetry } from "../client/retry.js";
 import type {
   Address,
@@ -13,19 +21,39 @@ import type {
   RequestContext,
   Transaction,
 } from "../interface/types.js";
-import type { ApprovalHandler } from "../transaction/wallet/intent.js";
+import type { ShieldedAddress } from "../keypair/shielded.js";
+import { initializePoseidon } from "../hasher/index.js";
+import { equalBytes } from "../interface/bytes.js";
+import {
+  ConfidentialTransfer,
+  createExternalData,
+  SppProofInputs,
+} from "../transaction/instructions/transact.js";
+import { createProofOutput, ProofInputUtxo } from "../transaction/utxo.js";
+import {
+  approveUnattended,
+  checkIntentApproval,
+  type ApprovalHandler,
+  type TransactionIntent,
+} from "../transaction/wallet/intent.js";
 import { SOL_MINT } from "../transaction/asset.js";
-import type { Wallet } from "../transaction/wallet/state.js";
+import type { Wallet, WalletUtxo } from "../transaction/wallet/state.js";
+import { compileUnsignedTransaction } from "../flows/compile.js";
 
 import {
   createMultiTransfer,
   createSplit,
   createTransfer,
   createWithdrawal,
+  selectSpendInputs,
   type TransferDestination,
 } from "./actions.js";
-import { wrapWalletError } from "./error.js";
-import { authorizePrivateTransaction } from "./private-transaction.js";
+import { WalletError, wrapWalletError } from "./error.js";
+import {
+  authorizePrivateTransaction,
+  intentMismatch,
+  proofInputFromEntry,
+} from "./private-transaction.js";
 import { withdrawalSetupInstructions } from "../flows/settlement.js";
 
 export type PrivateTransactionClient = TransactionAssembler &
@@ -176,6 +204,206 @@ export async function buildSplitTransaction(
   } catch (cause) {
     throw wrapWalletError("WALLET_BUILD_SPLIT", cause);
   }
+}
+
+export interface RingPaymentTransactionParams extends Omit<PrivateTransactionParams, "client"> {
+  readonly client: BlockhashProvider;
+  readonly ring: RingTransfers;
+  readonly recipient: ShieldedAddress;
+  readonly asset?: Address;
+  readonly amount: bigint;
+}
+
+/** `defaultFunding` counts every selected unit, the change stays in the ring. */
+export async function buildRingPaymentTransaction(
+  input: RingPaymentTransactionParams,
+  context?: RequestContext,
+): Promise<Transaction> {
+  try {
+    if (input.amount <= 0n) {
+      throw new WalletError("WALLET_INVALID_AMOUNT", { details: { amount: String(input.amount) } });
+    }
+    await initializePoseidon();
+    const asset = input.asset ?? SOL_MINT;
+    const { ringProgramId } = input.ring;
+    const { inputs, reservationId } = selectSpendInputs(input.wallet, asset, input.amount);
+    let authorization: Promise<PreparedOwnerSignature | undefined> | undefined;
+    try {
+      const address = input.keys.address();
+      const transfer = new ConfidentialTransfer(
+        address,
+        inputs.map(({ entry }) => proofInputFromEntry(entry, address)),
+        input.feePayer,
+      ).withRingProgramId(ringProgramId);
+      const intent: TransactionIntent = {
+        kind: "ringTransfer",
+        ringProgramId,
+        asset,
+        amount: input.amount,
+        recipient: input.recipient,
+        boundary: "entry",
+        defaultFunding: inputs.reduce((sum, { entry }) => sum + entry.utxo.amount, 0n),
+      };
+      const crossing = `moves ${String(intent.defaultFunding)} of default UTXOs into the ring`;
+      const approval = await (input.approve ?? approveUnattended)({
+        solanaPublicKey: address.solanaAddress(),
+        intent,
+        summary: `ring entry of ${String(input.amount)} in ring ${ringProgramId}, ${crossing}`,
+      });
+      checkIntentApproval(approval, intent, intentMismatch);
+      const { recipient, amount, feePayer, owner } = input;
+      const reserved = inputs.map(({ entry }) => entry);
+      const { instruction, computeUnitLimit } = await input.ring.proveRingTransfer(
+        {
+          transfer,
+          payment: { recipient, asset, amount },
+          keys: paymentKeys(input.keys, reserved),
+          feePayer,
+          ...(owner === undefined ? {} : { owner: await owner.signingPublicKey() }),
+          authorize: (proofInputs) => {
+            if (authorization !== undefined) return Promise.reject(intentMismatch("authorization"));
+            authorization = (async () => {
+              const checked = checkedRingPayment(proofInputs, {
+                source: address,
+                recipient,
+                asset,
+                amount,
+                ringProgramId,
+                reserved,
+              });
+              const signed = owner && (await signTransactMessage(checked, owner));
+              return (
+                signed && {
+                  ownerPublicKey: signed.ownerPublicKey,
+                  ownerSignature: signed.ownerSignature,
+                }
+              );
+            })();
+            // A ring may leave it unawaited.
+            authorization.catch(() => undefined);
+            return authorization;
+          },
+        },
+        context,
+      );
+      if (authorization === undefined) throw intentMismatch("authorization");
+      await authorization;
+      if (instruction.programAddress !== ringProgramId) throw intentMismatch("program");
+      const allowed = owner === undefined ? [feePayer, address.solanaAddress()] : [feePayer];
+      if (
+        (instruction.accounts ?? []).some(
+          ({ address: signer, role }) => isSignerRole(role) && !allowed.includes(signer),
+        )
+      )
+        throw intentMismatch("signers");
+      return compileUnsignedTransaction({
+        feePayer,
+        lifetime: await input.client.getLatestBlockhash(context),
+        instructions: [instruction],
+        computeUnitLimit,
+      });
+    } catch (cause) {
+      const signed = await authorization?.then(
+        (signature) => signature !== undefined,
+        () => false,
+      );
+      if (signed !== true) input.wallet._releaseReservation(reservationId);
+      throw cause;
+    }
+  } catch (cause) {
+    throw wrapWalletError("WALLET_BUILD_RING_PAYMENT", cause);
+  }
+}
+
+/** Answers only for the reserved notes, every other key use is withheld. */
+function paymentKeys(
+  keys: WalletKeys,
+  reserved: readonly WalletUtxo[],
+): WalletKeys & Partial<IndexedProofAuthority> {
+  const withheld = async (): Promise<never> => {
+    throw new WalletError("WALLET_RING_KEY_WITHHELD");
+  };
+  const nullifiers = new Set(reserved.map((entry) => bytesField(entry.nullifier, "nullifier")));
+  const spendsReserved = (
+    inputs: Readonly<{
+      payload: Readonly<{ inputs: readonly Readonly<{ isDummy: bigint; nullifier: bigint }>[] }>;
+    }>,
+  ): boolean =>
+    inputs.payload.inputs.every((slot) => slot.isDummy === 1n || nullifiers.has(slot.nullifier));
+  return {
+    address: () => keys.address(),
+    viewingPublicKeys: () => keys.viewingPublicKeys(),
+    decrypt: withheld,
+    derive: withheld,
+    proveMerge: withheld,
+    prove: (inputs, context) => (spendsReserved(inputs) ? keys.prove(inputs, context) : withheld()),
+    transactionKeys: (requests, context) =>
+      requests.every(({ firstNullifier }) =>
+        reserved.some((entry) => equalBytes(entry.nullifier, firstNullifier)),
+      )
+        ? keys.transactionKeys(requests, context)
+        : withheld(),
+    ...(hasIndexedMethod(keys)
+      ? {
+          proveIndexed: (inputs: IndexedProofInputs, context?: RequestContext) =>
+            inputs.circuit !== "merge" && spendsReserved(inputs)
+              ? keys.proveIndexed(inputs, context)
+              : withheld(),
+        }
+      : {}),
+  };
+}
+
+/** Rebuilt from the notes and addresses core holds, so the digest it signs is the payment it checked. */
+function checkedRingPayment(
+  proofInputs: SppProofInputs,
+  terms: Readonly<{
+    source: ShieldedAddress;
+    recipient: ShieldedAddress;
+    asset: Address;
+    amount: bigint;
+    ringProgramId: Address;
+    reserved: readonly WalletUtxo[];
+  }>,
+): SppProofInputs {
+  const unspent = [...terms.reserved];
+  const inputUtxos = proofInputs.inputUtxos.map((input) => {
+    if (input.isDummy())
+      return input.isCompact()
+        ? ProofInputUtxo.compact(input.treeId)
+        : ProofInputUtxo.dummy(input.utxo.blinding, input.treeId);
+    const at = unspent.findIndex((entry) => equalBytes(entry.nullifier, input.nullifier()));
+    const [entry] = at < 0 ? [] : unspent.splice(at, 1);
+    if (entry === undefined) throw intentMismatch("inputs");
+    return proofInputFromEntry(entry, terms.source);
+  });
+  if (unspent.length > 0) throw intentMismatch("inputs");
+  const source = terms.source.toBytes();
+  const recipient = terms.recipient.toBytes();
+  let paid = 0n;
+  const outputs = proofInputs.outputs.map((output) => {
+    const owner = output.ownerAddress?.toBytes();
+    if (owner === undefined) return createProofOutput({ ...output });
+    if (output.ringProgramId !== terms.ringProgramId) throw intentMismatch("ringProgramId");
+    if (equalBytes(owner, source))
+      return createProofOutput({ ...output, ownerAddress: terms.source });
+    if (!equalBytes(owner, recipient)) throw intentMismatch("recipient");
+    if (output.asset !== terms.asset) throw intentMismatch("asset");
+    paid += output.amount;
+    return createProofOutput({ ...output, ownerAddress: terms.recipient });
+  });
+  if (!equalBytes(source, recipient) && paid !== terms.amount) throw intentMismatch("amount");
+  const externalData = createExternalData({ ...proofInputs.externalData });
+  if (externalData.interfaceTransfers.length !== 0) throw intentMismatch("settlements");
+  return new SppProofInputs({
+    payer: proofInputs.payer,
+    inputUtxos,
+    outputs,
+    externalData,
+    blindingSeed: proofInputs.blindingSeed,
+    outputTreeId: proofInputs.outputTreeId,
+    cacheAccounts: proofInputs.cacheAccounts,
+  });
 }
 
 async function buildAuthorizedTransaction(

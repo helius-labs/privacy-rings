@@ -32,6 +32,7 @@ export type {
   ProvenConfidentialEddsaTransact,
   ProvenRingTransact,
   Prover,
+  RingTransfers,
   TransactionAssembler,
   TransactionConfirmer,
   TreeContext,

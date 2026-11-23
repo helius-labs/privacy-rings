@@ -17,6 +17,7 @@ pub mod history;
 pub mod indexer_types;
 pub mod instructions;
 pub mod keys;
+pub mod ring;
 pub mod selection;
 #[cfg(feature = "serde")]
 mod serde_helpers;
@@ -29,7 +30,7 @@ pub use decrypt::{
     decrypt, decrypt_spendable, verify_owned, verify_spendable, DecryptionResult, OwnedUtxos,
     SpendableDecryptionResult,
 };
-pub use error::{AddressInputError, TransactionError};
+pub use error::{AddressInputError, RingPaymentRefusal, TransactionError};
 pub use history::{History, HistoryEntry, HistoryKind};
 pub use indexer_types::{DepositPayload, OutputContext, OutputSlot, ShieldedTransaction};
 pub use instructions::transact::{ExternalData, SppProofOutputUtxo};
@@ -37,6 +38,7 @@ pub use keys::{
     DecryptLabel, DecryptRequest, DeriveRequest, LocalShieldedKeys, ShieldedKeys,
     TransactionKeyRequest,
 };
+pub use ring::{checked_ring_payment, RingCodec, RingOpening, RingPaymentTerms};
 pub use selection::{select_merge, select_spend, select_spend_excluding};
 pub use serialization::{scheme::EncryptedScheme, DecodeCx, OwnerCx, UtxoSerialization};
 pub use solana_address::Address;

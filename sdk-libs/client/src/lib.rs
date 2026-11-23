@@ -22,6 +22,7 @@ pub mod client;
 pub mod error;
 pub mod indexer;
 pub mod prover;
+pub mod ring;
 pub mod rpc;
 pub mod scan;
 pub mod user_registry;
@@ -58,6 +59,10 @@ pub use prover::{
 };
 #[cfg(feature = "reqwest")]
 pub use prover::{spawn_prover, ProverLaunch};
+pub use ring::{
+    ReservedKeys, RingAuthorizer, RingPayment, RingPaymentWallet, RingTransferRequest,
+    RingTransfers,
+};
 #[cfg(feature = "solana-rpc")]
 pub use rpc::solana_rpc::{AsyncSolanaRpc, ConfirmedInstructionGroups, SolanaRpc};
 pub use rpc::Blocking;
