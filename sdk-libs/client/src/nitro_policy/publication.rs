@@ -1,4 +1,5 @@
 use std::{
+    future::Future,
     sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -7,9 +8,15 @@ use reqwest::{header::CACHE_CONTROL, Client};
 use url::Url;
 
 use super::{
-    accept_with_checkpoint, AcceptedNitroPolicy, NitroCheckpoint, NitroCheckpointStore,
-    NitroPolicyError, NitroTrust, MAX_POLICY_BYTES,
+    accept_verified_heads, persist_checkpoint, verify_head, AcceptedNitroPolicy, Head,
+    NitroCheckpoint, NitroCheckpointStore, NitroPolicyError, NitroPolicyUpdate, NitroTrust,
+    MAX_POLICY_BYTES,
 };
+
+struct ObservedHead {
+    verified: Result<Head, NitroPolicyError>,
+    before_stop: [Option<NitroCheckpoint>; 2],
+}
 
 /// Reads the two fixed S3 publications with one deadline and no redirects.
 pub struct NitroPolicyReader {
@@ -44,21 +51,50 @@ impl NitroPolicyReader {
 
     /// Authentication and persistent storage finish before returning replica pins.
     pub async fn read(&self) -> Result<AcceptedNitroPolicy, NitroPolicyError> {
-        let heads = self.read_heads().await;
+        #[cfg(test)]
+        {
+            let heads = self.test_heads.lock().unwrap().clone();
+            if let Some([primary, mirror]) = heads {
+                return self
+                    .read_pair(
+                        std::future::ready(Ok(primary)),
+                        std::future::ready(Ok(mirror)),
+                    )
+                    .await;
+            }
+        }
+        let [(primary, primary_owner), (mirror, mirror_owner)] = self.trust.publication_routes();
+        self.read_pair(
+            self.fetch(primary, primary_owner),
+            self.fetch(mirror, mirror_owner),
+        )
+        .await
+    }
+
+    pub(crate) async fn read_pair(
+        &self,
+        primary: impl Future<Output = Result<Vec<u8>, NitroPolicyError>>,
+        mirror: impl Future<Output = Result<Vec<u8>, NitroPolicyError>>,
+    ) -> Result<AcceptedNitroPolicy, NitroPolicyError> {
+        let (primary, mirror) =
+            tokio::try_join!(self.observe_head(primary), self.observe_head(mirror))?;
         let trust = self.trust.clone();
         let store = self.store.clone();
         let latest = self.latest.clone();
         let policy = tokio::task::spawn_blocking(move || {
             let policy = {
                 let mut latest = latest.lock().map_err(|_| NitroPolicyError::Storage)?;
-                accept_with_checkpoint(
+                accept_verified_heads(
                     &trust,
-                    heads
-                        .each_ref()
-                        .map(|head| head.as_deref().map_err(|error| *error)),
+                    [primary.verified, mirror.verified],
                     &*store,
                     now_ms()?,
                     &mut latest,
+                    primary
+                        .before_stop
+                        .into_iter()
+                        .chain(mirror.before_stop)
+                        .flatten(),
                 )?
             };
             require_current(&policy, &trust, &*store, &latest, now_ms)?;
@@ -70,17 +106,50 @@ impl NitroPolicyReader {
         Ok(policy)
     }
 
-    async fn read_heads(&self) -> [Result<Vec<u8>, NitroPolicyError>; 2] {
-        #[cfg(test)]
-        if let Some(heads) = self.test_heads.lock().unwrap().clone() {
-            return heads.map(Ok);
-        }
-        let [(primary, primary_owner), (mirror, mirror_owner)] = self.trust.publication_routes();
-        let (primary, mirror) = tokio::join!(
-            self.fetch(primary, primary_owner),
-            self.fetch(mirror, mirror_owner),
-        );
-        [primary, mirror]
+    async fn observe_head(
+        &self,
+        read: impl Future<Output = Result<Vec<u8>, NitroPolicyError>>,
+    ) -> Result<ObservedHead, NitroPolicyError> {
+        let bytes = match read.await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return Ok(ObservedHead {
+                    verified: Err(error),
+                    before_stop: [None, None],
+                })
+            }
+        };
+        let trust = self.trust.clone();
+        let store = self.store.clone();
+        let latest = self.latest.clone();
+        // A verified stop can finish checkpointing if the caller cancels while its peer stalls.
+        tokio::task::spawn_blocking(move || {
+            let verified = verify_head(&trust, &bytes);
+            let mut before_stop = [None, None];
+            if let Ok(revocation) = &verified {
+                if revocation.policy.checkpoint().revoked
+                    && revocation.policy.current_under(&trust, now_ms()?)
+                {
+                    let mut latest = latest.lock().map_err(|_| NitroPolicyError::Storage)?;
+                    before_stop = [store.current(&trust)?, latest.clone()];
+                    persist_checkpoint(
+                        &trust,
+                        &*store,
+                        &mut latest,
+                        NitroPolicyUpdate {
+                            primary: revocation,
+                            mirror: None,
+                        },
+                    )?;
+                }
+            }
+            Ok(ObservedHead {
+                verified,
+                before_stop,
+            })
+        })
+        .await
+        .map_err(|_| NitroPolicyError::Storage)?
     }
 
     pub(crate) async fn require_current(

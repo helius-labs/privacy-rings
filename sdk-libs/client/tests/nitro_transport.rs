@@ -372,6 +372,91 @@ async fn cached_policy_expires_by_monotonic_time_even_if_wall_time_remains_valid
 }
 
 #[tokio::test]
+async fn a_revocation_is_durable_before_its_peer_responds() {
+    let fixture: Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
+    for first in [0, 1] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(UnixNitroCheckpointStore::open(directory.path()).unwrap());
+        let (trust, session, active) =
+            accepted_boot(&fixture, "http://127.0.0.1/", now_ms().unwrap(), &store);
+        let revoked = revoke(&active, &session);
+        let service = NitroDecryptionService::new(trust.clone(), store.clone()).unwrap();
+        let head = |bucket, bytes| async move {
+            if bucket == first {
+                Ok(bytes)
+            } else {
+                std::future::pending().await
+            }
+        };
+        let persisted = async {
+            loop {
+                if store
+                    .current(&trust)
+                    .unwrap()
+                    .is_some_and(|saved| saved.revoked)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        };
+        tokio::select! {
+            _ = service.0.policies.read_pair(head(0, revoked.clone()), head(1, revoked)) => {
+                panic!("the other bucket is still stalled")
+            }
+            result = tokio::time::timeout(Duration::from_secs(2), persisted) => result.unwrap(),
+        }
+        let reopened = Arc::new(UnixNitroCheckpointStore::open(directory.path()).unwrap());
+        assert_eq!(reopened.current(&trust).unwrap().unwrap().sequence, 2);
+        let restarted = NitroDecryptionService::new(trust, reopened).unwrap();
+        *restarted.0.policies.test_heads.lock().unwrap() = Some([active.clone(), active]);
+        assert!(matches!(
+            restarted.0.policies.read().await,
+            Err(NitroPolicyError::Rollback)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn a_paired_activation_respects_the_checkpoint_before_an_eager_stop() {
+    let fixture: Value = serde_json::from_str(POLICY_FIXTURE).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(UnixNitroCheckpointStore::open(directory.path()).unwrap());
+    let (trust, session, genesis) =
+        accepted_boot(&fixture, "http://127.0.0.1/", now_ms().unwrap(), &store);
+    let revoke = revoke(&genesis, &session);
+    let digest_of = |envelope: &Value| {
+        hex::encode(digest(&[
+            b"SPR/native-nitro/release-policy/v1",
+            &canonical(&envelope["policy"]),
+        ]))
+    };
+    let mut active: Value = serde_json::from_slice(&genesis).unwrap();
+    active["policy"]["sequence"] = json!("2");
+    active["policy"]["previousPolicyDigest"] =
+        json!(hex::encode(session.policy.checkpoint().digest));
+    sign_policy(&mut active);
+    let second = json(&active).unwrap();
+    accept_published_nitro_policy(&trust, [&second, &genesis], &*store, now_ms().unwrap()).unwrap();
+
+    active["policy"]["sequence"] = json!("3");
+    active["policy"]["previousPolicyDigest"] =
+        json!(digest_of(&serde_json::from_slice(&revoke).unwrap()));
+    sign_policy(&mut active);
+    let successor = json(&active).unwrap();
+    let service = NitroDecryptionService::new(trust.clone(), store.clone()).unwrap();
+    let read = || {
+        service.0.policies.read_pair(
+            std::future::ready(Ok(successor.clone())),
+            std::future::ready(Ok(revoke.clone())),
+        )
+    };
+    assert!(matches!(read().await, Err(NitroPolicyError::Revoked)));
+    assert!(store.current(&trust).unwrap().unwrap().revoked);
+    assert!(!read().await.unwrap().checkpoint().revoked);
+}
+
+#[tokio::test]
 async fn revoked_cached_boot_does_not_receive_recovery_address() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}/nitro/", listener.local_addr().unwrap());

@@ -62,9 +62,10 @@ The reader commits the revision to a durable checkpoint before returning a
 replica. An observed head at the stored sequence must match its digest. An
 immediate successor must link to it. The custody floor can only rise and
 recovery-only mode is permanent. A current revocation signed by both quorums
-can stop lookups when either pinned bucket serves it. The wallet persists
-the stop before returning, even if the other bucket is unavailable or has a
-conflicting head.
+can stop lookups when either pinned bucket serves it. The reader starts
+committing the authenticated stop without waiting for its peer. The commit
+can finish after request cancellation. An activation in the same read must
+also advance the checkpoints from before the stop.
 The reader also keeps its latest accepted checkpoint in memory. Removing or
 restoring an older file during the reader's lifetime cannot reopen an older
 policy. A restarted reader uses the durable checkpoint and shipped pins.

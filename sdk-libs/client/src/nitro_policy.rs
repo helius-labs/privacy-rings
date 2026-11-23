@@ -292,7 +292,24 @@ fn accept_with_checkpoint(
     now_ms: u64,
     latest: &mut Option<NitroCheckpoint>,
 ) -> Result<AcceptedNitroPolicy, NitroPolicyError> {
-    let [primary, mirror] = heads.map(|head| head.and_then(|head| verify_head(trust, head)));
+    accept_verified_heads(
+        trust,
+        heads.map(|head| head.and_then(|head| verify_head(trust, head))),
+        store,
+        now_ms,
+        latest,
+        [],
+    )
+}
+
+fn accept_verified_heads(
+    trust: &NitroTrust,
+    [primary, mirror]: [Result<Head, NitroPolicyError>; 2],
+    store: &dyn NitroCheckpointStore,
+    now_ms: u64,
+    latest: &mut Option<NitroCheckpoint>,
+    before_stops: impl IntoIterator<Item = NitroCheckpoint>,
+) -> Result<AcceptedNitroPolicy, NitroPolicyError> {
     let mut rejected = false;
     if let Some((head, peer)) =
         primary
@@ -303,15 +320,16 @@ fn accept_with_checkpoint(
                 primary.pairs_with(mirror) && primary.policy.current_under(trust, now_ms)
             })
     {
-        if persist_checkpoint(
-            trust,
-            store,
-            latest,
-            NitroPolicyUpdate {
-                primary: head,
-                mirror: Some(peer),
-            },
-        )? {
+        let update = NitroPolicyUpdate {
+            primary: head,
+            mirror: Some(peer),
+        };
+        if (update.checkpoint().revoked
+            || before_stops
+                .into_iter()
+                .all(|prior| update.advances(Some(&prior))))
+            && persist_checkpoint(trust, store, latest, update)?
+        {
             let policy = primary?.policy;
             if policy.checkpoint.revoked {
                 return Err(NitroPolicyError::Revoked);
