@@ -2967,6 +2967,10 @@ UTXOs with `utxo_data` set (non-zero `data_hash`) cannot be merged since they ar
 
 Out-of-protocol service. For each user's Solana pubkey, the registry publishes their [ShieldedAddress](#shielded-address) and merge opt-in. Can be implemented as a Solana program or server.
 
+The [on-chain registry](registry_program.md) can assert the selected target in
+the same transaction as a default-ring payment. This guards against an owner
+registering or rotating their viewing key after the wallet checks the registry.
+
 ### Record
 
 ```rust

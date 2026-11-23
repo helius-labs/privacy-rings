@@ -15,6 +15,8 @@ pub enum UserRegistryError {
     InvalidRecordAccount,
     #[error("system program account mismatch")]
     InvalidSystemProgram,
+    #[error("the recipient's registry payment target changed")]
+    PaymentTargetChanged,
 }
 
 impl UserRegistryError {
@@ -26,6 +28,7 @@ impl UserRegistryError {
             Self::OwnerMismatch => "OwnerMismatch",
             Self::InvalidRecordAccount => "InvalidRecordAccount",
             Self::InvalidSystemProgram => "InvalidSystemProgram",
+            Self::PaymentTargetChanged => "PaymentTargetChanged",
         }
     }
 }

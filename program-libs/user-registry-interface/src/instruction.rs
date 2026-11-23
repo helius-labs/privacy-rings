@@ -6,6 +6,7 @@ pub mod discriminator {
     pub const REGISTER: u8 = 0;
     pub const SET_MERGE_ENCRYPTION: u8 = 1;
     pub const UPDATE_KEYS: u8 = 2;
+    pub const ASSERT_PAYMENT_TARGET: u8 = 3;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize)]
@@ -19,6 +20,14 @@ pub struct RegisterData {
 #[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize)]
 pub struct UpdateKeysData {
     pub viewing_pubkey: [u8; VIEWING_PUBKEY_LEN],
+}
+
+/// Keys selected when constructing a payment, or `None` for the service
+/// route, which requires the recipient to still be unregistered.
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize)]
+pub struct AssertPaymentTargetData {
+    pub owner: [u8; 32],
+    pub expected_keys: Option<RegisterData>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize)]
@@ -36,9 +45,10 @@ mod builders {
     use solana_pubkey::Pubkey;
 
     use super::{
-        discriminator, MergeEncryptionScheme, RegisterData, SetMergeEncryptionData, UpdateKeysData,
+        discriminator, AssertPaymentTargetData, MergeEncryptionScheme, RegisterData,
+        SetMergeEncryptionData, UpdateKeysData,
     };
-    use crate::user_registry_program_id;
+    use crate::{user_record_pda, user_registry_program_id};
 
     const SYSTEM_PROGRAM_ID: Pubkey = Pubkey::new_from_array([0u8; 32]);
 
@@ -103,6 +113,24 @@ mod builders {
             program_id: user_registry_program_id(),
             accounts,
             data: encode_instruction(discriminator::UPDATE_KEYS, &data),
+        }
+    }
+
+    /// Assert recipient state in the same transaction as the confidential payment.
+    pub fn assert_payment_target(
+        owner: Pubkey,
+        expected_keys: Option<RegisterData>,
+    ) -> Instruction {
+        Instruction {
+            program_id: user_registry_program_id(),
+            accounts: vec![AccountMeta::new_readonly(user_record_pda(&owner).0, false)],
+            data: encode_instruction(
+                discriminator::ASSERT_PAYMENT_TARGET,
+                &AssertPaymentTargetData {
+                    owner: owner.to_bytes(),
+                    expected_keys,
+                },
+            ),
         }
     }
 }
