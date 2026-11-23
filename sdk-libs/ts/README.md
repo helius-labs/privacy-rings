@@ -344,9 +344,10 @@ service identity through the verified client to recover a note sent before
 registration.
 
 With a `decryptionService`, the builder returns a `PreparedPayment`. Pass a
-sign-only callback to `send`. The SDK verifies the message and every required
-signature and refreshes the recipients before checking the exact blockhash.
-After that RPC returns, it refreshes them again before broadcast. Solana
+sign-only callback to `send`. The SDK checks the exact blockhash, Solana
+network and current recipients before invoking the signer. It verifies the
+returned message and signatures, then repeats the freshness checks before
+broadcast. Solana
 enforces blockhash validity when it processes the transaction. Custom
 payment clients return the RPC slot with `getBlockhashValidity`. Explicit
 shielded addresses keep their original keys.

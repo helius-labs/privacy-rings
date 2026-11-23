@@ -45,13 +45,53 @@ async function payment() {
   };
 }
 
+it.each([
+  ["expired blockhash", "WALLET_PAYMENT_BLOCKHASH"],
+  ["changed recipient", "WALLET_DECRYPTION_RECIPIENT_MISMATCH"],
+  ["wrong chain", "WALLET_DECRYPTION_NETWORK_MISMATCH"],
+  ["disabled payments", "ReleasePolicyRecoveryOnly"],
+] as const)("refuses %s before calling the signer", async (fault, causeCode) => {
+  const {
+    prepared,
+    payer,
+    sign,
+    address,
+    broadcastTransaction,
+    getBlockhashValidity,
+    getGenesisHash,
+  } = await payment();
+  switch (fault) {
+    case "expired blockhash":
+      getBlockhashValidity.mockResolvedValueOnce({ slot: 2n, valid: false });
+      break;
+    case "changed recipient":
+      address.mockResolvedValueOnce(ShieldedKeypair.generate().shieldedAddress());
+      break;
+    case "wrong chain":
+      getGenesisHash.mockResolvedValueOnce(payer.address);
+      break;
+    case "disabled payments":
+      address.mockRejectedValueOnce(
+        Object.assign(new Error("recovery only"), { code: "ReleasePolicyRecoveryOnly" }),
+      );
+      break;
+  }
+  const signer = vi.fn(sign);
+  await expect(prepared.send(signer)).rejects.toMatchObject({
+    code: "WALLET_SUBMIT_PAYMENT",
+    causeCode,
+  });
+  expect(signer).not.toHaveBeenCalled();
+  expect(broadcastTransaction).not.toHaveBeenCalled();
+});
+
 it("refuses a different Solana message from the signing callback", async () => {
   const { prepared, payer, sign, address, broadcastTransaction } = await payment();
   await expect(prepared.send(() => sign(emptyTransaction(payer.address)))).rejects.toMatchObject({
     code: "WALLET_SUBMIT_PAYMENT",
     causeCode: "WALLET_INTENT_MISMATCH",
   });
-  expect(address).toHaveBeenCalledTimes(3);
+  expect(address).toHaveBeenCalledTimes(5);
   expect(broadcastTransaction).not.toHaveBeenCalled();
 });
 
@@ -107,20 +147,20 @@ it("submits a prepared payment once, even when a second caller enters during sig
     causeCode: "WALLET_PAYMENT_ALREADY_USED",
   });
   expect(await first).toBe(getSignatureFromTransaction(broadcastTransaction.mock.calls[0]![0]));
-  expect(address).toHaveBeenCalledTimes(7);
+  expect(address).toHaveBeenCalledTimes(9);
   expect(broadcastTransaction).toHaveBeenCalledOnce();
 });
 
 it("submits a private copy of the signatures after an asynchronous recipient refresh", async () => {
   const { prepared, payer, recipient, sign, address, broadcastTransaction } = await payment();
   let signerBytes = new Uint8Array();
-  address.mockImplementationOnce(async () => {
-    signerBytes.fill(0);
-    return recipient;
-  });
   const signature = await prepared.send(async (transaction) => {
     const signed = await sign(transaction);
     signerBytes = new Uint8Array(signed.signatures[payer.address]!);
+    address.mockImplementationOnce(async () => {
+      signerBytes.fill(0);
+      return recipient;
+    });
     return { ...signed, signatures: { [payer.address]: signatureBytes(signerBytes) } };
   });
   expect(signerBytes).toEqual(new Uint8Array(64));
@@ -146,42 +186,56 @@ it.each(["signing", "recipient lookup"] as const)(
     const { prepared, sign, address, recipient, getBlockhashValidity, broadcastTransaction } =
       await payment();
     const expires = () => getBlockhashValidity.mockResolvedValueOnce({ slot: 2n, valid: false });
-    if (phase === "recipient lookup")
-      address.mockImplementationOnce(async () => {
-        expires();
-        return recipient;
-      });
     await expect(
       prepared.send(async (transaction) => {
         if (phase === "signing") expires();
+        else
+          address.mockImplementationOnce(async () => {
+            expires();
+            return recipient;
+          });
         return sign(transaction);
       }),
     ).rejects.toMatchObject({ causeCode: "WALLET_PAYMENT_BLOCKHASH" });
-    expect(getBlockhashValidity).toHaveBeenCalledOnce();
-    expect(address).toHaveBeenCalledTimes(5);
+    expect(getBlockhashValidity).toHaveBeenCalledTimes(2);
+    expect(address).toHaveBeenCalledTimes(7);
     expect(broadcastTransaction).not.toHaveBeenCalled();
   },
 );
+
+it("refuses an older blockhash-validity slot after signing a deposit", async () => {
+  const { prepared, sign, getBlockhashValidity, broadcastTransaction } = await payment();
+  getBlockhashValidity.mockResolvedValueOnce({ slot: 2n, valid: true });
+  getBlockhashValidity.mockResolvedValueOnce({ slot: 1n, valid: true });
+  const signer = vi.fn(sign);
+  await expect(prepared.send(signer)).rejects.toMatchObject({
+    causeCode: "WALLET_PAYMENT_BLOCKHASH",
+  });
+  expect(signer).toHaveBeenCalledOnce();
+  expect(broadcastTransaction).not.toHaveBeenCalled();
+});
 
 it("refuses a recipient change during the blockhash check", async () => {
   const { prepared, sign, recipient, address, broadcastTransaction, getBlockhashValidity } =
     await payment();
   const changed = ShieldedKeypair.generate().shieldedAddress();
-  getBlockhashValidity.mockImplementationOnce(async () => {
-    address.mockResolvedValueOnce(
-      ShieldedAddress.fromPublicKeys(
-        recipient.signingPublicKey,
-        recipient.nullifierPublicKey,
-        changed.viewingPublicKey,
-      ),
-    );
-    return { slot: 2n, valid: true };
-  });
+  getBlockhashValidity
+    .mockResolvedValueOnce({ slot: 1n, valid: true })
+    .mockImplementationOnce(async () => {
+      address.mockResolvedValueOnce(
+        ShieldedAddress.fromPublicKeys(
+          recipient.signingPublicKey,
+          recipient.nullifierPublicKey,
+          changed.viewingPublicKey,
+        ),
+      );
+      return { slot: 2n, valid: true };
+    });
   await expect(prepared.send(sign)).rejects.toMatchObject({
     code: "WALLET_SUBMIT_PAYMENT",
     causeCode: "WALLET_DECRYPTION_RECIPIENT_MISMATCH",
   });
-  expect(getBlockhashValidity).toHaveBeenCalledOnce();
+  expect(getBlockhashValidity).toHaveBeenCalledTimes(2);
   expect(broadcastTransaction).not.toHaveBeenCalled();
 });
 
@@ -195,18 +249,20 @@ it("refuses an RPC network change during the final recipient lookup", async () =
     getBlockhashValidity,
     getGenesisHash,
   } = await payment();
-  getBlockhashValidity.mockImplementationOnce(async () => {
-    address.mockImplementationOnce(async () => {
-      getGenesisHash.mockResolvedValue("5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d");
-      return recipient;
+  getBlockhashValidity
+    .mockResolvedValueOnce({ slot: 1n, valid: true })
+    .mockImplementationOnce(async () => {
+      address.mockImplementationOnce(async () => {
+        getGenesisHash.mockResolvedValue("5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d");
+        return recipient;
+      });
+      return { slot: 2n, valid: true };
     });
-    return { slot: 2n, valid: true };
-  });
   await expect(prepared.send(sign)).rejects.toMatchObject({
     code: "WALLET_SUBMIT_PAYMENT",
     causeCode: "WALLET_DECRYPTION_NETWORK_MISMATCH",
   });
-  expect(address).toHaveBeenCalledTimes(6);
+  expect(address).toHaveBeenCalledTimes(8);
   expect(broadcastTransaction).not.toHaveBeenCalled();
 });
 
@@ -220,20 +276,22 @@ it("refuses a payment disabled during the final RPC network check", async () => 
     getBlockhashValidity,
     getGenesisHash,
   } = await payment();
-  getBlockhashValidity.mockImplementationOnce(async () => {
-    address.mockImplementationOnce(async () => {
-      getGenesisHash.mockImplementationOnce(async () => {
-        address.mockRejectedValueOnce(
-          Object.assign(new Error("recovery only"), {
-            code: "ReleasePolicyRecoveryOnly",
-          }),
-        );
-        return GENESIS;
+  getBlockhashValidity
+    .mockResolvedValueOnce({ slot: 1n, valid: true })
+    .mockImplementationOnce(async () => {
+      address.mockImplementationOnce(async () => {
+        getGenesisHash.mockImplementationOnce(async () => {
+          address.mockRejectedValueOnce(
+            Object.assign(new Error("recovery only"), {
+              code: "ReleasePolicyRecoveryOnly",
+            }),
+          );
+          return GENESIS;
+        });
+        return recipient;
       });
-      return recipient;
+      return { slot: 2n, valid: true };
     });
-    return { slot: 2n, valid: true };
-  });
   await expect(prepared.send(sign)).rejects.toMatchObject({
     code: "WALLET_SUBMIT_PAYMENT",
     causeCode: "ReleasePolicyRecoveryOnly",

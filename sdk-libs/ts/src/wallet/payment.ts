@@ -92,9 +92,14 @@ export function prepareServicePayment(
     throw new WalletError("WALLET_PAYMENT_BLOCKHASH");
   const unsigned = Uint8Array.from(encoder.encode(transaction));
   const getBlockhashValidity = client.getBlockhashValidity.bind(client);
-  async function validAtSlot(signal: AbortSignal): Promise<bigint> {
+  async function validAtSlot(signal: AbortSignal, minimum = 0n): Promise<bigint> {
     const { slot, valid } = await getBlockhashValidity(blockhash, { signal });
-    if (valid !== true || typeof slot !== "bigint" || slot < 0n || slot > 0xffff_ffff_ffff_ffffn) {
+    if (
+      valid !== true ||
+      typeof slot !== "bigint" ||
+      slot < minimum ||
+      slot > 0xffff_ffff_ffff_ffffn
+    ) {
       throw new WalletError("WALLET_PAYMENT_BLOCKHASH");
     }
     return slot;
@@ -115,13 +120,17 @@ export function prepareServicePayment(
           { ...context, timeoutMs: context?.timeoutMs ?? 60_000 },
           async (signal) => {
             reservation?.assertActive();
+            let blockhashValidAtSlot = await validAtSlot(signal);
+            signal.throwIfAborted();
+            await revalidate({ signal });
+            signal.throwIfAborted();
+            reservation?.assertActive();
             const signed = await sign(decoder.decode(unsigned.slice()), signal);
             signal.throwIfAborted();
             const checked = checkedSignatureTransaction(decoder.decode(unsigned), signed);
             const expected = getSignatureFromTransaction(checked);
-            let blockhashValidAtSlot = 0n;
             if (reservation) {
-              blockhashValidAtSlot = await validAtSlot(signal);
+              blockhashValidAtSlot = await validAtSlot(signal, blockhashValidAtSlot);
               signal.throwIfAborted();
               await reservation.stage(
                 expected,
@@ -132,9 +141,7 @@ export function prepareServicePayment(
             signal.throwIfAborted();
             await revalidate({ signal });
             signal.throwIfAborted();
-            if ((await validAtSlot(signal)) < blockhashValidAtSlot) {
-              throw new WalletError("WALLET_PAYMENT_BLOCKHASH");
-            }
+            await validAtSlot(signal, blockhashValidAtSlot);
             signal.throwIfAborted();
             await revalidate({ signal });
             signal.throwIfAborted();

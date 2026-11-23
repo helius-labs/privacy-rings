@@ -866,8 +866,10 @@ describe("live SDK lifecycle", { concurrent: false }, () => {
       persistence: { store, cipher },
     });
     expect(lookups).toBeGreaterThan(0);
+    const lookupsAfterBuild = lookups;
     let lookupsAtSigning = 0;
     const signature = await payment.send(async (transaction, abortSignal) => {
+      expect(lookups).toBeGreaterThan(lookupsAfterBuild);
       const signed = await signTransactionWithSigners([sender.signer], transaction, {
         abortSignal,
       });

@@ -1166,7 +1166,13 @@ describe("unsigned public transaction builders", () => {
     expect(serializeWallet(wallet)).toEqual(before);
   });
 
-  it.each(["recipient changed", "registry changed", "broadcast uncertain", "cancelled"] as const)(
+  it.each([
+    "recipient changed",
+    "registry changed",
+    "broadcast uncertain",
+    "cancelled",
+    "expired before signing",
+  ] as const)(
     "keeps spend reservations consistent when a prepared payment is %s",
     async (outcome) => {
       const keypair = spendingKeypair();
@@ -1211,6 +1217,10 @@ describe("unsigned public transaction builders", () => {
           ...client,
           getAccount,
           getGenesisHash: async () => genesisHash,
+          getBlockhashValidity: async () => ({
+            slot: 1n,
+            valid: outcome !== "expired before signing",
+          }),
           broadcastTransaction,
         },
         wallet,
@@ -1229,15 +1239,19 @@ describe("unsigned public transaction builders", () => {
       const causeCode =
         outcome === "cancelled"
           ? "WALLET_PAYMENT_ALREADY_USED"
-          : outcome === "recipient changed" || outcome === "registry changed"
-            ? "WALLET_DECRYPTION_RECIPIENT_MISMATCH"
-            : "CLIENT_RPC";
+          : outcome === "expired before signing"
+            ? "WALLET_PAYMENT_BLOCKHASH"
+            : outcome === "recipient changed" || outcome === "registry changed"
+              ? "WALLET_DECRYPTION_RECIPIENT_MISMATCH"
+              : "CLIENT_RPC";
       await expect(payment.send(sign)).rejects.toMatchObject({
         code: "WALLET_SUBMIT_PAYMENT",
         causeCode,
       });
       payment.cancel();
-      expect(sign).toHaveBeenCalledTimes(outcome === "cancelled" ? 0 : 1);
+      expect(sign).toHaveBeenCalledTimes(
+        outcome === "cancelled" || outcome === "expired before signing" ? 0 : 1,
+      );
       expect(broadcastTransaction).toHaveBeenCalledTimes(outcome === "broadcast uncertain" ? 1 : 0);
       if (outcome === "registry changed") expect(address).not.toHaveBeenCalled();
       if (outcome === "broadcast uncertain") {
@@ -1367,7 +1381,7 @@ describe("unsigned public transaction builders", () => {
     try {
       await vi.waitFor(() => expect(store.save).toHaveBeenCalledOnce());
       expect(broadcastTransaction).not.toHaveBeenCalled();
-      expect(getBlockhashValidity).toHaveBeenCalledOnce();
+      expect(getBlockhashValidity).toHaveBeenCalledTimes(2);
       expect(wallet.pendingSubmissions()).toHaveLength(1);
       if (outcome === "input spent") {
         wallet._replace({

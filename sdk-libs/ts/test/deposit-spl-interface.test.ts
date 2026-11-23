@@ -141,10 +141,11 @@ it("builds the same SOL deposit with a service-resolved recipient as with explic
   );
   expect(broadcastTransaction).not.toHaveBeenCalled();
   await resolved.send(async (transaction) => {
+    expect(address).toHaveBeenCalledTimes(5);
     expect(transaction.messageBytes).toEqual(explicit.messageBytes);
     return signTransactionWithSigners([payer], transaction);
   });
-  expect(address).toHaveBeenCalledTimes(7);
+  expect(address).toHaveBeenCalledTimes(9);
   expect(broadcastTransaction).toHaveBeenCalledOnce();
 });
 
