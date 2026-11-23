@@ -156,3 +156,48 @@ pub(super) fn resolve_spl_token_program<R: Rpc>(rpc: &R, mint: &Pubkey) -> Resul
         )
     }
 }
+
+/// What a deposit of `amount` debits from the depositor's token account: the
+/// gross whose current-epoch Token-2022 transfer fee leaves exactly `amount` in
+/// the vault, as the shielded-pool program computes it. `(amount, 0)` for mints
+/// without a transfer fee.
+pub(super) fn spl_deposit_gross<R: Rpc>(rpc: &R, mint: &Pubkey, amount: u64) -> Result<(u64, u64)> {
+    use spl_token_2022_interface::{
+        extension::{
+            transfer_fee::TransferFeeConfig, BaseStateWithExtensions, PodStateWithExtensions,
+        },
+        pod::PodMint,
+    };
+    let account = rpc
+        .get_account(Address::new_from_array(mint.to_bytes()))?
+        .ok_or_else(|| anyhow::anyhow!("SPL mint account {mint} was not found"))?;
+    if account.owner != Pubkey::new_from_array(SPL_TOKEN_2022_PROGRAM_ID) {
+        return Ok((amount, 0));
+    }
+    let state = PodStateWithExtensions::<PodMint>::unpack(&account.data)
+        .map_err(|e| anyhow::anyhow!("unpack mint {mint}: {e}"))?;
+    let Ok(config) = state.get_extension::<TransferFeeConfig>() else {
+        return Ok((amount, 0));
+    };
+    let clock = rpc
+        .get_account(Address::new_from_array(
+            solana_sdk_ids::sysvar::clock::ID.to_bytes(),
+        ))?
+        .context("clock sysvar not found")?;
+    let epoch = u64::from_le_bytes(
+        clock
+            .data
+            .get(16..24)
+            .context("clock sysvar too short")?
+            .try_into()?,
+    );
+    let fee = config.get_epoch_fee(epoch);
+    let gross = fee
+        .calculate_pre_fee_amount(amount)
+        .context("no transfer amount credits the deposit exactly")?;
+    let withheld = fee.calculate_fee(gross).context("transfer fee overflow")?;
+    if gross.checked_sub(withheld) != Some(amount) {
+        bail!("no transfer amount credits a deposit of {amount} exactly");
+    }
+    Ok((gross, withheld))
+}

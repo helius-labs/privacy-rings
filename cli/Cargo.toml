@@ -30,6 +30,7 @@ solana-pubkey = { workspace = true }
 solana-sdk-ids = { workspace = true }
 solana-signature = { workspace = true }
 solana-signer = { workspace = true }
+spl-token-2022-interface = { workspace = true }
 spr-client = { workspace = true, features = ["client"] }
 spr-interface = { workspace = true }
 spr-program = { workspace = true, features = ["client", "build"] }

@@ -36,6 +36,7 @@ Added
 - `SprClient.proveAnonymousRingTransact(input)` accepts a `TransactOwnerSigner` or an owner signature prepared over `transactMessageDigest(proofInputs)`.
 - `SprClient.fetchProvingKeySet()` reads the prover's key set over the channel `proverTee` attests and encrypts, and returns a `ProvingKeySet` whose `cacheKey` names the release and whose `key(name)` gives each key's zopro download and gnark digest.
 - `SprClientConfig.provingKeys`, with `proofDataSource: "client"`, makes every proof use the set's keys and `checkProverProvingKeys()` check only those keys; a circuit outside the set and the indexed route fail with `CLIENT_PROVING_KEY_SET`, whose `details.check` names the reason.
+- `quoteSplDeposit({ client, asset, amount })` returns the `gross` a deposit debits from the depositor's token account and the Token-2022 transfer `fee` withheld in the vault, which still receives exactly `amount`; `splDepositAmounts`, `decodeTransferFeeConfig`, `calculateTransferFee` and `calculatePreFeeAmount` compute the same from a mint account and an epoch, matching Token-2022.
 
 Changed
 

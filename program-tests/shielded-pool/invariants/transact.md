@@ -358,10 +358,10 @@ covers the whole group) and referenced from the coverage matrix.
   - Suggested test: the applied-batches multiplication cannot overflow from a u32 — type-bound pinned in `applied_batches_cannot_overflow_by_type_bound`
 
 - [x] **INV-TRANSACT-44: SPL deposit settles only if the vault gains exactly the nominal amount**
-  - Covered by: `program-tests/shielded-pool/tests/spl_interface/rejection.rs` `transfer_fee_deposit_is_rejected_when_vault_receives_less_than_nominal_amount`
+  - Covered by: `program-tests/shielded-pool/tests/spl_interface/transfer_fee.rs` (1%, 5%, capped, 100%-capped and zero-fee mints credit exactly the nominal amount; the withheld fee is harvestable by anyone), `program-tests/shielded-pool/tests/spl_interface/rejection.rs` `transfer_fee_deposit_is_rejected_when_no_gross_credits_the_nominal_amount` (7010) and `transfer_fee_deposit_is_rejected_when_the_depositor_cannot_cover_the_fee`, `program-tests/shielded-pool/tests/transact/withdrawal.rs` `shield_then_withdraw_transfer_fee_spl_with_a_real_proof`
   - Kind: postcondition
-  - Statement: after an SPL deposit `TransferChecked` CPI, the vault's base amount must equal its pre-CPI amount plus exactly the leg amount (checked_add overflow also fails); any shortfall (e.g. a transfer-fee mint netting less) aborts the instruction. Extension balances such as `withheld_amount` never count as collateral.
-  - Location: `programs/shielded-pool/src/instructions/settlement/spl.rs:58-77, 105-111` (`fn settle_spl_deposit`, `fn token_account_amount`)
+  - Statement: after an SPL deposit CPI, the vault's base amount must equal its pre-CPI amount plus exactly the leg amount (checked_add overflow also fails); any shortfall aborts the instruction. For a Token-2022 transfer-fee mint the depositor is debited the gross whose current-epoch fee leaves exactly the leg amount (`TransferCheckedWithFee`), and a gross that cannot do so fails with 7010 before the CPI. Extension balances such as `withheld_amount` never count as collateral.
+  - Location: `programs/shielded-pool/src/instructions/settlement/spl.rs:94-159, 184-191` (`fn deposit_transfer_fee`, `fn settle_spl_deposit`, `fn token_account_amount`)
   - Error: `ShieldedPoolError::PublicSettlementFailed = 7010`
   - Severity: Critical (unbacked-note mint via fee-on-transfer)
   - Suggested test: negative (transfer-fee mint); harness: program-tests integration (`cargo test-sbf`)

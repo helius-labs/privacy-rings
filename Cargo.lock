@@ -9870,6 +9870,7 @@ dependencies = [
  "solana-sdk-ids",
  "solana-signature",
  "solana-signer",
+ "spl-token-2022-interface 2.1.0",
  "spr-client",
  "spr-interface",
  "spr-keypair",

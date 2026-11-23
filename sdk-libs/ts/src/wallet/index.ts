@@ -30,6 +30,17 @@ export {
   type DepositClient,
   type DepositTransactionParams,
 } from "./deposit.js";
+export {
+  calculatePreFeeAmount,
+  calculateTransferFee,
+  decodeTransferFeeConfig,
+  epochTransferFee,
+  quoteSplDeposit,
+  splDepositAmounts,
+  type SplDepositAmounts,
+  type TransferFee,
+  type TransferFeeConfig,
+} from "./transfer-fee.js";
 export { fetchTransactionSlots, type TransactionSlots } from "./transaction-slots.js";
 export {
   buildMultiTransferTransaction,
