@@ -28,6 +28,21 @@ impl TransactionSize {
     pub fn fits(&self) -> bool {
         self.bytes <= v1::MAX_TRANSACTION_SIZE && self.addresses <= usize::from(v1::MAX_ADDRESSES)
     }
+
+    pub(super) fn from_message(message: &v1::Message) -> Result<Self, ClientError> {
+        let signatures = usize::from(message.header.num_required_signatures);
+        let bytes = signatures
+            .checked_mul(SIGNATURE_LEN)
+            .and_then(|signatures| signatures.checked_add(VERSION_PREFIX_LEN))
+            .and_then(|overhead| overhead.checked_add(message.size()))
+            .ok_or_else(|| {
+                ClientError::TransactionCompile("transaction size overflow".to_owned())
+            })?;
+        Ok(Self {
+            bytes,
+            addresses: message.account_keys.len(),
+        })
+    }
 }
 
 /// Measure `instructions` as the v1 transaction they would be sent as.
@@ -46,14 +61,5 @@ pub fn transaction_size(
         compute_budget.transaction_config(),
     )
     .map_err(|error| ClientError::TransactionCompile(error.to_string()))?;
-    let signatures = usize::from(message.header.num_required_signatures);
-    let bytes = signatures
-        .checked_mul(SIGNATURE_LEN)
-        .and_then(|signatures| signatures.checked_add(VERSION_PREFIX_LEN))
-        .and_then(|overhead| overhead.checked_add(message.size()))
-        .ok_or_else(|| ClientError::TransactionCompile("transaction size overflow".to_owned()))?;
-    Ok(TransactionSize {
-        bytes,
-        addresses: message.account_keys.len(),
-    })
+    TransactionSize::from_message(&message)
 }

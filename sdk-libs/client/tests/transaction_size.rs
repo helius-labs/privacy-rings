@@ -4,8 +4,11 @@ use solana_pubkey::Pubkey;
 
 use solana_hash::Hash;
 use solana_instruction::Instruction;
-use solana_message::v1;
-use spr_client::rpc::{compile_message, sign_transaction, transaction_size, ComputeBudgetConfig};
+use solana_message::{v1, VersionedMessage};
+use spr_client::{
+    rpc::{compile_message, sign_transaction, transaction_size, ComputeBudgetConfig},
+    ClientError,
+};
 
 fn wire_size(
     instructions: &[Instruction],
@@ -74,14 +77,21 @@ fn header_fields_are_counted_at_the_wire_limit() {
                 .expect("measure at limit");
         assert_eq!(measured.bytes, v1::MAX_TRANSACTION_SIZE);
         assert!(measured.fits());
+        assert_eq!(
+            measured.bytes,
+            wire_size(core::slice::from_ref(&instruction), &[&payer], budget)
+        );
 
         instruction.data.push(0);
         let instructions = core::slice::from_ref(&instruction);
         let measured =
             transaction_size(&payer.pubkey(), instructions, budget).expect("measure over limit");
-        assert_eq!(measured.bytes, wire_size(instructions, &[&payer], budget));
         assert_eq!(measured.bytes, v1::MAX_TRANSACTION_SIZE + 1);
         assert!(!measured.fits());
+        assert!(matches!(
+            compile_message(&payer.pubkey(), instructions, Hash::default(), budget),
+            Err(ClientError::TransactionCompile(message)) if message.contains("4097 bytes")
+        ));
     }
 }
 
@@ -107,16 +117,37 @@ fn the_address_ceiling_binds_independently_of_the_byte_ceiling() {
 
     // One more account, still only a couple of kilobytes, and it cannot be
     // sent at all.
-    let over_cap = transaction_size(
-        &payer,
-        core::slice::from_ref(&instruction_touching(63)),
-        budget,
-    )
-    .expect("measure");
+    let oversize = [instruction_touching(63)];
+    let over_cap = transaction_size(&payer, &oversize, budget).expect("measure");
     assert_eq!(over_cap.addresses, usize::from(v1::MAX_ADDRESSES) + 1);
     assert!(
         over_cap.bytes <= v1::MAX_TRANSACTION_SIZE,
         "this case is only interesting while the byte ceiling is not the one binding"
     );
     assert!(!over_cap.fits());
+    assert!(matches!(
+        compile_message(&payer, &oversize, Hash::default(), budget),
+        Err(ClientError::TransactionCompile(_))
+    ));
+}
+
+#[test]
+fn signing_rechecks_the_packet_limit_for_external_messages() {
+    let payer = Keypair::new();
+    let instruction =
+        Instruction::new_with_bytes(Pubkey::new_unique(), &[0; v1::MAX_TRANSACTION_SIZE], vec![]);
+    let budget = ComputeBudgetConfig::new(200_000);
+    let versioned = VersionedMessage::V1(
+        v1::Message::try_compile_with_config(
+            &payer.pubkey(),
+            &[instruction],
+            Hash::default(),
+            budget.transaction_config(),
+        )
+        .expect("structurally valid but too big"),
+    );
+    assert!(matches!(
+        sign_transaction(versioned, &[&payer]),
+        Err(ClientError::TransactionCompile(message)) if message.contains("v1 allows")
+    ));
 }

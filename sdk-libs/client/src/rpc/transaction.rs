@@ -11,6 +11,7 @@ use spr_interface::instruction::InterfaceTransfer;
 use crate::error::ClientError;
 
 use super::compute_budget::ComputeBudgetConfig;
+use super::transaction_size::TransactionSize;
 
 /// Compile `instructions` into an unsigned v1 message.
 ///
@@ -22,19 +23,37 @@ pub fn compile_message(
     recent_blockhash: Hash,
     compute_budget: ComputeBudgetConfig,
 ) -> Result<VersionedMessage, ClientError> {
-    v1::Message::try_compile_with_config(
+    let message = v1::Message::try_compile_with_config(
         payer,
         instructions,
         recent_blockhash,
         compute_budget.transaction_config(),
     )
-    .map(VersionedMessage::V1)
-    .map_err(|error| ClientError::TransactionCompile(error.to_string()))
+    .map_err(|error| ClientError::TransactionCompile(error.to_string()))?;
+    validate_v1_message(&message)?;
+    Ok(VersionedMessage::V1(message))
+}
+
+fn validate_v1_message(message: &v1::Message) -> Result<(), ClientError> {
+    message
+        .validate()
+        .map_err(|error| ClientError::TransactionCompile(error.to_string()))?;
+    let size = TransactionSize::from_message(message)?;
+    if !size.fits() {
+        return Err(ClientError::TransactionCompile(format!(
+            "transaction needs {} bytes and {} addresses; v1 allows {} bytes and {} addresses",
+            size.bytes,
+            size.addresses,
+            v1::MAX_TRANSACTION_SIZE,
+            v1::MAX_ADDRESSES,
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn ensure_version_1(message: &VersionedMessage) -> Result<(), ClientError> {
     match message {
-        VersionedMessage::V1(_) => Ok(()),
+        VersionedMessage::V1(message) => validate_v1_message(message),
         VersionedMessage::Legacy(_) | VersionedMessage::V0(_) => {
             Err(ClientError::UnsupportedTransactionVersion)
         }
