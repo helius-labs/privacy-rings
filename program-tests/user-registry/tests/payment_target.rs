@@ -7,7 +7,7 @@ use solana_signer::Signer;
 use solana_transaction_error::TransactionError;
 use spr_user_registry::error::UserRegistryError;
 use spr_user_registry_interface::{
-    instruction::{assert_payment_target, RegisterData},
+    instruction::{assert_payment_targets, PaymentTarget, RegisterData},
     user_record_pda, MergeEncryptionScheme,
 };
 use user_registry_tests::{
@@ -17,13 +17,22 @@ use user_registry_tests::{
 use common::{funded_keypair, keys, register, Keys};
 
 fn expected(owner: Pubkey, keys: Keys) -> Instruction {
-    assert_payment_target(
-        owner,
-        Some(RegisterData {
+    assert_payment_targets(&[PaymentTarget {
+        owner: owner.to_bytes(),
+        keys: Some(RegisterData {
             nullifier_pubkey: keys.nullifier,
             viewing_pubkey: keys.viewing,
         }),
-    )
+    }])
+    .unwrap()
+}
+
+fn missing(owner: Pubkey) -> Instruction {
+    assert_payment_targets(&[PaymentTarget {
+        owner: owner.to_bytes(),
+        keys: None,
+    }])
+    .unwrap()
 }
 
 fn program_error(index: u8, error: UserRegistryError) -> TransactionError {
@@ -35,7 +44,7 @@ fn service_route_accepts_absence_and_rejects_a_new_registration() {
     let mut rig = UserRegistryTestRig::new();
     let owner = Keypair::new();
     let address = owner.pubkey();
-    let unregistered = assert_payment_target(address, None);
+    let unregistered = missing(address);
     let value = keys(1);
     rig.send(unregistered.clone(), &[]).expect("absent PDA");
     rig.fund(&user_record_pda(&address).0, 1_000_000);
@@ -100,7 +109,7 @@ fn stale_target_rolls_back_another_instruction_in_the_same_transaction() {
     register(&mut rig, &recipient, value);
     let other_record = user_record_pda(&other.pubkey()).0;
     let write = build_register_ix(&other.pubkey(), value.nullifier, value.viewing);
-    let stale = assert_payment_target(recipient.pubkey(), None);
+    let stale = missing(recipient.pubkey());
     let failure = rig
         .send_all(&[write.clone(), stale], &[&other])
         .unwrap_err();
@@ -122,18 +131,64 @@ fn assertion_requires_the_canonical_pda_and_valid_record_data() {
     let value = keys(6);
     register(&mut rig, &owner, value);
     let absent = Keypair::new();
-    let mut spoofed = assert_payment_target(address, None);
+    let mut spoofed = missing(address);
     spoofed.accounts[0].pubkey = user_record_pda(&absent.pubkey()).0;
     assert_eq!(
         rig.send(spoofed, &[]).unwrap_err().err,
-        program_error(0, UserRegistryError::InvalidRecordPda),
+        program_error(0, UserRegistryError::PaymentTargetChanged),
     );
     let record_address = user_record_pda(&address).0;
     let mut invalid = rig.svm.get_account(&record_address).unwrap();
-    invalid.data[33] ^= 1;
+    invalid.data[0] ^= 1;
     rig.svm.set_account(record_address, invalid).unwrap();
     assert_eq!(
         rig.send(expected(address, value), &[]).unwrap_err().err,
         program_error(0, UserRegistryError::InvalidRecordAccount),
+    );
+}
+
+#[test]
+fn mixed_batch_binds_record_order_and_requires_an_exact_digest() {
+    let mut rig = UserRegistryTestRig::new();
+    let first = funded_keypair(&mut rig);
+    let second = Keypair::new();
+    let third = funded_keypair(&mut rig);
+    let original = keys(7);
+    register(&mut rig, &first, original);
+    register(&mut rig, &third, original);
+    let registered = |owner: Pubkey| PaymentTarget {
+        owner: owner.to_bytes(),
+        keys: Some(RegisterData {
+            nullifier_pubkey: original.nullifier,
+            viewing_pubkey: original.viewing,
+        }),
+    };
+    let instruction = assert_payment_targets(&[
+        registered(first.pubkey()),
+        PaymentTarget {
+            owner: second.pubkey().to_bytes(),
+            keys: None,
+        },
+        registered(third.pubkey()),
+    ])
+    .unwrap();
+    rig.send(instruction.clone(), &[]).expect("ordered batch");
+    let mut reordered = instruction.clone();
+    reordered.accounts.swap(0, 2);
+    assert_eq!(
+        rig.send(reordered, &[]).unwrap_err().err,
+        program_error(0, UserRegistryError::PaymentTargetChanged),
+    );
+    let mut wrong_digest = instruction.clone();
+    wrong_digest.data[1] ^= 1;
+    assert_eq!(
+        rig.send(wrong_digest, &[]).unwrap_err().err,
+        program_error(0, UserRegistryError::PaymentTargetChanged),
+    );
+    let mut extra = instruction;
+    extra.data.push(0);
+    assert_eq!(
+        rig.send(extra, &[]).unwrap_err().err,
+        program_error(0, UserRegistryError::InvalidInstructionData),
     );
 }

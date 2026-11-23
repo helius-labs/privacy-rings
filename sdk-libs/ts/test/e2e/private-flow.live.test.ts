@@ -6,6 +6,7 @@ import {
   getBase64EncodedWireTransaction,
   lamports,
   signTransactionWithSigners,
+  type Address,
   type Signature,
   type TransactionModifyingSigner,
   type TransactionPartialSigner,
@@ -22,6 +23,7 @@ import {
   Wallet,
   buildDepositTransaction,
   buildKeyUpdateTransaction,
+  buildMultiTransferTransaction,
   buildMergeTransaction,
   buildRegistrationTransaction,
   buildSetMergeEncryptionTransaction,
@@ -42,6 +44,7 @@ import {
   type WithdrawalTransactionParams,
 } from "../../src/index.js";
 import type { ApprovalHandler } from "../../src/transaction/wallet/intent.js";
+import { MAX_TRANSFER_PAYMENTS } from "../../src/transaction/wallet/intent.js";
 import {
   getAssociatedTokenAddress,
   getSplAssetVaultAddress,
@@ -899,6 +902,71 @@ describe("live SDK lifecycle", { concurrent: false }, () => {
     expect(await fetchUserRecord({ rpc: client, owner: recipient.signer.address })).toBeUndefined();
     expect(await client.getBalance(recipient.signer.address)).toBe(0n);
   }, 1_200_000);
+
+  it.each(["registered", "unregistered", "mixed"] as const)(
+    "sends the widest guarded transfer to %s recipients",
+    async (route) => {
+      const { client } = harness;
+      const startSeed = { registered: 160, unregistered: 180, mixed: 200 }[route];
+      const sender = await actor(client, startSeed);
+      const recipients = await Promise.all(
+        Array.from({ length: MAX_TRANSFER_PAYMENTS }, (_, index) =>
+          actor(client, startSeed + 1 + index),
+        ),
+      );
+      await fund(client, sender);
+      await register(client, sender);
+      const serviceKeys = new Map<Address, ShieldedAddress>();
+      for (const [index, recipient] of recipients.entries()) {
+        if (route === "unregistered" || (route === "mixed" && index % 2 === 0)) {
+          serviceKeys.set(recipient.signer.address, recipient.keypair.shieldedAddress());
+          continue;
+        }
+        const registration = await buildRegistrationTransaction({
+          client,
+          owner: recipient.signer.address,
+          payer: sender.signer.address,
+          address: recipient.keypair.shieldedAddress(),
+        });
+        if (registration === undefined) throw new Error("expected a fresh recipient");
+        await signSendAndConfirm(client, registration, [sender.signer, recipient.signer]);
+      }
+      await deposit({
+        client,
+        feePayer: sender.signer,
+        recipient: sender.signer.address,
+        amount: 50_000_000n,
+      });
+      await sync(client, sender);
+      const payment = await buildMultiTransferTransaction({
+        client,
+        wallet: sender.wallet,
+        keys: sender.keys,
+        feePayer: sender.signer.address,
+        payments: recipients.map(({ signer }) => ({
+          recipient: signer.address,
+          amount: 1_000_000n,
+        })),
+        decryptionService: {
+          genesisHash: await client.getGenesisHash(),
+          async address(owner) {
+            const keys = serviceKeys.get(owner);
+            if (keys === undefined) throw new Error("registered payment contacted the service");
+            return keys;
+          },
+        },
+      });
+      const signature = await payment.send((transaction) =>
+        signTransactionWithSigners([sender.signer], transaction),
+      );
+      await waitForSignature(client.solanaRpc, signature);
+      for (const recipient of [recipients[0]!, recipients.at(-1)!]) {
+        await sync(client, recipient);
+        expect(recipient.wallet.balance(SOL_MINT).amount).toBe(1_000_000n);
+      }
+    },
+    1_200_000,
+  );
 
   it.each(["registration", "rotation"] as const)(
     "rejects a signed payment on-chain after recipient %s",

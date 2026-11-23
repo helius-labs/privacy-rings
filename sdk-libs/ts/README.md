@@ -350,7 +350,7 @@ returned message and signatures, then repeats the freshness checks before
 broadcast. Each registry recheck uses a slot at least as recent as that
 owner's preceding registry read and the corresponding blockhash check.
 RPC preflight uses the newest registry or blockhash slot checked by the wallet.
-The signed message ends with a registry assertion for each resolved owner.
+The signed message ends with a registry assertion covering all resolved owners.
 A registration or key rotation that changes the selected destination before
 execution reverts the payment. Use this flow on a network with the updated
 user-registry program.

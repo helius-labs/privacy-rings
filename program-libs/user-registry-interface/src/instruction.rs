@@ -6,8 +6,10 @@ pub mod discriminator {
     pub const REGISTER: u8 = 0;
     pub const SET_MERGE_ENCRYPTION: u8 = 1;
     pub const UPDATE_KEYS: u8 = 2;
-    pub const ASSERT_PAYMENT_TARGET: u8 = 3;
+    pub const ASSERT_PAYMENT_TARGETS: u8 = 3;
 }
+
+pub const MAX_PAYMENT_TARGETS: usize = 16;
 
 #[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize)]
 pub struct RegisterData {
@@ -22,12 +24,32 @@ pub struct UpdateKeysData {
     pub viewing_pubkey: [u8; VIEWING_PUBKEY_LEN],
 }
 
-/// Keys selected when constructing a payment, or `None` for the service
-/// route, which requires the recipient to still be unregistered.
-#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize)]
-pub struct AssertPaymentTargetData {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaymentTarget {
     pub owner: [u8; 32],
-    pub expected_keys: Option<RegisterData>,
+    pub keys: Option<RegisterData>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize)]
+pub struct AssertPaymentTargetsData {
+    pub digest: [u8; 32],
+}
+
+/// SHA-256 over the domain and ordered tuples of record address, key presence and keys.
+pub fn payment_targets_digest<'a>(
+    targets: impl ExactSizeIterator<Item = (&'a [u8; 32], Option<&'a RegisterData>)>,
+) -> [u8; 32] {
+    let mut data =
+        Vec::with_capacity(targets.len() * (33 + NULLIFIER_PUBKEY_LEN + VIEWING_PUBKEY_LEN));
+    for (record, keys) in targets {
+        data.extend_from_slice(record);
+        data.push(u8::from(keys.is_some()));
+        if let Some(keys) = keys {
+            data.extend_from_slice(&keys.nullifier_pubkey);
+            data.extend_from_slice(&keys.viewing_pubkey);
+        }
+    }
+    solana_sha256_hasher::hashv(&[b"spr/user-registry/payment-targets/v1", &data]).to_bytes()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, BorshDeserialize, BorshSerialize)]
@@ -45,8 +67,8 @@ mod builders {
     use solana_pubkey::Pubkey;
 
     use super::{
-        discriminator, AssertPaymentTargetData, MergeEncryptionScheme, RegisterData,
-        SetMergeEncryptionData, UpdateKeysData,
+        discriminator, payment_targets_digest, AssertPaymentTargetsData, MergeEncryptionScheme,
+        PaymentTarget, RegisterData, SetMergeEncryptionData, UpdateKeysData, MAX_PAYMENT_TARGETS,
     };
     use crate::{user_record_pda, user_registry_program_id};
 
@@ -117,21 +139,33 @@ mod builders {
     }
 
     /// Assert recipient state in the same transaction as the confidential payment.
-    pub fn assert_payment_target(
-        owner: Pubkey,
-        expected_keys: Option<RegisterData>,
-    ) -> Instruction {
-        Instruction {
-            program_id: user_registry_program_id(),
-            accounts: vec![AccountMeta::new_readonly(user_record_pda(&owner).0, false)],
-            data: encode_instruction(
-                discriminator::ASSERT_PAYMENT_TARGET,
-                &AssertPaymentTargetData {
-                    owner: owner.to_bytes(),
-                    expected_keys,
-                },
-            ),
+    pub fn assert_payment_targets(targets: &[PaymentTarget]) -> Option<Instruction> {
+        if targets.is_empty() || targets.len() > MAX_PAYMENT_TARGETS {
+            return None;
         }
+        let accounts: Vec<_> = targets
+            .iter()
+            .map(|target| {
+                AccountMeta::new_readonly(
+                    user_record_pda(&Pubkey::new_from_array(target.owner)).0,
+                    false,
+                )
+            })
+            .collect();
+        let data =
+            encode_instruction(
+                discriminator::ASSERT_PAYMENT_TARGETS,
+                &AssertPaymentTargetsData {
+                    digest: payment_targets_digest(accounts.iter().zip(targets).map(
+                        |(account, target)| (account.pubkey.as_array(), target.keys.as_ref()),
+                    )),
+                },
+            );
+        Some(Instruction {
+            program_id: user_registry_program_id(),
+            accounts,
+            data,
+        })
     }
 }
 

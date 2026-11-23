@@ -126,17 +126,21 @@ fn attachment_requires_exact_keys_on_every_output_for_the_owner() {
         .with_nitro_recipients(&all_recipients, &[])
         .expect("all targets declared");
     assert_eq!(
-        payment.assertions,
-        [
-            assert_payment_target(
-                payer.pubkey(),
-                Some(RegisterData {
+        payment.assertion,
+        assert_payment_targets(&[
+            PaymentTarget {
+                owner: payer.pubkey().to_bytes(),
+                keys: Some(RegisterData {
                     nullifier_pubkey: address.nullifier_pubkey,
                     viewing_pubkey: *address.viewing_pubkey.as_bytes(),
                 }),
-            ),
-            assert_payment_target(other_owner, None),
-        ],
+            },
+            PaymentTarget {
+                owner: other_owner.to_bytes(),
+                keys: None,
+            },
+        ])
+        .unwrap(),
     );
     let recipients = &all_recipients[..1];
     let same_owner_wrong_keys = transaction(payer.pubkey(), &[address, rotated]);

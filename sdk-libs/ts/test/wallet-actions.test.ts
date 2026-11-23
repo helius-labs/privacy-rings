@@ -527,10 +527,14 @@ describe("private transaction construction", () => {
     expect(result.recipientAssertions[0]?.data).toEqual(
       Uint8Array.of(
         3,
-        ...getAddressEncoder().encode(owner),
-        1,
-        ...registered.nullifierPublicKey,
-        ...registered.viewingPublicKey.toBytes(),
+        ...sha256
+          .create()
+          .update(new TextEncoder().encode("spr/user-registry/payment-targets/v1"))
+          .update(Uint8Array.from(getAddressEncoder().encode(pda.address)))
+          .update(Uint8Array.of(1))
+          .update(registered.nullifierPublicKey)
+          .update(registered.viewingPublicKey.toBytes())
+          .digest(),
       ),
     );
     expect(getAccount).toHaveBeenCalledTimes(2);
@@ -1985,3 +1989,4 @@ describe("merge encryption opt-in", () => {
     }
   });
 });
+import { sha256 } from "@noble/hashes/sha2.js";

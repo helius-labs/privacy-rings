@@ -102,12 +102,16 @@ export function prepareServicePayment(
   let prepared: Transaction = transaction;
   if (assertions.length > 0) {
     const message = decompileTransactionMessage(compiled, { lastValidBlockHeight });
+    const targetCount = assertions.reduce(
+      (total, assertion) => total + (assertion.accounts?.length ?? 0),
+      0,
+    );
     const configured = setTransactionMessageConfig(
       {
         ...message.config,
         computeUnitLimit: Math.min(
           (message.config?.computeUnitLimit ?? 0) +
-            assertions.length * COMPUTE_UNITS_PER_RECIPIENT_ASSERTION,
+            targetCount * COMPUTE_UNITS_PER_RECIPIENT_ASSERTION,
           MAX_COMPUTE_UNIT_LIMIT,
         ),
       },

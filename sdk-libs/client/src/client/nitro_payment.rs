@@ -8,7 +8,9 @@ use solana_pubkey::Pubkey;
 use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
 use spr_keypair::ShieldedAddress;
-use spr_user_registry_interface::instruction::{assert_payment_target, RegisterData};
+use spr_user_registry_interface::instruction::{
+    assert_payment_targets, PaymentTarget, RegisterData, MAX_PAYMENT_TARGETS,
+};
 
 use crate::{
     nitro_decryption::{NitroDecryptionError, NitroDecryptionService},
@@ -54,12 +56,14 @@ impl NitroPaymentRecipient {
         self.address
     }
 
-    fn assertion(&self) -> Instruction {
-        let expected_keys = (!self.from_service).then(|| RegisterData {
-            nullifier_pubkey: self.address.nullifier_pubkey,
-            viewing_pubkey: *self.address.viewing_pubkey.as_bytes(),
-        });
-        assert_payment_target(self.owner, expected_keys)
+    fn payment_target(&self) -> PaymentTarget {
+        PaymentTarget {
+            owner: self.owner.to_bytes(),
+            keys: (!self.from_service).then(|| RegisterData {
+                nullifier_pubkey: self.address.nullifier_pubkey,
+                viewing_pubkey: *self.address.viewing_pubkey.as_bytes(),
+            }),
+        }
     }
 
     async fn revalidate<R: AsyncRpc>(
@@ -82,7 +86,7 @@ impl NitroPaymentRecipient {
 pub struct NitroPaymentSubmission<'a> {
     submission: Submission<'a>,
     recipients: &'a [NitroPaymentRecipient],
-    assertions: Vec<Instruction>,
+    assertion: Instruction,
 }
 
 /// A signed payment whose transaction ID is available before broadcast.
@@ -106,14 +110,14 @@ impl<'a> Submission<'a> {
             return Err(NitroDecryptionError::PaymentRecipientsRequired.into());
         }
         let mut origins = HashMap::new();
-        let mut assertions = Vec::new();
+        let mut targets = Vec::new();
         for recipient in recipients {
             match origins.insert(recipient.owner, recipient.from_service) {
                 Some(origin) if origin != recipient.from_service => {
                     return Err(NitroDecryptionError::PaymentRecipientMismatch.into());
                 }
                 Some(_) => {}
-                None => assertions.push(recipient.assertion()),
+                None => targets.push(recipient.payment_target()),
             }
             let mut matches = self
                 .signed
@@ -142,10 +146,14 @@ impl<'a> Submission<'a> {
         {
             return Err(NitroDecryptionError::PaymentRecipientMismatch.into());
         }
+        let assertion = assert_payment_targets(&targets).ok_or(ClientError::TooManyOutputs {
+            got: targets.len(),
+            max: MAX_PAYMENT_TARGETS,
+        })?;
         Ok(NitroPaymentSubmission {
             submission: self,
             recipients,
-            assertions,
+            assertion,
         })
     }
 }
@@ -170,11 +178,15 @@ impl<'a> NitroPaymentSubmission<'a> {
         sign: impl AsyncFnOnce(&UnsignedMessage) -> Result<VersionedTransaction, ClientError>,
     ) -> Result<SignedNitroPayment<'a>, ClientError> {
         let compute_budget = client.compute_budget().with_extra_units(
-            (self.assertions.len() as u32) * COMPUTE_UNITS_PER_RECIPIENT_ASSERTION,
+            (self.assertion.accounts.len() as u32) * COMPUTE_UNITS_PER_RECIPIENT_ASSERTION,
         );
         let unsigned = self
             .submission
-            .finish_unsigned_with(client, &self.assertions, compute_budget)
+            .finish_unsigned_with(
+                client,
+                std::slice::from_ref(&self.assertion),
+                compute_budget,
+            )
             .await?;
         self.sign_unsigned(client.rpc(), unsigned, sign).await
     }

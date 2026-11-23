@@ -1,3 +1,4 @@
+import { sha256 } from "@noble/hashes/sha2.js";
 import {
   AccountRole,
   address,
@@ -53,7 +54,9 @@ const RECORD_SEED = new TextEncoder().encode("zolana/registry/v0");
 const REGISTER = 0;
 const SET_MERGE_ENCRYPTION = 1;
 const UPDATE_KEYS = 2;
-const ASSERT_PAYMENT_TARGET = 3;
+const ASSERT_PAYMENT_TARGETS = 3;
+const MAX_PAYMENT_TARGETS = 16;
+const PAYMENT_TARGETS_DOMAIN = new TextEncoder().encode("spr/user-registry/payment-targets/v1");
 const USER_RECORD_SIZE = 100;
 const addressDecoder = getAddressDecoder();
 const addressEncoder = getAddressEncoder();
@@ -80,29 +83,41 @@ const setMergeEncryptionDataEncoder = getStructEncoder([
   ["scheme", getU8Encoder()],
 ]);
 
-const assertTargetHeaderEncoder = getStructEncoder([
+const assertPaymentTargetsEncoder = getStructEncoder([
   ["discriminator", getU8Encoder()],
-  ["owner", addressEncoder],
-  ["registered", getU8Encoder()],
+  ["digest", checkedBytesEncoder(32, "paymentTargetsDigest")],
 ]);
 
-async function paymentTargetAssertion(
-  owner: Address,
-  keys: ShieldedAddress | undefined,
-): Promise<Instruction> {
-  const record = await userRecordAddress(owner);
-  const header = assertTargetHeaderEncoder.encode({
-    discriminator: ASSERT_PAYMENT_TARGET,
-    owner,
-    registered: keys === undefined ? 0 : 1,
+function paymentTargetAssertion(
+  targets: readonly {
+    record: Address;
+    registered: boolean;
+    address: ShieldedAddress;
+  }[],
+): Instruction {
+  if (targets.length > MAX_PAYMENT_TARGETS) {
+    throw new WalletError("WALLET_INVALID_PAYMENT_COUNT", {
+      details: { got: targets.length, max: MAX_PAYMENT_TARGETS },
+    });
+  }
+  const digest = sha256.create().update(PAYMENT_TARGETS_DOMAIN);
+  const accounts = targets.map((target) => {
+    digest.update(Uint8Array.from(addressEncoder.encode(target.record)));
+    digest.update(Uint8Array.of(target.registered ? 1 : 0));
+    if (target.registered) {
+      digest
+        .update(target.address.nullifierPublicKey)
+        .update(target.address.viewingPublicKey.toBytes());
+    }
+    return { address: target.record, role: AccountRole.READONLY } as const;
   });
   return {
     programAddress: USER_REGISTRY_PROGRAM_ID,
-    accounts: [{ address: record.address, role: AccountRole.READONLY }],
-    data:
-      keys === undefined
-        ? header
-        : Uint8Array.of(...header, ...keys.nullifierPublicKey, ...keys.viewingPublicKey.toBytes()),
+    accounts,
+    data: assertPaymentTargetsEncoder.encode({
+      discriminator: ASSERT_PAYMENT_TARGETS,
+      digest: digest.digest(),
+    }),
   };
 }
 
@@ -379,7 +394,7 @@ export function paymentRecipientResolver(
         };
   const paymentAddresses = new Map<
     Address,
-    { address: ShieldedAddress; registered: boolean; assertion: Instruction }
+    { address: ShieldedAddress; registered: boolean; record: Address }
   >();
   const registrySlots = new Map<Address, bigint>();
   const networkMismatch = () => new WalletError("WALLET_DECRYPTION_NETWORK_MISMATCH");
@@ -480,11 +495,12 @@ export function paymentRecipientResolver(
       lookup = resolveOwner(recipient, requireServiceChain, context).then(async (resolved) => {
         if (service !== undefined) {
           const registered = resolved.kind === "registered";
-          const assertion = await paymentTargetAssertion(
-            recipient,
-            registered ? resolved.address : undefined,
-          );
-          paymentAddresses.set(recipient, { address: resolved.address, registered, assertion });
+          const record = await userRecordAddress(recipient);
+          paymentAddresses.set(recipient, {
+            address: resolved.address,
+            registered,
+            record: record.address,
+          });
         }
         return resolved;
       });
@@ -539,12 +555,11 @@ export function paymentRecipientResolver(
         throw new WalletError("WALLET_DECRYPTION_RECIPIENT_MISMATCH");
       }
     }
-    return Object.freeze(
-      [...lookups.keys()].flatMap((owner) => {
-        const payment = paymentAddresses.get(owner);
-        return payment === undefined ? [] : [payment.assertion];
-      }),
-    );
+    const targets = [...lookups.keys()].flatMap((owner) => {
+      const payment = paymentAddresses.get(owner);
+      return payment === undefined ? [] : [payment];
+    });
+    return targets.length === 0 ? [] : Object.freeze([paymentTargetAssertion(targets)]);
   }
   return { resolve, revalidate, assertions };
 }

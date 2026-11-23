@@ -1,3 +1,4 @@
+import { sha256 } from "@noble/hashes/sha2.js";
 import {
   AccountRole,
   address,
@@ -146,16 +147,25 @@ it("appends a registry absence assertion to a service-resolved SOL deposit", asy
   await resolved.send(async (transaction) => {
     expect(address).toHaveBeenCalledTimes(5);
     const instructions = instructionsOf(transaction);
+    const record = await getUserRecordAddress(recipient.solanaAddress());
     expect(instructions.slice(0, -1)).toEqual(instructionsOf(explicit));
     expect(instructions.at(-1)).toEqual({
       programAddress: USER_REGISTRY_PROGRAM_ID,
       accounts: [
         {
-          address: await getUserRecordAddress(recipient.solanaAddress()),
+          address: record,
           role: AccountRole.READONLY,
         },
       ],
-      data: Uint8Array.of(3, ...getAddressEncoder().encode(recipient.solanaAddress()), 0),
+      data: Uint8Array.of(
+        3,
+        ...sha256
+          .create()
+          .update(new TextEncoder().encode("spr/user-registry/payment-targets/v1"))
+          .update(Uint8Array.from(getAddressEncoder().encode(record)))
+          .update(Uint8Array.of(0))
+          .digest(),
+      ),
     });
     return signTransactionWithSigners([payer], transaction);
   });
