@@ -1,4 +1,8 @@
-import { WasmFactory, type LightWasm } from "@lightprotocol/hasher.rs";
+import { Field, type IField } from "@noble/curves/abstract/modular.js";
+import {
+  grainGenConstants,
+  poseidon as createPermutation,
+} from "@noble/curves/abstract/poseidon.js";
 
 export type HasherFailureCode =
   | "NotInitialized"
@@ -33,53 +37,49 @@ export function fieldSub(a: bigint, b: bigint): bigint {
   return (((a - b) % BN254_SCALAR_ORDER) + BN254_SCALAR_ORDER) % BN254_SCALAR_ORDER;
 }
 
+// light-poseidon's BN254 x^5 partial round counts for state widths 2 through 13.
+const PARTIAL_ROUNDS = [56, 57, 56, 60, 60, 63, 64, 63, 60, 66, 60, 65] as const;
 /** The widest digest supported by both the runtime and the Solana verifier. */
-export const MAX_POSEIDON_INPUTS = 12;
+export const MAX_POSEIDON_INPUTS = PARTIAL_ROUNDS.length;
 
-let loaded: LightWasm | undefined;
-let loading: Promise<LightWasm> | undefined;
+const permutations = new Map<number, ReturnType<typeof createPermutation>>();
+let field: IField<bigint> | undefined;
 
-/** Loads the dependency-backed hasher once while keeping hashing synchronous. */
-export async function initializePoseidon(): Promise<void> {
-  if (loaded !== undefined) return;
-  loading ??= WasmFactory.loadHasher();
-  try {
-    loaded = await loading;
-  } catch (error) {
-    loading = undefined;
-    throw error;
-  }
+/** Initializes the scalar field. Round constants for each width are generated on first use. */
+export function initializePoseidon(): Promise<void> {
+  field ??= Field(BN254_SCALAR_ORDER);
+  return Promise.resolve();
 }
 
 /** Whether `poseidon` can be called. */
 export function isPoseidonInitialized(): boolean {
-  return loaded !== undefined;
+  return field !== undefined;
 }
 
-/** @internal Drops the loaded module so tests can exercise initialization. */
+/** @internal Clears the field and cached permutations for initialization tests. */
 export function resetPoseidonForTests(): void {
-  loaded = undefined;
-  loading = undefined;
-  WasmFactory.resetModule();
+  field = undefined;
+  permutations.clear();
 }
 
 /** Hashes one to twelve unsigned big-endian field elements. */
 export function poseidon(inputs: readonly Uint8Array[]): Uint8Array {
-  const active = loaded;
+  const active = field;
   if (active === undefined) {
     throw new HasherFailure(
       "NotInitialized",
-      "the Poseidon hasher is not loaded, await initializePoseidon() once before hashing",
+      "the Poseidon hasher is not initialized, await initializePoseidon() once before hashing",
     );
   }
-  if (inputs.length === 0 || inputs.length > MAX_POSEIDON_INPUTS) {
+  const roundsPartial = PARTIAL_ROUNDS[inputs.length - 1];
+  if (roundsPartial === undefined) {
     throw new HasherFailure(
       "InvalidNumFields",
       `Poseidon takes 1 to ${String(MAX_POSEIDON_INPUTS)} inputs, received ${String(inputs.length)}`,
     );
   }
 
-  const decimalInputs = inputs.map((input, index) => {
+  const values = inputs.map((input, index) => {
     if (input.length > FIELD_BYTES) {
       throw new HasherFailure(
         "InvalidInputLength",
@@ -88,14 +88,26 @@ export function poseidon(inputs: readonly Uint8Array[]): Uint8Array {
     }
     let value = 0n;
     for (const byte of input) value = (value << 8n) | BigInt(byte);
-    return value.toString();
+    if (!active.isValid(value)) {
+      throw new HasherFailure("Poseidon", "Poseidon input is outside the BN254 scalar field");
+    }
+    return value;
   });
   try {
-    return new Uint8Array(active.poseidonHash(decimalInputs));
-  } catch (cause) {
-    const reason = cause instanceof Error ? cause.message : String(cause);
-    throw new HasherFailure("Poseidon", `Poseidon rejected the input, ${reason}`);
+    const t = values.length + 1;
+    let permutation = permutations.get(t);
+    if (permutation === undefined) {
+      const options = { Fp: active, t, roundsFull: 8, roundsPartial, sboxPower: 5 };
+      permutation = createPermutation({ ...options, ...grainGenConstants(options) });
+      permutations.set(t, permutation);
+    }
+    const [digest] = permutation([0n, ...values]);
+    if (digest !== undefined) return active.toBytes(digest);
+  } catch {
+    // Inputs are validated above, so only a parameter or library fault reaches here.
+    throw new HasherFailure("Poseidon", "the Poseidon permutation failed on validated inputs");
   }
+  throw new HasherFailure("Poseidon", "Poseidon returned no digest");
 }
 
 /** Packs fixed-size bytes into 31-byte fields and folds them like Rust `hash_bytes`. */

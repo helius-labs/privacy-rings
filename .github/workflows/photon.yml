@@ -106,7 +106,8 @@ jobs:
                 ('ring_spend_record_rings'),
                 ('ring_spend_records'),
                 ('ring_key_registry_roots'),
-                ('ring_key_registry_members')
+                ('ring_key_registry_members'),
+                ('rpc_upstreams')
             )
             SELECT bool_and(to_regclass('public.' || name) IS NOT NULL)
             FROM required;

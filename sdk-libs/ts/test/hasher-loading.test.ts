@@ -1,22 +1,24 @@
-import { WasmFactory } from "@lightprotocol/hasher.rs";
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 
 import {
   initializePoseidon,
   isPoseidonInitialized,
+  poseidon,
   resetPoseidonForTests,
 } from "../src/hasher/index.js";
 
-it("initializes the Poseidon runtime once", async () => {
+it("initializes synchronous Poseidon when called concurrently", async () => {
   resetPoseidonForTests();
-  const loadHasher = vi.spyOn(WasmFactory, "loadHasher");
 
   try {
+    expect(isPoseidonInitialized()).toBe(false);
+    expect(() => poseidon([Uint8Array.of(0)])).toThrow(
+      expect.objectContaining({ code: "NotInitialized" }),
+    );
     await Promise.all([initializePoseidon(), initializePoseidon(), initializePoseidon()]);
-    expect(loadHasher).toHaveBeenCalledTimes(1);
     expect(isPoseidonInitialized()).toBe(true);
+    expect(poseidon([Uint8Array.of(0)])).toHaveLength(32);
   } finally {
-    loadHasher.mockRestore();
     resetPoseidonForTests();
     await initializePoseidon();
   }

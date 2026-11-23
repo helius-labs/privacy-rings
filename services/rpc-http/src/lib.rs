@@ -20,6 +20,9 @@ use jsonrpsee::{
 use serde::Deserialize;
 use tower::{Layer, Service};
 
+pub mod announce;
+pub mod forward;
+
 const MISMATCH: &str = "the method does not match the request path";
 
 #[derive(Clone, Copy)]
@@ -108,15 +111,24 @@ fn path_method(path: &str) -> Option<&str> {
 }
 
 fn refusal(id: Option<Id<'_>>, code: ErrorCode, message: &str) -> HttpResponse {
+    // This request never reached RPC execution. An opaque HTTP proxy must
+    // recognize the refusal without parsing the JSON-RPC error to bill it.
+    error_response(hyper::StatusCode::BAD_REQUEST, id, code, message)
+}
+
+fn error_response(
+    status: hyper::StatusCode,
+    id: Option<Id<'_>>,
+    code: ErrorCode,
+    message: &str,
+) -> HttpResponse {
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "error": { "code": code.code(), "message": message },
         "id": id,
     });
     let mut response = hyper::Response::new(HttpBody::from(body.to_string()));
-    // This request never reached RPC execution. An opaque HTTP proxy must
-    // recognize the refusal without parsing the JSON-RPC error to bill it.
-    *response.status_mut() = hyper::StatusCode::BAD_REQUEST;
+    *response.status_mut() = status;
     response
         .headers_mut()
         .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));

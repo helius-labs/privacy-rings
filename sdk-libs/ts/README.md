@@ -23,6 +23,29 @@ Requirements:
 - Node.js 22.12 or a newer 22.x, or Node.js 24 or newer;
 - Solana RPC, indexer, and prover endpoints.
 
+### React Native with Hermes
+
+The wallet SDK runs on Hermes without WebAssembly. For an Expo development build, install `react-native-quick-crypto`,
+`react-native-nitro-modules`, and `react-native-quick-base64` in the app and
+rebuild the native binary. Call `install()` from `react-native-quick-crypto`
+in a bootstrap module that runs before the first SDK import.
+
+The SDK uses a WHATWG `URL` and `URLSearchParams`, UTF-8 `TextEncoder` and
+`TextDecoder` with fatal UTF-8 validation, and `atob` and `btoa`. Supply
+these in the same bootstrap if your React Native runtime needs them. If Metro
+rejects the static class block in `ProvingKeySet`, add
+`@babel/plugin-transform-class-static-block` to the app's Babel plugins.
+
+Pass `fetch` from `expo/fetch` to `createSprClient({ solanaRpcUrl, fetch })`
+or supply an equivalent transport. The SDK needs a readable response body,
+abort support, and `redirect: "error"` for indexer and prover requests.
+Use the same `proverTee` policy as for other clients on that network.
+
+The repository's [Hermes deposit test](scripts/hermes-consumer.mjs) can run
+inside an app. Import and await `checkHermesDeposit()` after bootstrap to check
+the client-side key derivation and deposit instruction against a Rust vector.
+It uses a test key and makes no network requests.
+
 ## Quick start
 
 This example creates a wallet, syncs it, deposits SOL, and reads the resulting
