@@ -1,6 +1,11 @@
 //! Announces the methods a service serves to a registry that forwards them.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    convert::Infallible,
+    fmt::Display,
+    future::{ready, Future},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use serde::Deserialize;
 use solana_pubkey::Pubkey;
@@ -30,6 +35,8 @@ pub enum AnnounceError {
     Http(#[from] reqwest::Error),
     #[error("the registry refused the announcement, {0}")]
     Refused(String),
+    #[error("the announcement was not signed, {0}")]
+    Unsigned(String),
 }
 
 #[derive(Deserialize)]
@@ -49,12 +56,22 @@ impl Announcer {
         self,
         sign: impl Fn(&[u8]) -> Signature + Send + Sync + 'static,
     ) -> tokio::task::JoinHandle<()> {
+        self.spawn_with(move |message| ready(Ok::<_, Infallible>(sign(&message))))
+    }
+
+    /// A signer outside the process, a failed signature skips one announcement.
+    pub fn spawn_with<Sign, Signing, Failure>(self, sign: Sign) -> tokio::task::JoinHandle<()>
+    where
+        Sign: Fn(Vec<u8>) -> Signing + Send + Sync + 'static,
+        Signing: Future<Output = Result<Signature, Failure>> + Send,
+        Failure: Display,
+    {
         tokio::spawn(async move {
             let http = reqwest::Client::new();
             let mut last = None;
             loop {
                 let outcome = self
-                    .announce(&http, &sign)
+                    .announce_with(&http, &sign)
                     .await
                     .map_err(|error| error.to_string());
                 if last.as_ref() != Some(&outcome) {
@@ -81,6 +98,22 @@ impl Announcer {
         http: &reqwest::Client,
         sign: &impl Fn(&[u8]) -> Signature,
     ) -> Result<bool, AnnounceError> {
+        self.announce_with(http, &|message: Vec<u8>| {
+            ready(Ok::<_, Infallible>(sign(&message)))
+        })
+        .await
+    }
+
+    pub async fn announce_with<Sign, Signing, Failure>(
+        &self,
+        http: &reqwest::Client,
+        sign: &Sign,
+    ) -> Result<bool, AnnounceError>
+    where
+        Sign: Fn(Vec<u8>) -> Signing,
+        Signing: Future<Output = Result<Signature, Failure>>,
+        Failure: Display,
+    {
         let announcement = UpstreamAnnouncement {
             url: self.url.to_string(),
             methods: self.methods.clone(),
@@ -88,9 +121,12 @@ impl Announcer {
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |elapsed| elapsed.as_secs()),
         };
+        let signature = sign(announcement.message().to_vec())
+            .await
+            .map_err(|failure| AnnounceError::Unsigned(failure.to_string()))?;
         let request = AnnounceUpstreamRequest {
             pubkey: self.pubkey.into(),
-            signature: sign(&announcement.message()).into(),
+            signature: signature.into(),
             announcement,
         };
         let answer: Answer = http
