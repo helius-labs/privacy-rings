@@ -123,6 +123,11 @@ cargo install --git https://github.com/helius-labs/zolana --tag cli-v0.10.0 spr-
 releases. See [`cli/README.md`](cli/README.md) for commands, `zolana dev
 artifacts` and the `--local` dev flow.
 
+## Releases
+
+All contributors follow the [release checklist](releases/README.md) for GitHub
+Releases, the TypeScript npm package, and Rust crates.
+
 ## CI
 
 Workflows under `.github/workflows/`:
