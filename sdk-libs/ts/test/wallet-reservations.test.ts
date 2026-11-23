@@ -192,8 +192,15 @@ describe("UTXO reservations", () => {
     let signatureStatus: {
       slot: bigint;
       confirmationStatus: "confirmed" | "finalized";
-      err: string | null;
+      confirmations: unknown;
+      err: unknown;
     } | null = null;
+    const statusAt = (confirmationStatus: "confirmed" | "finalized", err: unknown) => ({
+      slot: 500n,
+      confirmationStatus,
+      confirmations: confirmationStatus === "finalized" ? null : 1n,
+      err,
+    });
     let chain: Address = PAYER;
     let switchChainDuringScan = false;
     const context = () => ({ slot: indexerSlot, blockTime: 1_700_000_000n });
@@ -297,9 +304,57 @@ describe("UTXO reservations", () => {
     expect(restored._activeReservations(1_000_000n)).toHaveLength(1);
 
     indexerSlot = 501n;
+    const beforeInvalidHeight = serializeWallet(restored);
+    const checkedHashes = checkBlockhash.mock.calls.length;
+    blockHeight = 1n << 64n;
+    await expect(sync()).rejects.toMatchObject({ code: "WALLET_SYNC", causeCode: "CLIENT_RPC" });
+    expect(serializeWallet(restored)).toBe(beforeInvalidHeight);
+    expect(checkBlockhash).toHaveBeenCalledTimes(checkedHashes);
+    blockHeight = 241n;
+
+    const previousPending = previous.pendingSubmissions();
+    await sync(previous);
+    expect(previous.pendingSubmissions()).toHaveLength(1);
+    expect(previous._activeReservations(1_000_000n)).toHaveLength(1);
+    expect(previous.pendingSubmissions()).toEqual(previousPending);
+
+    for (const invalid of [
+      statusAt("finalized", {}),
+      statusAt("finalized", "UnrecognizedTransactionFailure"),
+      statusAt("finalized", "DuplicateInstruction"),
+      statusAt("finalized", { DuplicateInstruction: 256 }),
+      statusAt("finalized", { InstructionError: [0, { Custom: -1 }] }),
+      statusAt("finalized", { InstructionError: [0, "UnrecognizedInstructionFailure"] }),
+      statusAt("finalized", { InsufficientFundsForRent: {} }),
+      { ...statusAt("finalized", "AccountNotFound"), confirmations: 1n },
+      { ...statusAt("finalized", "AccountNotFound"), confirmations: undefined },
+    ]) {
+      const unresolved = deserializeWallet(serializeWallet(restored));
+      const beforeInvalid = serializeWallet(unresolved);
+      signatureStatus = invalid;
+      await expect(sync(unresolved)).rejects.toMatchObject({
+        code: "WALLET_SYNC",
+        causeCode: "CLIENT_RPC",
+      });
+      expect(serializeWallet(unresolved)).toBe(beforeInvalid);
+      expect(unresolved._activeReservations(1_000_000n)).toHaveLength(1);
+    }
+    for (const failure of [
+      { DuplicateInstruction: 1 },
+      { InsufficientFundsForRent: { account_index: 1 } },
+      { ProgramExecutionTemporarilyRestricted: { account_index: 1 } },
+      { InstructionError: [0, "InvalidArgument"] },
+    ]) {
+      const failed = deserializeWallet(serializeWallet(restored));
+      signatureStatus = statusAt("finalized", failure);
+      await sync(failed);
+      expect(failed.pendingSubmissions()).toEqual([]);
+      expect(failed._activeReservations(1_000_000n)).toEqual([]);
+    }
+
     for (const status of [
-      { slot: 500n, confirmationStatus: "finalized", err: null },
-      { slot: 500n, confirmationStatus: "confirmed", err: "AccountNotFound" },
+      statusAt("finalized", null),
+      statusAt("confirmed", "AccountNotFound"),
     ] as const) {
       const unresolved = deserializeWallet(serializeWallet(restored));
       signatureStatus = status;
@@ -308,7 +363,7 @@ describe("UTXO reservations", () => {
       expect(unresolved._activeReservations(1_000_000n)).toHaveLength(1);
     }
     const succeeded = deserializeWallet(serializeWallet(restored));
-    signatureStatus = { slot: 500n, confirmationStatus: "finalized", err: null };
+    signatureStatus = statusAt("finalized", null);
     await sync(succeeded);
     indexedSpend = true;
     await sync(succeeded);
@@ -320,7 +375,7 @@ describe("UTXO reservations", () => {
     await sync();
     stillValid = false;
 
-    signatureStatus = { slot: 500n, confirmationStatus: "finalized", err: "AccountNotFound" };
+    signatureStatus = statusAt("finalized", "AccountNotFound");
     indexerSlot = 500n;
     await sync();
     expect(restored.pendingSubmissions()).toHaveLength(1);
@@ -340,7 +395,7 @@ describe("UTXO reservations", () => {
     chain = genesisHash;
     await sync(absent);
     expect(absent.pendingSubmissions()).toEqual([]);
-    signatureStatus = { slot: 500n, confirmationStatus: "finalized", err: "AccountNotFound" };
+    signatureStatus = statusAt("finalized", { InstructionError: [0, { Custom: 1 }] });
     await sync();
     expect(restored.pendingSubmissions()).toEqual([]);
     expect(restored._activeReservations(1_000_000n)).toEqual([]);

@@ -6,7 +6,12 @@ import {
   type Base64EncodedBytes,
 } from "@solana/kit";
 
-import { readBlockhashValidity, readSignatureHistory, runKitRpc } from "../client/kit.js";
+import {
+  readBlockhashValidity,
+  readFinalizedEpochInfo,
+  readSignatureHistory,
+  runKitRpc,
+} from "../client/kit.js";
 import { initializePoseidon } from "../hasher/index.js";
 import type { IndexerReader, KitRpcAccess } from "../client/ports.js";
 import { ClientError } from "../client/error.js";
@@ -776,33 +781,27 @@ async function expiredPendingPayments(
   if (pending.some((entry) => entry.genesisHash !== genesis)) {
     throw new WalletError("WALLET_DECRYPTION_NETWORK_MISMATCH");
   }
-  const { absoluteSlot, blockHeight } = await runKitRpc("getEpochInfo", context, (abortSignal) =>
-    rpc.getEpochInfo({ commitment: "finalized" }).send({ abortSignal }),
-  );
-  if (
-    typeof absoluteSlot !== "bigint" ||
-    absoluteSlot < 0n ||
-    typeof blockHeight !== "bigint" ||
-    blockHeight < 0n
-  ) {
-    throw new ClientError("CLIENT_RPC", { details: { method: "getEpochInfo" } });
-  }
+  const { absoluteSlot, blockHeight } = await readFinalizedEpochInfo(rpc, context);
   const submissions: typeof pending = [];
   let settlementSlot = absoluteSlot;
   for (const entry of pending) {
     const { blockhash, blockhashValidAtSlot, lastValidBlockHeight } = entry;
-    if (blockHeight <= lastValidBlockHeight || absoluteSlot < (blockhashValidAtSlot ?? 0n))
+    // Restored reservations without the signed lifetime stay held until a spend is indexed.
+    if (
+      blockhash === undefined ||
+      blockhashValidAtSlot === undefined ||
+      blockHeight <= lastValidBlockHeight ||
+      absoluteSlot < blockhashValidAtSlot
+    )
       continue;
-    if (blockhash !== undefined) {
-      const { slot, valid } = await readBlockhashValidity(
-        rpc,
-        blockhash,
-        { commitment: "finalized", minContextSlot: absoluteSlot },
-        context,
-      );
-      if (valid) continue;
-      if (slot > settlementSlot) settlementSlot = slot;
-    }
+    const { slot, valid } = await readBlockhashValidity(
+      rpc,
+      blockhash,
+      { commitment: "finalized", minContextSlot: absoluteSlot },
+      context,
+    );
+    if (valid) continue;
+    if (slot > settlementSlot) settlementSlot = slot;
     submissions.push(entry);
   }
   if (submissions.length === 0) return undefined;
