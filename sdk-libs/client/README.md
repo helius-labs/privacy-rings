@@ -194,8 +194,13 @@ assets = scan.asset_registry;
 ```
 
 A scan reads the wallet's whole history. To read only what is new, keep the
-last result and resume from it: every read then asks the indexer for slots after
-the result's checkpoint, and the outcome equals a full scan's.
+last result and resume from it. Tagged reads then ask the indexer for slots
+after the result's checkpoint, and the outcome equals a full scan's. Pass the
+result's asset registry: the checkpoint remembers the registry it decrypted
+with, so a larger one rebuilds decryption of the transactions already read.
+Notes that registry newly makes readable have their earlier spends read in
+full, including outputs reached through those spends. Editing the result's
+`asset_registry` does not change the checkpoint.
 
 ```rust
 let next = UtxoScan::new(&keys, &scan.asset_registry)

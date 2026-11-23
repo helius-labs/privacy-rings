@@ -1375,3 +1375,136 @@ fn resuming_another_wallets_result_is_a_full_scan() {
         .iter()
         .all(|filters| *filters == HistoryFilters::default()));
 }
+
+#[test]
+fn resumed_discovery_reads_historical_spends_of_newly_resolved_utxos() {
+    let owner = keypair(44);
+    let mint = Mint::new(MINT, 2);
+    let (deposit, deposited) = asset_deposit(&owner, mint, 30, 1);
+    // The spend of the deposit carries none of the wallet's tags, and neither
+    // does the spend of the output it created. Both are before the checkpoint.
+    let (mut transfer, received) = confidential(&owner, mint, 2);
+    transfer.output_slots[0].view_tag = [99; 32];
+    transfer.nullifiers = vec![deposited.nullifier];
+    let indexer = Indexer {
+        deposits: vec![deposit],
+        spends: vec![transfer, spend(&owner, &received, 3)],
+        registrations: vec![registration(mint)],
+        tip: 5,
+        ..Indexer::default()
+    };
+    let assets = AssetRegistry::default();
+    let before = UtxoScan::new(&owner, &assets).fetch(&indexer).unwrap();
+    assert!(before.spendable.utxos().next().is_none());
+    assert!(before.history.unknown_mints.contains(&MINT));
+    indexer.filters.borrow_mut().clear();
+    indexer.reads.borrow_mut().clear();
+
+    let resumed = UtxoScan::new(&owner, &assets)
+        .with_asset_discovery()
+        .resume(&before)
+        .fetch(&indexer)
+        .unwrap();
+    let reads: Vec<_> = indexer
+        .reads
+        .borrow()
+        .iter()
+        .copied()
+        .zip(indexer.filters.borrow().iter().copied())
+        .collect();
+    let full = UtxoScan::new(&owner, &assets)
+        .with_asset_discovery()
+        .fetch(&indexer)
+        .unwrap();
+
+    assert!(resumed.spendable.utxos().next().is_none());
+    assert_eq!(found(&resumed), found(&full));
+    assert_eq!(resumed.history.utxos.len(), 2);
+    assert_eq!(
+        reads,
+        vec![
+            (
+                "get_shielded_transactions_by_tags",
+                HistoryFilters::after_slot(5)
+            ),
+            ("get_encrypted_utxos_by_tags", HistoryFilters::after_slot(5)),
+            (
+                "get_shielded_transactions_by_nullifiers",
+                HistoryFilters::default()
+            ),
+            (
+                "get_shielded_transactions_by_nullifiers",
+                HistoryFilters::default()
+            ),
+        ]
+    );
+}
+
+#[test]
+fn resumed_scan_rebuilds_decryption_when_the_asset_registry_changes() {
+    let owner = keypair(45);
+    let mint = Mint::new(MINT, 2);
+    let (sol_deposit, sol_note) = deposit(&owner, 5, 1);
+    let (kept_deposit, kept) = asset_deposit(&owner, mint, 30, 2);
+    let (spent_deposit, spent_note) = asset_deposit(&owner, mint, 7, 3);
+    let indexer = Indexer {
+        deposits: vec![sol_deposit, kept_deposit, spent_deposit],
+        spends: vec![spend(&owner, &spent_note, 4)],
+        tip: 6,
+        ..Indexer::default()
+    };
+    let assets = AssetRegistry::default();
+    let mut before = UtxoScan::new(&owner, &assets).fetch(&indexer).unwrap();
+    assert_eq!(found(&before).3, 5);
+    assert!(before.history.unknown_mints.contains(&MINT));
+
+    // The public registry is edited to match the one this scan decrypts
+    // with. The checkpoint still holds the registry the first scan used.
+    let mut expanded = AssetRegistry::default();
+    expanded.insert(mint.asset_id, mint.asset).unwrap();
+    before.asset_registry = expanded.clone();
+    indexer.filters.borrow_mut().clear();
+    indexer.reads.borrow_mut().clear();
+
+    let resumed = UtxoScan::new(&owner, &before.asset_registry)
+        .resume(&before)
+        .fetch(&indexer)
+        .unwrap();
+    let reads: Vec<_> = indexer
+        .reads
+        .borrow()
+        .iter()
+        .copied()
+        .zip(indexer.filters.borrow().iter().copied())
+        .collect();
+    let full = UtxoScan::new(&owner, &expanded).fetch(&indexer).unwrap();
+
+    assert_eq!(found(&resumed), found(&full));
+    assert_eq!(found(&resumed).0, vec![sol_note.hash, kept.hash]);
+    assert_eq!(
+        resumed
+            .spendable
+            .balances
+            .get_balance(MINT)
+            .map(|balance| balance.amount),
+        Some(30)
+    );
+    assert_eq!(
+        reads,
+        vec![
+            (
+                "get_shielded_transactions_by_tags",
+                HistoryFilters::after_slot(6)
+            ),
+            ("get_encrypted_utxos_by_tags", HistoryFilters::after_slot(6)),
+            (
+                "get_shielded_transactions_by_nullifiers",
+                HistoryFilters::default()
+            ),
+            (
+                "get_shielded_transactions_by_nullifiers",
+                HistoryFilters::after_slot(6)
+            ),
+        ]
+    );
+}
