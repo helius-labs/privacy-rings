@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     iter,
-    time::Duration,
 };
 
 use ciborium::{value::Integer, Value};
@@ -37,6 +36,14 @@ const MAX_CABUNDLE: usize = 8;
 const MAX_DEPTH: usize = 16;
 const REPEATED_KEY: &str = "the document repeats a key or has one not text or integer";
 const COSE_SIGN1_TAG: u64 = 18;
+mod serving;
+pub use serving::{verify_nitro_serving_boot, NitroServingPins, VerifiedNitroServingBoot};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AttestationUse {
+    Prover,
+    Serving,
+}
 
 pub struct Nitro;
 
@@ -74,6 +81,7 @@ pub struct NitroEvidence {
 }
 
 struct AttestationDocument {
+    timestamp: u64,
     digest: String,
     pcrs: BTreeMap<usize, Vec<u8>>,
     certificate: Vec<u8>,
@@ -108,31 +116,12 @@ impl TeePlatform for Nitro {
         root: &&'static [u8],
         now_secs: u64,
     ) -> Result<Measured<NitroIdentity>, TeeError> {
-        scan(&evidence.document, Some(COSE_SIGN1_TAG))?;
-        let sign1 = CoseSign1::from_tagged_slice(&evidence.document)
-            .or_else(|_| CoseSign1::from_slice(&evidence.document))
-            .map_err(|e| invalid(format!("not a COSE_Sign1, {e}")))?;
-        if let Some(protected) = &sign1.protected.original_data {
-            scan(protected, None)?;
-        }
-        if sign1.protected.header.alg != Some(Algorithm::Assigned(iana::Algorithm::ES384)) {
-            return Err(invalid("the protected header alg is not ES384"));
-        }
-        let document = AttestationDocument::decode(
-            sign1
-                .payload
-                .as_deref()
-                .ok_or_else(|| invalid("the COSE_Sign1 has no document"))?,
+        let (document, _) = authenticate(
+            &evidence.document,
+            root,
+            now_secs.saturating_mul(1000),
+            AttestationUse::Prover,
         )?;
-        let signer = document.leaf_key(root, now_secs)?;
-        let signature = Signature::from_slice(&sign1.signature)
-            .map_err(|_| invalid("the COSE signature is not 96 bytes"))?;
-        signer
-            .verify(&sign1.tbs_data(b""), &signature)
-            .map_err(|_| invalid("the COSE signature does not verify"))?;
-        if document.digest != "SHA384" {
-            return Err(invalid(format!("digest {} is not SHA384", document.digest)));
-        }
         let measurement = NitroMeasurement {
             pcr0: document.pcr(0)?,
             pcr1: document.pcr(1)?,
@@ -184,6 +173,48 @@ impl TeePlatform for Nitro {
     }
 }
 
+struct CertificateWindow {
+    not_before_ms: u64,
+    not_after_ms: u64,
+}
+
+fn authenticate(
+    evidence: &[u8],
+    root: &[u8],
+    now_ms: u64,
+    usage: AttestationUse,
+) -> Result<(AttestationDocument, CertificateWindow), TeeError> {
+    scan(evidence, Some(COSE_SIGN1_TAG))?;
+    if usage == AttestationUse::Serving {
+        serving::check_headers(evidence)?;
+    }
+    let sign1 = CoseSign1::from_tagged_slice(evidence)
+        .or_else(|_| CoseSign1::from_slice(evidence))
+        .map_err(|e| invalid(format!("not a COSE_Sign1, {e}")))?;
+    if let Some(protected) = &sign1.protected.original_data {
+        scan(protected, None)?;
+    }
+    if sign1.protected.header.alg != Some(Algorithm::Assigned(iana::Algorithm::ES384)) {
+        return Err(invalid("the protected header alg is not ES384"));
+    }
+    let document = AttestationDocument::decode(
+        sign1
+            .payload
+            .as_deref()
+            .ok_or_else(|| invalid("the COSE_Sign1 has no document"))?,
+    )?;
+    let (signer, window) = document.leaf_key(root, now_ms, usage)?;
+    let signature = Signature::from_slice(&sign1.signature)
+        .map_err(|_| invalid("the COSE signature is not 96 bytes"))?;
+    signer
+        .verify(&sign1.tbs_data(b""), &signature)
+        .map_err(|_| invalid("the COSE signature does not verify"))?;
+    if document.digest != "SHA384" {
+        return Err(invalid("the document digest is not SHA384"));
+    }
+    Ok((document, window))
+}
+
 impl AttestationDocument {
     fn decode(document: &[u8]) -> Result<Self, TeeError> {
         scan(document, None)?;
@@ -196,12 +227,15 @@ impl AttestationDocument {
         if fields.text("module_id")?.is_empty() {
             return Err(invalid("module_id is empty"));
         }
-        match fields.take("timestamp")? {
-            Value::Integer(timestamp)
-                if u64::try_from(timestamp).is_ok_and(|timestamp| timestamp <= MAX_INTEGER) => {}
-            _ => return Err(invalid("timestamp is not an integer up to 2^53 minus 1")),
+        let timestamp = match fields.take("timestamp")? {
+            Value::Integer(timestamp) => u64::try_from(timestamp)
+                .ok()
+                .filter(|value| *value <= MAX_INTEGER),
+            _ => None,
         }
+        .ok_or_else(|| invalid("timestamp is not an integer up to 2^53 minus 1"))?;
         let document = Self {
+            timestamp,
             digest: fields.text("digest")?,
             pcrs: pcrs(fields.take("pcrs")?)?,
             certificate: fields.bytes("certificate")?,
@@ -222,31 +256,70 @@ impl AttestationDocument {
     }
 
     /// The leaf key once `cabundle`, read root first, chains `certificate` to `root`.
-    fn leaf_key(&self, root: &[u8], now_secs: u64) -> Result<VerifyingKey, TeeError> {
+    fn leaf_key(
+        &self,
+        root: &[u8],
+        now_ms: u64,
+        usage: AttestationUse,
+    ) -> Result<(VerifyingKey, CertificateWindow), TeeError> {
         if self.cabundle.first().map(Vec::as_slice) != Some(root) {
             return Err(invalid(
                 "cabundle does not start at the AWS Nitro Enclaves root",
             ));
         }
-        let leaf = certificate(&self.certificate)?;
+        let decode = |der: &[u8]| {
+            if usage == AttestationUse::Serving {
+                capped(der.len(), 1024, "a DER certificate")?;
+            }
+            certificate(der)
+        };
+        let leaf = decode(&self.certificate)?;
         let bundle = self
             .cabundle
             .iter()
-            .map(|der| certificate(der))
+            .map(|der| decode(der))
             .collect::<Result<Vec<_>, _>>()?;
         let path: Vec<&Certificate> = iter::once(&leaf).chain(bundle.iter().rev()).collect();
+        let mut window = CertificateWindow {
+            not_before_ms: 0,
+            not_after_ms: u64::MAX,
+        };
         for cert in &path {
-            within_validity(cert, now_secs)?;
+            let validity = cert.tbs_certificate().validity();
+            let start = validity.not_before.to_unix_duration().as_secs() * 1000;
+            let end = validity.not_after.to_unix_duration().as_secs() * 1000;
+            window.not_before_ms = window.not_before_ms.max(start);
+            window.not_after_ms = window.not_after_ms.min(end);
             known_critical_extensions(cert)?;
+        }
+        let outside = match usage {
+            AttestationUse::Prover => {
+                now_ms.saturating_add(NOT_BEFORE_SKEW_SECS * 1000) < window.not_before_ms
+                    || now_ms > window.not_after_ms
+            }
+            AttestationUse::Serving => {
+                now_ms <= window.not_before_ms || now_ms >= window.not_after_ms
+            }
+        };
+        if outside {
+            return Err(invalid("a certificate is outside its validity window"));
         }
         for (below, (child, parent)) in path.iter().zip(path.iter().skip(1)).enumerate() {
             verify_signed_by(child, parent)?;
-            may_issue(parent, below)?;
+            may_issue(parent, below, usage)?;
         }
-        if key_usage(&leaf)?.is_some_and(|usage| !usage.digital_signature()) {
+        let leaf_usage = key_usage(&leaf)?;
+        if usage == AttestationUse::Serving
+            && basic_constraints(&leaf)?.is_some_and(|(_, value)| value.ca)
+        {
+            return Err(invalid("the serving leaf certificate is a CA"));
+        }
+        if leaf_usage.map_or(usage == AttestationUse::Serving, |value| {
+            !value.digital_signature()
+        }) {
             return Err(invalid("the document certificate may not sign"));
         }
-        public_key(&leaf)
+        Ok((public_key(&leaf)?, window))
     }
 
     fn pcr(&self, index: usize) -> Result<[u8; 48], TeeError> {
@@ -479,18 +552,6 @@ fn certificate(der: &[u8]) -> Result<Certificate, TeeError> {
     Certificate::from_der(der).map_err(|e| invalid(format!("a certificate is not DER, {e}")))
 }
 
-fn within_validity(cert: &Certificate, now_secs: u64) -> Result<(), TeeError> {
-    let validity = cert.tbs_certificate().validity();
-    let now = Duration::from_secs(now_secs);
-    let latest_start = Duration::from_secs(now_secs.saturating_add(NOT_BEFORE_SKEW_SECS));
-    if latest_start < validity.not_before.to_unix_duration()
-        || now > validity.not_after.to_unix_duration()
-    {
-        return Err(invalid("a certificate is outside its validity window"));
-    }
-    Ok(())
-}
-
 fn known_critical_extensions(cert: &Certificate) -> Result<(), TeeError> {
     let known = [BasicConstraints::OID, KeyUsage::OID];
     let unknown = cert
@@ -529,13 +590,16 @@ fn verify_signed_by(child: &Certificate, parent: &Certificate) -> Result<(), Tee
 }
 
 /// `below` counts the CA certificates between `parent` and the leaf.
-fn may_issue(parent: &Certificate, below: usize) -> Result<(), TeeError> {
-    let constraints = parent
-        .tbs_certificate()
+fn basic_constraints(cert: &Certificate) -> Result<Option<(bool, BasicConstraints)>, TeeError> {
+    cert.tbs_certificate()
         .get_extension::<BasicConstraints>()
-        .map_err(|e| invalid(format!("basic constraints are malformed, {e}")))?;
-    let is_ca = constraints.is_some_and(|(_, constraints)| {
-        constraints.ca
+        .map_err(|e| invalid(format!("basic constraints are malformed, {e}")))
+}
+
+fn may_issue(parent: &Certificate, below: usize, usage: AttestationUse) -> Result<(), TeeError> {
+    let is_ca = basic_constraints(parent)?.is_some_and(|(critical, constraints)| {
+        (usage == AttestationUse::Prover || critical)
+            && constraints.ca
             && constraints
                 .path_len_constraint
                 .is_none_or(|limit| usize::from(limit) >= below)
@@ -543,7 +607,9 @@ fn may_issue(parent: &Certificate, below: usize) -> Result<(), TeeError> {
     if !is_ca {
         return Err(invalid("a cabundle certificate may not issue at its depth"));
     }
-    if key_usage(parent)?.is_some_and(|usage| !usage.key_cert_sign()) {
+    if key_usage(parent)?.map_or(usage == AttestationUse::Serving, |value| {
+        !value.key_cert_sign()
+    }) {
         return Err(invalid("a cabundle certificate may not sign certificates"));
     }
     Ok(())

@@ -1,3 +1,4 @@
+import type { Blockhash } from "@solana/kit";
 import { bytesKey } from "../../interface/bytes.js";
 import type { Address, Bytes32, Signature } from "../../interface/types.js";
 import type { X25519PublicKey } from "../../keypair/x25519.js";
@@ -84,6 +85,9 @@ export interface PendingWalletSubmission {
   readonly attempts: number;
   readonly signature: Signature;
   readonly lastValidBlockHeight: bigint;
+  readonly genesisHash?: Address;
+  readonly blockhash?: Blockhash;
+  readonly blockhashValidAtSlot?: bigint;
 }
 
 /** @internal */
@@ -479,6 +483,48 @@ export class Wallet {
     this.#reservations = this.#reservations.filter((reservation) => reservation.id !== id);
   }
 
+  /** @internal Replace a live preparation lease with an on-chain submission. */
+  _beginSubmission(
+    pending: Omit<PendingWalletSubmission, "attempts" | "utxoHashes"> & {
+      genesisHash: Address;
+      blockhash: Blockhash;
+      blockhashValidAtSlot: bigint;
+    },
+    nowMs: bigint,
+  ): boolean {
+    const index = this.#reservations.findIndex(
+      ({ id, expiresAtMs }) => id === pending.id && expiresAtMs !== null && expiresAtMs > nowMs,
+    );
+    const reservation = this.#reservations[index];
+    if (reservation === undefined) return false;
+    this.#reservations[index] = Object.freeze({ ...reservation, expiresAtMs: null });
+    this._setPendingSubmission({ ...pending, attempts: 1, utxoHashes: reservation.utxoHashes });
+    return true;
+  }
+
+  /** @internal Check the staged submission and all its inputs before broadcast. */
+  _canBroadcastSubmission(id: string, signature: Signature): boolean {
+    const pending = this.#pendingSubmissions.find((entry) => entry.id === id);
+    if (
+      pending?.signature !== signature ||
+      !this.#reservations.some((entry) => entry.id === id && entry.expiresAtMs === null)
+    ) {
+      return false;
+    }
+    const unspent = new Set(
+      this.#utxos
+        .filter((entry) => !entry.spent)
+        .map((entry) => bytesKey(entry.outputContext.hash)),
+    );
+    return pending.utxoHashes.every((hash) => unspent.has(bytesKey(hash)));
+  }
+
+  /** @internal Resolve both parts of an unsubmitted or expired payment. */
+  _settleSubmission(id: string): void {
+    this._releaseReservation(id);
+    this._removePendingSubmission(id);
+  }
+
   /** @internal */
   _activeReservations(nowMs: bigint): readonly UtxoReservation[] {
     return this.#reservations.filter(
@@ -586,7 +632,11 @@ export class Wallet {
    * revision moved by another writer since the snapshot refuses the commit.
    * @internal
    */
-  _commitSync(delta: SyncDelta, expectedRevision: number): void {
+  _commitSync(
+    delta: SyncDelta,
+    expectedRevision: number,
+    expiredSubmissions: readonly string[] = [],
+  ): void {
     if (this.#revision !== expectedRevision) {
       throw new TransactionError("TRANSACTION_WALLET_STATE_STALE");
     }
@@ -621,6 +671,9 @@ export class Wallet {
       viewingKeyHistory: delta.viewingKeyHistory,
       lastSynced: delta.lastSynced,
     });
+    for (const id of expiredSubmissions) {
+      this._settleSubmission(id);
+    }
   }
 }
 

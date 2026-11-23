@@ -786,6 +786,8 @@ class SyncPass {
       } catch (error) {
         this.#recordUndecryptable(error, siteKey);
         return;
+      } finally {
+        decrypted.fill(0);
       }
       this.#resolveAssetCandidate(siteKey);
       if (this.#storeRecipientUtxos([utxo], outputContext, undefined, undefined)) {
@@ -810,6 +812,8 @@ class SyncPass {
       } catch (error) {
         this.#recordUndecryptable(error, siteKey);
         return;
+      } finally {
+        decrypted.fill(0);
       }
       this.#resolveAssetCandidate(siteKey);
       for (const utxo of utxos) this.#storeInTx(utxo, tx);
@@ -1007,6 +1011,7 @@ export async function decryptTransactions(
   }>,
 ): Promise<SyncReport> {
   await initializePoseidon();
+  input.context?.signal?.throwIfAborted();
   checkKeysIdentity(input.keys, input.wallet.identity);
   const identity = input.keys.address();
   const viewingPublicKeys = checkViewingPublicKeys(input.keys, identity);
@@ -1038,6 +1043,7 @@ export async function decryptTransactions(
         continue;
       }
       pass.assertOwnedMergesDecoded(mergeSites, identityTag);
+      input.context?.signal?.throwIfAborted();
       return commitPass(input, pass, index, viewingKeyHistory);
     }
     throw new TransactionError("TRANSACTION_KEYS_UNRESOLVED");

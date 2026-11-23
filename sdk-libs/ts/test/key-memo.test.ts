@@ -64,6 +64,56 @@ describe("key holder batches", () => {
     });
   }
 
+  it.each(["success", "malformed", "rejected sibling", "cancelled"])(
+    "wipes owned decrypt answers after %s",
+    async (outcome) => {
+      const owner = ShieldedKeypair.generate();
+      const keys = LocalShieldedKeys.fromKeypair(owner);
+      const memo = new KeyMemo(keys);
+      const controller = new AbortController();
+      const plaintext = Uint8Array.of(41);
+      const viewingPublicKey = keys.address().viewingPublicKey;
+      const request = {
+        viewingPublicKey,
+        txViewingPublicKey: viewingPublicKey,
+        ciphertext: Uint8Array.of(42),
+        salt: checked<Bytes16>(new Uint8Array(16), 16, "salt"),
+        slotIndex: 0,
+        label: "transfer" as const,
+      };
+      Object.defineProperty(keys, "decrypt", {
+        value: async () => {
+          if (outcome === "cancelled") controller.abort();
+          return outcome === "malformed" ? [undefined, plaintext] : [plaintext];
+        },
+      });
+      try {
+        expect(memo.decrypt(request)).toBeUndefined();
+        if (outcome === "malformed") memo.decrypt({ ...request, slotIndex: 1 });
+        if (outcome === "rejected sibling") {
+          vi.spyOn(keys, "derive").mockRejectedValue(
+            new TransactionError("TRANSACTION_DESERIALIZE"),
+          );
+          memo.derive({ kind: "mergeOutputKey", firstNullifier });
+        }
+        const resolve = memo.resolve({ signal: controller.signal });
+        if (outcome === "success") {
+          await resolve;
+          expect(memo.decrypt(request)).toEqual(plaintext);
+          memo.destroy();
+        } else {
+          await expect(resolve).rejects.toBeInstanceOf(Error);
+          expect(memo.decrypt(request)).toBeUndefined();
+        }
+        expect(plaintext).toEqual(Uint8Array.of(0));
+      } finally {
+        memo.destroy();
+        keys.destroy();
+        owner.destroy();
+      }
+    },
+  );
+
   it.each(["invalid", "sparse"])(
     "memo destroys a live key after a %s entry in a matching-length batch",
     async (shape) => {

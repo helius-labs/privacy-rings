@@ -76,7 +76,7 @@
     "@noble/hashes": "^2.2.0",
     "@peculiar/asn1-schema": "^2.10.0",
     "@peculiar/asn1-x509": "^2.10.0",
-    "@phala/dcap-qvl": "^0.6.5",
+    "@phala/dcap-qvl": "0.7.1",
     "@solana-program/system": "^0.14.1",
     "@solana-program/token": "^0.16.1",
     "@solana/rpc-spec-types": "^8.3.0",

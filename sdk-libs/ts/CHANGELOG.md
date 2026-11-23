@@ -19,7 +19,7 @@ Breaking
 - The package is published as `@heliuslabs/spr`, with the same subpaths → replace the `@heliuslabs/zolana` dependency and every `@heliuslabs/zolana` import specifier with `@heliuslabs/spr`.
 - `ZolanaClient`, `ZolanaClientConfig`, `createZolanaClient`, `ZolanaIndexer`, `ZolanaApi`, `ZolanaApiConfig` and `ZOLANA_GATEWAY_PATH` become `SprClient`, `SprClientConfig`, `createSprClient`, `SprIndexer`, `SprApi`, `SprApiConfig` and `SPR_GATEWAY_PATH` → rename them in imports and code.
 - `SprIndexer.getShieldedTransactionsByTags`, `getShieldedTransactionsByNullifiers` and `getEncryptedUtxosByTags` take `PageOptions` (`paginationToken`, `limit`, `filters.slot`, `minContextSlot`) and return a `Page` of `{context, data, paginationToken}` with the events or outputs of each Solana transaction grouped in `data` → upgrade Photon with the SDK, pass `paginationToken` back until it is `null`, and resume a later scan that has no `lt` or `lte` bound with `filters: { slot: { gt } }` set to the final page's `context.slot`.
-- `serializeWallet` writes snapshot version 5 with slot checkpoints, and `SerializedCursor` and `SerializedSyncCursors` become `SerializedSyncCheckpoint` and `SerializedSyncCheckpoints` → restore earlier snapshots with `deserializeWallet`, which keeps the wallet state and rescans history once.
+- `serializeWallet` writes snapshot version 6 with slot checkpoints and chain-bound pending payments, and `SerializedCursor` and `SerializedSyncCursors` become `SerializedSyncCheckpoint` and `SerializedSyncCheckpoints` → open earlier snapshots with `deserializeWallet`.
 - `Prover` requires `proveAnonymousRingTransact` → implement the method on custom provers.
 - `ProverInputs`, `IndexedProofInputs` and `CircuitId` add anonymous ring variants → forward them in custom `ProofService` and `ProofAuthority` implementations.
 - `ShieldedPda`, `ProgramOwner`, `bindProgramTransaction`, `decodeProgramTransaction`, `toProgramWalletUtxo`, `transactCpiAccounts` and the `Program*` types move to the experimental `@heliuslabs/spr/program` subpath and may change in any release → import them from `@heliuslabs/spr/program` instead of `/keypair`, `/transaction` and `/interface`.
@@ -31,6 +31,8 @@ Breaking
 
 Added
 
+- `buildDepositTransaction`, `buildTransferTransaction`, and `buildMultiTransferTransaction` accept a verified `decryptionService` and return a `PreparedPayment` that checks the chain, blockhash and recipients before signing and broadcast. Solana preflight must reach the latest checked slot, and the signed payment asserts the registry state at execution. Guarded payments require the updated user-registry program.
+- `DecryptionRecipientProvider.confirmAddress` confirms a resolved payment address from the service policy, and `PreparedPayment.cancel()` finishes after the wallet snapshot records the release.
 - `ProgramProofInputs` types the prover input map of a `ProgramTransaction`, and `TransactionErrorCode.TRANSACTION_PROGRAM_PUBLIC_HASH_MISMATCH` reports proof inputs bound to another public hash.
 - `ClientErrorCode.CLIENT_INDEXER_RESPONSE_TOO_LARGE` reports an indexer response above 10 MiB, the most Photon sends, whether the SDK or Photon (`-32008`) refuses it.
 - `SprClient.proveAnonymousRingTransact(input)` accepts a `TransactOwnerSigner` or an owner signature prepared over `transactMessageDigest(proofInputs)`.
@@ -46,6 +48,13 @@ Changed
 
 Fixed
 
+- A guarded payment that fails before broadcast drops its pending signature from the saved snapshot, so a restart does not keep inputs reserved for a transaction that was never sent, while a broadcast whose result is unknown still restores that signature.
+- The Intel TDX verifier checks the TDX module, requires Intel's root CA to issue collateral signing certificates directly, and bounds certificate parsing work.
+- Service-backed payments recheck the RPC genesis after resolving recipients, then confirm service keys and payment policy for unregistered recipients before broadcast.
+- Wallet sync rechecks the RPC genesis before committing an expired payment settlement. A network change leaves the pending payment and its input reservation intact.
+- Wallet sync wipes plaintext buffers returned by `ShieldedKeys.decrypt`, including on cancellation and malformed replies. Custom key holders must return fresh buffers and transfer their ownership to the caller.
+- `PreparedPayment.send` confirms an unregistered recipient after signing and before the broadcast blockhash check, so a service-key or policy change during signing stops the payment before broadcast.
+- `syncWallet` releases pending payment inputs only after checking the exact blockhash, reading fresh nullifier history, and getting a valid signature status that rules out a landed spend.
 - `syncWallet` failed on an indexer page of dense private transactions; it now halves `pageLimit` for the rest of the sync until the page fits, keeping the `requireSlot` check.
 - `syncWallet` misclassified authored spends containing unknown output schemes as withdrawals or splits, and now omits their history rows.
 - `syncWallet` failed with `TRANSACTION_KEYS_UNRESOLVED` when a reserved or unknown output scheme accompanied a confidential note, and now stores the note.

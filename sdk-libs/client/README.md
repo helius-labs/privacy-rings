@@ -46,6 +46,99 @@ Without the `reqwest` feature neither crate links reqwest and only
 `with_client` builds a client; `solana-rpc` still links it through
 `solana-rpc-client`, so a wallet that wants none brings its own `Rpc` too.
 
+## Standalone decryption
+
+The `nitro` feature compiles this verifier and the decryption transport. It is
+off by default, and the default `reqwest` feature does not enable it.
+
+`nitro_policy::NitroPolicyReader` fetches the current policy from two
+independently owned S3 buckets named in the wallet's shipped trust pins. Both
+heads need the pinned release quorum and two of the three custody policy
+approvals over the ordered bucket, region and owner pair. The signed pair
+must match the wallet's pins. The mirror may hold the primary's exact
+predecessor during an update. The wallet pins the exact policy digest at its minimum sequence and
+requires the immediate successor to name that digest. Both heads are required
+before the SDK trusts the endpoint, executable
+hash, custody epoch and PCR0–4 for any replica.
+
+The reader commits the revision to a durable checkpoint before returning a
+replica. An observed head at the stored sequence must match its digest. An
+immediate successor must link to it. The custody floor can only rise and
+recovery-only mode is permanent. A current revocation signed by both quorums
+can stop lookups when either pinned bucket serves it. The reader starts
+committing the authenticated stop without waiting for its peer. The commit
+can finish after request cancellation. An activation in the same read must
+also advance the checkpoints from before the stop.
+The reader also keeps its latest accepted checkpoint in memory. Removing or
+restoring an older file during the reader's lifetime cannot reopen an older
+policy. A restarted reader uses the durable checkpoint and shipped pins.
+`UnixNitroCheckpointStore` uses an application-owned directory on a local
+filesystem. Reads and writes return a storage error if another process holds
+the lock for a second, or if the lock or checkpoint is a symbolic link or
+other nonregular file. Other platforms call `NitroPolicyUpdate::advances`
+inside their store transaction and persist `checkpoint()` before returning success.
+
+Use `NitroDecryptionService::resolve_recipient` for sends. The resolver uses
+service keys after a successful registry miss and matching Solana genesis
+hash. It checks the registry again before returning those keys. A recovery-only
+policy blocks payment lookup. For payment and recovery lookups, the client reads
+both signed policy heads after attestation and before sending the address. It
+checks them again after verifying the reply, before returning keys. A revoked,
+superseded or unavailable policy stops either lookup.
+
+Build each resolved output with `recipient.address()` and attach the recipients
+with `Submission::with_nitro_recipients`. Pass any exact fixed addresses,
+including change, in `explicit_outputs`. Every shielded output must match one
+of these addresses. All outputs for a resolved owner use that owner's resolved
+keys.
+
+Call `sign` or use a sign-only callback with `sign_with`. The client checks
+the exact blockhash, chain and current recipients after proving and before
+requesting Solana signatures. It verifies the returned message and every
+signature. The signed message asserts the registry state for each resolved
+owner after the transfer instruction. A registration or key change before
+execution reverts the payment. The network must run the updated user-registry
+program. Final compilation checks the full v1 packet size, including its
+required signatures. Record the signed transaction ID, blockhash and last valid block
+height before calling `send` so you can reconcile after cancellation.
+`send` consumes the signed payment and repeats those RPC checks before
+broadcast. Registry rechecks use a context slot at least as recent as the
+current blockhash check and the recipient evidence already observed. The
+client uses the newest of those slots as the minimum for RPC preflight.
+The Solana adapters use the configured commitment for these reads and preflight.
+Custom RPC implementations must support `get_account_with_context`,
+`blockhash_validity_with_context` and `process_transaction_with_context`.
+An absent registry account still carries
+its context slot. An error after entering the
+send path carries the same ID in `ClientError::NitroPaymentSend`.
+Blocking clients use `sign_sync` or `sign_with_sync`, then `send_sync`.
+
+Use `NitroDecryptionService::open` with the owner's Solana signer to recover notes
+under the service keys. The returned handle implements `ShieldedKeys` for
+`UtxoScan` and `ProofAuthority` for spending. Blocking callers can use
+`resolve_recipient_sync` and `open_sync`.
+
+The client checks the current checkpoint before each attestation probe and
+before caching the verified boot. It attests with a fresh challenge and encrypts
+the request to its attested transport key. A decrypt signature binds the
+Solana network, release, batch, one-time response key and an exclusive deadline
+within the verified session. The client verifies both published heads before
+prompting the signer, before sending the signed request and before opening the
+authenticated reply. A revoked, superseded or unavailable policy stops the
+exchange. The approval deadline bounds those reads and the replica response.
+The enclave checks the deadline before returning a reply. The client
+verifies the boot signature, request and ciphertext digests, and deadline
+before opening it. The 60-second attestation window starts with the policy
+fetch and ends when either elapsed or wall time reaches its deadline. A stalled
+checkpoint read cannot start a probe beyond that window. Policy or certificate
+expiry can end it earlier. A stalled synchronous signer holds the client's
+signer slot until it returns. An unsigned lookup can refresh once if another
+client supersedes its accepted policy during connection. A rollback fails
+immediately. Retryable exchanges drop the failed session, including on the
+last attempt. HTTP 429 reaches the caller and preserves the
+session. A recovery-only release permits opening existing notes and
+rejects new payment lookups. [Test invariants](tests/NITRO.md)
+
 ## Proving and submitting
 
 ```rust

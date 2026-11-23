@@ -79,7 +79,7 @@ check:
 # Check the entire workspace. `spr-client/proofs` keeps its prover-backed
 # test binaries in the type check without letting `cargo test` run them.
 check-all:
-    cargo check --workspace --all-targets --features spr-client/proofs
+    cargo check --workspace --all-targets --features spr-client/proofs,spr-client/nitro
     cargo check -p spr-test-utils --features parallel --all-targets
     # A wallet that brings its own HTTP client links neither crate's reqwest.
     cargo check -p spr-api -p spr-client --no-default-features
@@ -193,7 +193,7 @@ test-sdk-libs:
     cargo test --doc -p spr-keypair
     cargo nextest run -p spr-event-parser
     cargo nextest run -p spr-transaction
-    cargo nextest run -p spr-client --features client
+    cargo nextest run -p spr-client --features client,nitro
     # The TEE wire contract, its signed-policy vectors, and the policy tool
     # that signs and serves them.
     cargo nextest run -p spr-prover-tee -p spr-tee-policy
@@ -246,25 +246,16 @@ _test-ts-live test-script: build-test-programs build-prover-server build-cli ens
     : "${USER_REGISTRY_PROGRAM_ID:?xtask did not emit USER_REGISTRY_PROGRAM_ID}"
     : "${DEFAULT_TREE_ADDRESS:?xtask did not emit DEFAULT_TREE_ADDRESS}"
     bin="target/debug/zolana"
-    workdir="target/ts-sdk-e2e"
-    cleanup() {
-      lsof -ti "tcp:{{localnet-rpc-port}}" 2>/dev/null | xargs kill -9 2>/dev/null || true
-      lsof -ti "tcp:{{localnet-photon-port}}" 2>/dev/null | xargs kill -9 2>/dev/null || true
-      lsof -ti "tcp:{{localnet-prover-port}}" 2>/dev/null | xargs kill -9 2>/dev/null || true
-    }
-    trap cleanup EXIT
-    rm -rf "$workdir"
-    mkdir -p "$workdir"
-    export ZOLANA_CONFIG_DIR="$PWD/$workdir"
+    source tools/ci/scoped-localnet.sh
+    ports=(--rpc-port {{localnet-rpc-port}} --prover-port {{localnet-prover-port}} --photon-port {{localnet-photon-port}})
+    start_localnet_scope ts-sdk-e2e "${ports[@]}"
+    workdir="$ZOLANA_PROCESS_SCOPE_DIR"
     photon_bin="{{photon-bin}}"
     [[ "$photon_bin" = /* ]] || photon_bin="$PWD/$photon_bin"
     keys_dir="{{spp-keys-dir}}"
     [[ "$keys_dir" = /* ]] || keys_dir="$PWD/$keys_dir"
     export ZOLANA_PHOTON_BIN="$photon_bin"
     export ZOLANA_PROVER_KEYS_DIR="$keys_dir"
-    cleanup
-    sleep 2
-
     # Generate the canonical protocol accounts (protocol config, asset counter,
     # and the state Merkle tree that stores private token accounts (UTXOs) at
     # DEFAULT_TREE_ADDRESS) from the current local build and load them at
@@ -274,9 +265,7 @@ _test-ts-live test-script: build-test-programs build-prover-server build-cli ens
     cargo run -q -p xtask -- generate-account-snapshots \
       --deploy-dir target/deploy --accounts-dir "$accounts_dir"
 
-    "$bin" dev start \
-      --rpc-port {{localnet-rpc-port}} --prover-port {{localnet-prover-port}} \
-      --photon-port {{localnet-photon-port}} --account-dir "$accounts_dir" \
+    "$bin" dev start "${ports[@]}" --account-dir "$accounts_dir" \
       --sbf-program "$SHIELDED_POOL_PROGRAM_ID" target/deploy/shielded_pool_program.so \
       --sbf-program "$USER_REGISTRY_PROGRAM_ID" target/deploy/spr_user_registry.so
     "$bin" config set --rpc-url {{localnet-rpc-url}} \
@@ -306,7 +295,7 @@ _test-ts-live test-script: build-test-programs build-prover-server build-cli ens
       ZOLANA_TEST_TOKEN_2022_MINT="$token_2022_mint" \
       ZOLANA_TEST_TOKEN_2022_ACCOUNT="$token_2022_account" \
       USER_REGISTRY_PROGRAM_SO="$PWD/target/deploy/spr_user_registry.so" \
-      ZOLANA_TEST_AUTHORITY_WALLET="$PWD/$workdir/authority.json" npm run "{{test-script}}"
+      ZOLANA_TEST_AUTHORITY_WALLET="$workdir/authority.json" npm run "{{test-script}}"
 
 test-ts-all: test-ts test-ts-e2e
 
@@ -636,17 +625,10 @@ test-escrow-ts: build-test-programs build-prover-server build-cli ensure-photon 
     program_ids="$(cargo run -q -p xtask -- program-ids)"
     eval "$program_ids"
     : "${SHIELDED_POOL_PROGRAM_ID:?xtask did not emit SHIELDED_POOL_PROGRAM_ID}"
-    workdir="target/escrow-ts"
-    cleanup() {
-      lsof -ti "tcp:{{localnet-photon-port}}" 2>/dev/null | xargs kill -9 2>/dev/null || true
-      lsof -ti "tcp:{{localnet-prover-port}}" 2>/dev/null | xargs kill -9 2>/dev/null || true
-      {{stop-localnet-backends}}
-    }
-    trap cleanup EXIT
-    cleanup
-    rm -rf "$workdir"
-    mkdir -p "$workdir"
-    export ZOLANA_CONFIG_DIR="$PWD/$workdir"
+    source tools/ci/scoped-localnet.sh
+    ports=(--rpc-port {{localnet-rpc-port}} --prover-port {{localnet-prover-port}} --photon-port {{localnet-photon-port}})
+    start_localnet_scope escrow-ts "${ports[@]}"
+    workdir="$ZOLANA_PROCESS_SCOPE_DIR"
     photon_bin="{{photon-bin}}"
     [[ "$photon_bin" = /* ]] || photon_bin="$PWD/$photon_bin"
     export ZOLANA_PHOTON_BIN="$photon_bin"
@@ -656,10 +638,7 @@ test-escrow-ts: build-test-programs build-prover-server build-cli ensure-photon 
     accounts_dir="$workdir/accounts"
     cargo run -q -p xtask -- generate-account-snapshots \
       --deploy-dir target/deploy --accounts-dir "$accounts_dir"
-    target/debug/zolana dev start \
-      --rpc-port {{localnet-rpc-port}} --prover-port {{localnet-prover-port}} \
-      --photon-port {{localnet-photon-port}} --account-dir "$accounts_dir" \
-      --log-dir "$workdir/logs" \
+    target/debug/zolana dev start "${ports[@]}" --account-dir "$accounts_dir" \
       --sbf-program "$SHIELDED_POOL_PROGRAM_ID" target/deploy/shielded_pool_program.so \
       --sbf-program {{escrow-program-id}} target/deploy/timelock_escrow_program.so
     npm run build:ts
@@ -1429,7 +1408,7 @@ fmt-check:
     cargo fmt --all -- --check
 
 clippy:
-    cargo clippy --workspace --all-targets --features spr-client/proofs -- -D warnings
+    cargo clippy --workspace --all-targets --features spr-client/proofs,spr-client/nitro -- -D warnings
     # Not covered by `--workspace`: an optional feature's module is only
     # compiled when the feature is on.
     cargo clippy -p spr-test-utils --features parallel --all-targets -- -D warnings

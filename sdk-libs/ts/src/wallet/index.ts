@@ -10,7 +10,19 @@ export {
   type TransactionKeyRequest,
 } from "../transaction/wallet/keys.js";
 export { LocalKeys } from "../client/keys.js";
-export type { ProofAuthority, ProofService, WalletKeys } from "../client/ports.js";
+export type {
+  DecryptionRecipientProvider,
+  GenesisHashReader,
+  AccountContextReader,
+  PaymentBuildResult,
+  PaymentLookup,
+  PreparedPayment,
+  RecipientLookup,
+  TransactionBroadcaster,
+  ProofAuthority,
+  ProofService,
+  WalletKeys,
+} from "../client/ports.js";
 export type {
   EncryptedEnvelope,
   EncryptedSplit,

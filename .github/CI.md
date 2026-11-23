@@ -97,7 +97,7 @@ and verifies real proofs and rejected witness/public-input mutations.
     18. `spr-keypair`: `cargo nextest run`, `cargo test --doc`.
     19. `spr-event-parser`: `cargo nextest run`.
     20. `spr-transaction`: `cargo nextest run`.
-    21. `spr-client`: `cargo nextest run`, `cargo test --doc`.
+    21. `spr-client`: `cargo nextest run --features client,nitro`, `cargo test --doc`. The `nitro` feature is off by default.
     22. `spr-test-utils`: `cargo nextest run`.
     23. `spr-rpc-http`: `cargo nextest run`.
     24. `spr-circuit`: `cargo nextest run`.

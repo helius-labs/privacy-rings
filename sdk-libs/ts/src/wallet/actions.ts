@@ -1,8 +1,9 @@
-import type { ChainReader } from "../client/ports.js";
+import type { ChainReader, RecipientLookup } from "../client/ports.js";
 import { equalBytes, bytesKey } from "../interface/bytes.js";
 import {
   type Address,
   type Bytes32,
+  type Instruction,
   type RequestContext,
   TransactWithdrawal,
 } from "../interface/types.js";
@@ -24,7 +25,7 @@ import {
 } from "../flows/select.js";
 import { WalletError, wrapWalletError } from "./error.js";
 import { reserveWalletEntries } from "./internal.js";
-import { resolveRegisteredAddress } from "./registry.js";
+import { paymentRecipientResolver } from "./registry.js";
 
 export { resolveWithdrawalSettlement as resolveWithdrawal };
 
@@ -119,14 +120,13 @@ export class UnsignedPrivateTransaction {
   }
 }
 
-export interface TransferParams {
-  readonly client?: Pick<ChainReader, "getAccount">;
+export type TransferParams = RecipientLookup<Pick<ChainReader, "getAccount">> & {
   readonly wallet: Wallet;
   readonly payer: Address;
   readonly recipient: TransferDestination;
   readonly asset: Address;
   readonly amount: bigint;
-}
+};
 
 export type TransferDestination = Address | ShieldedAddress;
 
@@ -155,20 +155,31 @@ export type TransferRecipient =
 export interface CreatedTransfer {
   readonly transaction: UnsignedPrivateTransaction;
   readonly recipient: TransferRecipient;
+  readonly recipientAssertions: readonly Instruction[];
+  readonly revalidateRecipients: (
+    context?: RequestContext,
+    minContextSlot?: bigint,
+  ) => Promise<bigint>;
+  readonly confirmRecipients: (context?: RequestContext) => Promise<void>;
 }
 
-export interface MultiTransferParams {
-  readonly client?: Pick<ChainReader, "getAccount">;
+export type MultiTransferParams = RecipientLookup<Pick<ChainReader, "getAccount">> & {
   readonly wallet: Wallet;
   readonly payer: Address;
   readonly asset: Address;
   readonly payments: readonly Readonly<{ recipient: TransferDestination; amount: bigint }>[];
-}
+};
 
 export interface CreatedMultiTransfer {
   readonly transaction: UnsignedPrivateTransaction;
   /** In payment order. */
   readonly recipients: readonly TransferRecipient[];
+  readonly recipientAssertions: readonly Instruction[];
+  readonly revalidateRecipients: (
+    context?: RequestContext,
+    minContextSlot?: bigint,
+  ) => Promise<bigint>;
+  readonly confirmRecipients: (context?: RequestContext) => Promise<void>;
 }
 
 export interface CreatedWithdrawal {
@@ -329,10 +340,15 @@ export async function createTransfer(
 ): Promise<CreatedTransfer> {
   u64Amount(params.amount);
   try {
-    const recipient = await resolveTransferRecipient(params.recipient, params.client, context);
+    const { resolve, revalidate, confirm, assertions } = paymentRecipientResolver(params, context);
+    const recipient = await resolve(params.recipient);
+    const recipientAssertions = assertions([recipient]);
     return Object.freeze({
       transaction: createPayments(params, [{ recipient, amount: params.amount }]),
       recipient,
+      recipientAssertions,
+      revalidateRecipients: revalidate,
+      confirmRecipients: confirm,
     });
   } catch (cause) {
     throw wrapWalletError("WALLET_CREATE_TRANSFER", cause);
@@ -370,15 +386,20 @@ export async function createMultiTransfer(
     });
     u64Amount(total);
     // Every lookup finishes before a UTXO is reserved, so a refusal reserves nothing.
+    const { resolve, revalidate, confirm, assertions } = paymentRecipientResolver(params, context);
     const resolved = await Promise.all(
       params.payments.map(async (payment) => ({
-        recipient: await resolveTransferRecipient(payment.recipient, params.client, context),
+        recipient: await resolve(payment.recipient),
         amount: payment.amount,
       })),
     );
+    const recipientAssertions = assertions(resolved.map(({ recipient }) => recipient));
     return Object.freeze({
       transaction: createPayments(params, resolved),
       recipients: Object.freeze(resolved.map((payment) => payment.recipient)),
+      recipientAssertions,
+      revalidateRecipients: revalidate,
+      confirmRecipients: confirm,
     });
   } catch (cause) {
     throw wrapWalletError("WALLET_CREATE_TRANSFER", cause);
@@ -426,22 +447,6 @@ function createPayments(
     },
     summary: `private transaction transfer of ${String(amount)} to ${destination}`,
   });
-}
-
-async function resolveTransferRecipient(
-  recipient: TransferDestination,
-  client: Pick<ChainReader, "getAccount"> | undefined,
-  context: RequestContext | undefined,
-): Promise<TransferRecipient> {
-  if (recipient instanceof ShieldedAddress) {
-    return { kind: "shielded", address: recipient, viewTag: recipient.confidentialViewTag() };
-  }
-  if (client === undefined) throw new WalletError("WALLET_RECIPIENT_CLIENT_REQUIRED");
-  const registered = await resolveRegisteredAddress({ rpc: client, owner: recipient }, context);
-  if (registered === undefined) {
-    throw new WalletError("WALLET_RECIPIENT_NOT_REGISTERED", { details: { recipient } });
-  }
-  return { kind: "registered", ...registered };
 }
 
 export function createSplit(params: SplitParams): CreatedSplit {

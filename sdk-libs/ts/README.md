@@ -315,8 +315,7 @@ the record's rent and pays the transaction fee. The owner still signs but needs
 no SOL, so the transaction carries two signatures.
 
 `buildRegistrationTransaction` returns `undefined` when that owner is already
-registered with the same keys. A recipient that never submitted this
-transaction fails a transfer with `WALLET_RECIPIENT_NOT_REGISTERED`.
+registered with the same keys.
 
 A registration never replaces keys that are already published. When the owner's
 record holds other keys, `buildRegistrationTransaction` rejects with
@@ -327,10 +326,75 @@ another nullifier key registers under a new owner.
 
 ### Private transfer
 
-A private transfer is sent to a Solana wallet address. The SDK looks up that
-address in the onchain registry. If it is not registered, the call fails with
-`WALLET_RECIPIENT_NOT_REGISTERED`. It does not withdraw. Use
-`buildWithdrawalTransaction` for a public recipient.
+A private transfer looks up the recipient's Solana address in the onchain
+registry. To pay an unregistered owner, pass a verified
+`decryptionService` that implements `DecryptionRecipientProvider`. The SDK
+uses it after a successful registry lookup finds no record and checks its
+genesis hash against the payment RPC before requesting keys for the original
+Ed25519 owner. It reads the registry again before using the service keys.
+A missing record without a provider returns `WALLET_RECIPIENT_NOT_REGISTERED`. Use
+`buildWithdrawalTransaction` for a public payment.
+
+The same provider works with deposits and multi-recipient transfers. A batch
+looks up each owner once per check. Before returning a transaction addressed
+through the service, the builders recheck Solana's genesis hash and resolve
+the recipient again, giving any new registry record priority. A change in
+the chain or recipient keys during preparation fails the build. Open the
+service identity through the verified client to recover a note sent before
+registration.
+
+With a `decryptionService`, the builder returns a `PreparedPayment`. Pass a
+sign-only callback to `send`. The SDK checks the exact blockhash, Solana
+network and current recipients before invoking the signer. It verifies the
+returned message and signatures, then repeats the freshness checks before
+broadcast. Each registry recheck uses a slot at least as recent as that
+owner's preceding registry read and the corresponding blockhash check.
+RPC preflight uses the newest registry or blockhash slot checked by the wallet.
+The signed message ends with a registry assertion covering all resolved owners.
+A registration or key rotation that changes the selected destination before
+execution reverts the payment. Use this flow on a network with the updated
+user-registry program.
+Custom payment clients implement `getAccountWithContext` and report the slot
+even when the registry record is absent. `getBlockhashValidity` reports the
+slot of the exact blockhash check, and `broadcastTransaction` passes
+`minContextSlot` to Solana. Solana enforces expiry when it processes
+the transaction. Explicit shielded addresses keep their original keys.
+Each prepared payment can be sent once. `cancel()`
+releases a transfer's reserved inputs before signing starts. A failure
+before broadcast also releases them. Once broadcast starts, the wallet tracks
+the signature, genesis hash, blockhash, last valid block height, and the slot
+where the RPC reported that blockhash valid.
+An uncertain send reports the original transaction ID in
+`WalletError.details.transactionId`. Wallet sync releases remaining inputs
+when finality passes the recorded height and reaches the observed slot, the
+same blockhash is invalid at finalized commitment, and a fresh indexer scan
+covers each affected nullifier through the invalidity response's slot. Sync
+also checks the original signature in Solana's transaction history. If it
+reports success or remains unfinalized, sync holds any input it has yet to
+see spent.
+
+For persistent wallets, pass `persistence: { store, cipher }` to the transfer
+builder. The SDK seals and saves the signed payment record on the wallet's
+sync queue before the final recipient and blockhash checks.
+`store.save` must resolve after committing its atomic replacement. The
+restored record holds the inputs until sync can settle them. A stopped
+payment may leave a saved reservation for sync to clear after expiry.
+
+```ts
+const payment = await buildTransferTransaction({
+  client,
+  wallet,
+  keys,
+  feePayer: feePayer.address,
+  recipient: recipientSolanaAddress,
+  amount: 25_000_000n,
+  decryptionService,
+  persistence: { store, cipher },
+});
+const signature = await payment.send((transaction, abortSignal) =>
+  signTransactionWithSigners([feePayer], transaction, { abortSignal }),
+);
+```
 
 ```ts
 import { buildTransferTransaction } from "@heliuslabs/spr";

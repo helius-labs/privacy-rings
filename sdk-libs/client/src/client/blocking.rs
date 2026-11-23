@@ -39,6 +39,17 @@ impl<R: BlockingRpc, I: BlockingIndexer> Rpc for SprClient<R, I> {
         self.block_on(self.client.get_account(address))
     }
 
+    fn get_account_with_context(
+        &self,
+        address: Address,
+        min_context_slot: u64,
+    ) -> Result<(u64, Option<Account>), ClientError> {
+        self.block_on(
+            self.client
+                .get_account_with_context(address, min_context_slot),
+        )
+    }
+
     fn get_multiple_accounts(
         &self,
         addresses: Vec<Address>,
@@ -59,6 +70,25 @@ impl<R: BlockingRpc, I: BlockingIndexer> Rpc for SprClient<R, I> {
 
     fn get_latest_blockhash(&self) -> Result<(Hash, u64), ClientError> {
         self.block_on(self.client.get_latest_blockhash())
+    }
+
+    fn is_blockhash_valid(&self, blockhash: &Hash) -> Result<bool, ClientError> {
+        self.block_on(self.client.is_blockhash_valid(blockhash))
+    }
+
+    fn genesis_hash(&self) -> Result<[u8; 32], ClientError> {
+        self.block_on(self.client.genesis_hash())
+    }
+
+    fn blockhash_validity_with_context(
+        &self,
+        blockhash: &Hash,
+        min_context_slot: u64,
+    ) -> Result<(u64, bool), ClientError> {
+        self.block_on(
+            self.client
+                .blockhash_validity_with_context(blockhash, min_context_slot),
+        )
     }
 
     fn get_block_height(&self) -> Result<u64, ClientError> {
@@ -104,6 +134,17 @@ impl<R: BlockingRpc, I: BlockingIndexer> Rpc for SprClient<R, I> {
         transaction: VersionedTransaction,
     ) -> Result<Signature, ClientError> {
         self.block_on(self.client.process_transaction(transaction))
+    }
+
+    fn process_transaction_with_context(
+        &self,
+        transaction: VersionedTransaction,
+        min_context_slot: Option<u64>,
+    ) -> Result<Signature, ClientError> {
+        self.block_on(
+            self.client
+                .process_transaction_with_context(transaction, min_context_slot),
+        )
     }
 
     fn confirm_transaction(&self, signature: Signature) -> Result<bool, ClientError> {

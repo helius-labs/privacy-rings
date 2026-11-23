@@ -8,13 +8,12 @@ import { runLockedWalletSync, type SyncWalletInput } from "./sync.js";
 /**
  * Snapshots contain private UTXO data, encrypt them at rest. `save` must
  * replace the stored snapshot atomically or leave it unchanged, a partial
- * write breaks the retry contract of `syncPersistedWallet`. Single writer
- * per stored snapshot, a stale overwrite loses only sync progress the next
- * sync recovers.
+ * write breaks the retry contract of `syncPersistedWallet`. Use a single writer
+ * per stored snapshot. A stale write can overwrite an unresolved payment reservation.
  */
 export interface WalletStateStore {
   load(): Promise<string | undefined>;
-  save(snapshot: string): Promise<void>;
+  save(snapshot: string, context?: RequestContext): Promise<void>;
 }
 
 /**
@@ -24,7 +23,7 @@ export interface WalletStateStore {
  * `walletSnapshotCipher` is the shipped implementation.
  */
 export interface WalletStateCipher {
-  seal(snapshot: string): Promise<string>;
+  seal(snapshot: string, context?: RequestContext): Promise<string>;
   open(sealed: string): Promise<string>;
 }
 
@@ -62,16 +61,22 @@ export function savePersistedWallet(input: WalletPersistence): Promise<string> {
   return input.wallet._withSyncLock(() => saveWalletSnapshot(input));
 }
 
-async function saveWalletSnapshot(input: WalletPersistence): Promise<string> {
+/** @internal The caller holds the wallet sync lock. */
+export async function saveWalletSnapshot(
+  input: WalletPersistence,
+  context?: RequestContext,
+): Promise<string> {
+  context?.signal?.throwIfAborted();
   const snapshot = serializeWallet(input.wallet);
   let sealed: string;
   try {
-    sealed = await input.cipher.seal(snapshot);
+    sealed = await input.cipher.seal(snapshot, context);
   } catch (cause) {
     throw wrapWalletError("WALLET_SNAPSHOT", cause);
   }
+  context?.signal?.throwIfAborted();
   try {
-    await input.store.save(sealed);
+    await input.store.save(sealed, context);
   } catch (cause) {
     throw wrapWalletError("WALLET_PERSIST", cause);
   }

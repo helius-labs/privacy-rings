@@ -2,7 +2,7 @@ use std::collections::{hash_map::Entry, BTreeSet, HashMap, HashSet};
 
 use solana_address::Address;
 use spr_event::{split_merge_output_body, OutputDataEncoding};
-use spr_keypair::{shielded::ShieldedAddress, x25519::X25519_PUBKEY_LEN, KeypairError};
+use spr_keypair::{shielded::ShieldedAddress, x25519::X25519_PUBKEY_LEN, X25519Keypair};
 
 use crate::{
     asset::{AssetBalance, AssetRegistry, Balances, Mint},
@@ -439,6 +439,13 @@ fn decode_slot<K: ShieldedKeys + ?Sized>(
             let (Some(tx_viewing_pubkey), Some(salt)) = (tx.tx_viewing_pk, tx.salt) else {
                 return Ok(None);
             };
+            // A public clamped scalar detects sender keys that open under no viewing key.
+            if X25519Keypair::from_bytes(&[1; 32])
+                .ecdh(&tx_viewing_pubkey)
+                .is_err()
+            {
+                return Ok(None);
+            }
             let requests: Vec<_> = viewing_pubkeys
                 .into_iter()
                 .map(|viewing_pubkey| DecryptRequest {
@@ -567,7 +574,7 @@ fn rebuilt(
     }
 }
 
-/// `None` when no viewing key can open the requests.
+/// `None` when there are no viewing keys to try.
 fn trial_decrypt<K: ShieldedKeys + ?Sized>(
     shielded_keys: &K,
     requests: &[DecryptRequest<'_>],
@@ -575,12 +582,7 @@ fn trial_decrypt<K: ShieldedKeys + ?Sized>(
     if requests.is_empty() {
         return Ok(None);
     }
-    let plaintexts = match shielded_keys.decrypt(requests) {
-        Ok(plaintexts) => plaintexts,
-        // The sender picks `tx_viewing_pk`, a low-order one opens under no key.
-        Err(TransactionError::Keypair(KeypairError::NonContributoryKey)) => return Ok(None),
-        Err(error) => return Err(error),
-    };
+    let plaintexts = shielded_keys.decrypt(requests)?;
     if plaintexts.len() != requests.len() {
         return Err(TransactionError::IncompleteDecryption {
             got: plaintexts.len(),

@@ -61,6 +61,7 @@ dependencies = [
  "ctr",
  "ghash",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -2604,9 +2605,9 @@ checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 
 [[package]]
 name = "dcap-qvl"
-version = "0.6.6"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "975e00ca7c287451d12647856125e3fdea386681f19bfbb5c0c56cdc88cbb61d"
+checksum = "c5f6e38c49510fd608390d02882bb1872d309c31325a120de1eed6c7160ba7e2"
 dependencies = [
  "anyhow",
  "asn1_der",
@@ -2987,6 +2988,7 @@ dependencies = [
  "digest 0.11.3",
  "ff 0.14.0",
  "group 0.14.0",
+ "hkdf 0.13.0",
  "hybrid-array",
  "pem-rfc7468 1.0.0",
  "pkcs8 0.11.0",
@@ -3674,6 +3676,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hkdf"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4aaa26c720c68b866f2c96ef5c1264b3e6f473fe5d4ce61cd44bbe913e553018"
+dependencies = [
+ "hmac 0.13.0",
+]
+
+[[package]]
 name = "hmac"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3711,7 +3722,7 @@ dependencies = [
  "chacha20poly1305",
  "digest 0.10.7",
  "generic-array",
- "hkdf",
+ "hkdf 0.12.4",
  "hmac 0.12.1",
  "rand_core 0.9.5",
  "sha2 0.10.9",
@@ -9356,7 +9367,7 @@ dependencies = [
  "bincode 1.3.3",
  "bytemuck",
  "curve25519-dalek",
- "hkdf",
+ "hkdf 0.12.4",
  "itertools 0.14.0",
  "merlin",
  "rand 0.8.8",
@@ -9895,11 +9906,15 @@ dependencies = [
  "futures",
  "groth16-solana",
  "hex",
+ "hkdf 0.12.4",
+ "hmac 0.12.1",
  "hpke",
  "http 1.5.0",
  "httpdate",
+ "libc",
  "num-bigint",
  "num-traits",
+ "p256",
  "rand 0.8.8",
  "rand_core 0.9.5",
  "reqwest",
@@ -9935,6 +9950,7 @@ dependencies = [
  "spr-transaction",
  "spr-tree",
  "spr-user-registry-interface",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "url",
@@ -10087,7 +10103,7 @@ dependencies = [
  "getrandom 0.3.4",
  "getrandom 0.4.3",
  "hex",
- "hkdf",
+ "hkdf 0.12.4",
  "rand 0.8.8",
  "serde",
  "serde_bytes",
@@ -10276,6 +10292,7 @@ dependencies = [
  "form_urlencoded",
  "hex",
  "hpke",
+ "p256",
  "p384",
  "rand_core 0.9.5",
  "serde",
@@ -10445,6 +10462,7 @@ dependencies = [
  "borsh",
  "solana-instruction 3.5.1",
  "solana-pubkey 4.3.0",
+ "solana-sha256-hasher",
 ]
 
 [[package]]
@@ -10567,7 +10585,7 @@ dependencies = [
  "futures-util",
  "generic-array",
  "hex",
- "hkdf",
+ "hkdf 0.12.4",
  "hmac 0.12.1",
  "itoa",
  "log",
@@ -10606,7 +10624,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "hex",
- "hkdf",
+ "hkdf 0.12.4",
  "hmac 0.12.1",
  "home",
  "itoa",

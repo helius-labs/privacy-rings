@@ -20,3 +20,4 @@ solana-instruction = { workspace = true, optional = true }
 # Borsh for `UserRecord`; required because the isolated SBF build does not get it
 # via workspace feature unification.
 solana-pubkey = { workspace = true, features = ["borsh"] }
+solana-sha256-hasher = { version = "3.1", features = ["sha2"] }

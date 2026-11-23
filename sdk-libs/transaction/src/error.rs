@@ -328,6 +328,9 @@ pub enum TransactionError {
     #[error("no viewing key held matches the one the request names")]
     UnknownViewingKey,
 
+    #[error("wallet key holder failed: {0}")]
+    KeyHolder(String),
+
     /// The seed is the right width but is not a valid signature over the
     /// canonical derivation message for this key, so it cannot be the seed this
     /// wallet's roles expand from. Distinct from

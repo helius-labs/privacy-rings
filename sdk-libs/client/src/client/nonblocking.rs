@@ -45,6 +45,16 @@ impl<R: AsyncRpc, I: AsyncIndexer> AsyncRpc for AsyncSprClient<R, I> {
         self.rpc.get_account(address).await
     }
 
+    async fn get_account_with_context(
+        &self,
+        address: Address,
+        min_context_slot: u64,
+    ) -> Result<(u64, Option<Account>), ClientError> {
+        self.rpc
+            .get_account_with_context(address, min_context_slot)
+            .await
+    }
+
     async fn get_multiple_accounts(
         &self,
         addresses: Vec<Address>,
@@ -65,6 +75,24 @@ impl<R: AsyncRpc, I: AsyncIndexer> AsyncRpc for AsyncSprClient<R, I> {
 
     async fn get_latest_blockhash(&self) -> Result<(Hash, u64), ClientError> {
         self.rpc.get_latest_blockhash().await
+    }
+
+    async fn is_blockhash_valid(&self, blockhash: &Hash) -> Result<bool, ClientError> {
+        self.rpc.is_blockhash_valid(blockhash).await
+    }
+
+    async fn genesis_hash(&self) -> Result<[u8; 32], ClientError> {
+        self.rpc.genesis_hash().await
+    }
+
+    async fn blockhash_validity_with_context(
+        &self,
+        blockhash: &Hash,
+        min_context_slot: u64,
+    ) -> Result<(u64, bool), ClientError> {
+        self.rpc
+            .blockhash_validity_with_context(blockhash, min_context_slot)
+            .await
     }
 
     async fn get_block_height(&self) -> Result<u64, ClientError> {
@@ -114,6 +142,16 @@ impl<R: AsyncRpc, I: AsyncIndexer> AsyncRpc for AsyncSprClient<R, I> {
         transaction: VersionedTransaction,
     ) -> Result<Signature, ClientError> {
         self.rpc.process_transaction(transaction).await
+    }
+
+    async fn process_transaction_with_context(
+        &self,
+        transaction: VersionedTransaction,
+        min_context_slot: Option<u64>,
+    ) -> Result<Signature, ClientError> {
+        self.rpc
+            .process_transaction_with_context(transaction, min_context_slot)
+            .await
     }
 
     async fn confirm_transaction(&self, signature: Signature) -> Result<bool, ClientError> {

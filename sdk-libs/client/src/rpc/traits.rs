@@ -34,6 +34,15 @@ pub trait Rpc {
         Err(unsupported("get_account"))
     }
 
+    /// Read an account at or above the minimum context, including for a missing account.
+    fn get_account_with_context(
+        &self,
+        address: Address,
+        min_context_slot: u64,
+    ) -> Result<(u64, Option<Account>), ClientError> {
+        Err(unsupported("get_account_with_context"))
+    }
+
     fn get_multiple_accounts(
         &self,
         addresses: Vec<Address>,
@@ -65,8 +74,26 @@ pub trait Rpc {
         Err(unsupported("get_balance"))
     }
 
+    fn genesis_hash(&self) -> Result<[u8; 32], ClientError> {
+        Err(unsupported("genesis_hash"))
+    }
+
     fn get_latest_blockhash(&self) -> Result<(Hash, u64), ClientError> {
         Err(unsupported("get_latest_blockhash"))
+    }
+
+    /// Check this exact recent blockhash at the commitment used to fetch it.
+    fn is_blockhash_valid(&self, _blockhash: &Hash) -> Result<bool, ClientError> {
+        Err(unsupported("is_blockhash_valid"))
+    }
+
+    /// Report the RPC context of the exact blockhash validity result.
+    fn blockhash_validity_with_context(
+        &self,
+        blockhash: &Hash,
+        min_context_slot: u64,
+    ) -> Result<(u64, bool), ClientError> {
+        Err(unsupported("blockhash_validity_with_context"))
     }
 
     fn get_block_height(&self) -> Result<u64, ClientError> {
@@ -111,6 +138,18 @@ pub trait Rpc {
         transaction: VersionedTransaction,
     ) -> Result<Signature, ClientError> {
         Err(unsupported("process_transaction"))
+    }
+
+    /// Send and confirm, requiring at least this slot for RPC preflight.
+    fn process_transaction_with_context(
+        &self,
+        transaction: VersionedTransaction,
+        min_context_slot: Option<u64>,
+    ) -> Result<Signature, ClientError> {
+        match min_context_slot {
+            None => self.process_transaction(transaction),
+            Some(_) => Err(unsupported("process_transaction_with_context")),
+        }
     }
 
     /// Build, sign, and send a v1 transaction: the only format this client
@@ -285,6 +324,15 @@ pub trait AsyncRpc: Send + Sync {
         Err(unsupported("get_account"))
     }
 
+    /// Read an account at or above the minimum context, including for a missing account.
+    async fn get_account_with_context(
+        &self,
+        address: Address,
+        min_context_slot: u64,
+    ) -> Result<(u64, Option<Account>), ClientError> {
+        Err(unsupported("get_account_with_context"))
+    }
+
     async fn get_multiple_accounts(
         &self,
         addresses: Vec<Address>,
@@ -303,8 +351,26 @@ pub trait AsyncRpc: Send + Sync {
         Err(unsupported("get_balance"))
     }
 
+    async fn genesis_hash(&self) -> Result<[u8; 32], ClientError> {
+        Err(unsupported("genesis_hash"))
+    }
+
     async fn get_latest_blockhash(&self) -> Result<(Hash, u64), ClientError> {
         Err(unsupported("get_latest_blockhash"))
+    }
+
+    /// As [`Rpc::is_blockhash_valid`].
+    async fn is_blockhash_valid(&self, _blockhash: &Hash) -> Result<bool, ClientError> {
+        Err(unsupported("is_blockhash_valid"))
+    }
+
+    /// Report the RPC context of the exact blockhash validity result.
+    async fn blockhash_validity_with_context(
+        &self,
+        blockhash: &Hash,
+        min_context_slot: u64,
+    ) -> Result<(u64, bool), ClientError> {
+        Err(unsupported("blockhash_validity_with_context"))
     }
 
     async fn get_block_height(&self) -> Result<u64, ClientError> {
@@ -350,6 +416,18 @@ pub trait AsyncRpc: Send + Sync {
         transaction: VersionedTransaction,
     ) -> Result<Signature, ClientError> {
         Err(unsupported("process_transaction"))
+    }
+
+    /// Send and confirm, requiring at least this slot for RPC preflight.
+    async fn process_transaction_with_context(
+        &self,
+        transaction: VersionedTransaction,
+        min_context_slot: Option<u64>,
+    ) -> Result<Signature, ClientError> {
+        match min_context_slot {
+            None => self.process_transaction(transaction).await,
+            Some(_) => Err(unsupported("process_transaction_with_context")),
+        }
     }
 
     async fn confirm_transaction(&self, signature: Signature) -> Result<bool, ClientError> {

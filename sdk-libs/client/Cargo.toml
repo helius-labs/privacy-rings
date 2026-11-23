@@ -15,7 +15,15 @@ default = ["reqwest"]
 # and the local prover launcher. Without it a prover client is built with
 # `with_client` over the application's own transport. `solana-rpc` still
 # links reqwest through `solana-rpc-client`.
-reqwest = ["dep:reqwest", "spr-api/reqwest"]
+reqwest = [
+    "dep:reqwest", "spr-api/reqwest", "solana-transaction/verify",
+]
+# Standalone Nitro decryption and its policy verifier. Off unless a wallet
+# asks for it, so an ordinary client does not link that cryptography.
+nitro = [
+    "reqwest",
+    "dep:aes-gcm", "dep:ed25519-dalek", "dep:hkdf", "dep:hmac", "dep:p256",
+]
 socks = ["reqwest", "reqwest/socks"]
 solana-rpc = ["dep:bs58", "dep:base64", "dep:solana-rpc-client", "dep:solana-commitment-config"]
 client = ["solana-rpc"]
@@ -24,6 +32,10 @@ client = ["solana-rpc"]
 proofs = ["reqwest"]
 
 [dependencies]
+aes-gcm = { workspace = true, features = ["zeroize"], optional = true }
+ed25519-dalek = { workspace = true, optional = true }
+hkdf = { workspace = true, optional = true }
+hmac = { version = "0.12", optional = true }
 spr-interface = { workspace = true }
 spr-instruction = { workspace = true }
 spr-indexer-api = { workspace = true }
@@ -42,6 +54,7 @@ solana-address = { workspace = true }
 thiserror = { workspace = true }
 hex = { workspace = true, features = ["serde"] }
 sha2 = { workspace = true }
+p256 = { workspace = true, optional = true, features = ["ecdsa", "ecdh", "getrandom"] }
 httpdate = { workspace = true }
 rand_core = { workspace = true }
 http = { workspace = true }
@@ -72,6 +85,10 @@ solana-pubkey = { workspace = true }
 solana-transaction = { workspace = true, features = ["serde"] }
 solana-transaction-status-client-types = { workspace = true }
 tokio = { workspace = true, features = ["time", "rt", "macros", "sync"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+tempfile = "3"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

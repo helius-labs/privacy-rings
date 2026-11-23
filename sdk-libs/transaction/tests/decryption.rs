@@ -1312,6 +1312,7 @@ fn outputs_in_unregistered_assets_are_reported_without_failing_the_scan() {
 #[test]
 fn low_order_transaction_keys_leave_the_scan_intact() {
     let owner = keypair(47);
+    let keys = RecordingKeys::new(&owner);
     let assets = AssetRegistry::default();
     let note = wallet_utxo(&owner, Mint::SOL, 33, 7, 5);
     let mut batch = Vec::new();
@@ -1326,6 +1327,12 @@ fn low_order_transaction_keys_leave_the_scan_intact() {
     }
     batch.push(received(&owner, &note));
 
-    let candidates = decrypt(&owner, &batch, &assets).unwrap();
+    let candidates = decrypt(&keys, &batch, &assets).unwrap();
     assert_eq!(candidates.utxos, vec![note]);
+    let calls = keys.decrypt_calls.borrow();
+    assert_eq!(calls.len(), 1, "only the valid note reaches the key holder");
+    assert_eq!(
+        calls[0][0].tx_viewing_pubkey,
+        batch[2].tx_viewing_pk.unwrap()
+    );
 }

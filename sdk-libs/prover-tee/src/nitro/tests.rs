@@ -512,3 +512,51 @@ fn the_shared_cbor_cases_pass_or_fail_as_pinned() {
         }
     }
 }
+
+fn serving_fields(fields: &mut [(Value, Value)]) {
+    let vector: serde_json::Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/aws-nitro-serving.json")).unwrap();
+    let public_keys = hex::decode(vector["proofKey"].as_str().unwrap()).unwrap();
+    set(fields, "public_key", Value::Bytes(public_keys));
+    set(fields, "user_data", Value::Bytes(vec![0x42; 32]));
+    let measurements = pcrs(fields);
+    measurements[3].1 = Value::Bytes(vec![4; 48]);
+    measurements.push((Value::Integer(4.into()), Value::Bytes(vec![5; 48])));
+}
+
+#[test]
+fn serving_policy_checks_the_key_pair_under_a_valid_signature() {
+    fn verify(fixture: &Fixture) -> Result<super::VerifiedNitroServingBoot, TeeError> {
+        let encoded = fixture.attestation_json();
+        let evidence = hex::decode(encoded["evidence"]["document"].as_str().unwrap()).unwrap();
+        super::serving::verify_serving_boot(
+            &evidence,
+            super::NitroServingPins {
+                pcrs: &[[1; 48], [2; 48], [3; 48], [4; 48], [5; 48]],
+                nonce: &NONCE,
+                discovery_binding: &[0x42; 32],
+            },
+            NOW * 1000,
+            fixture.anchors().nitro,
+        )
+    }
+
+    let valid = Fixture {
+        edit_document: |fields| serving_fields(fields),
+        ..Fixture::default()
+    };
+    assert!(verify(&valid).is_ok());
+    let invalid_point = Fixture {
+        edit_document: |fields| {
+            serving_fields(fields);
+            let mut keys = vec![0; 130];
+            keys[0] = 4;
+            keys[65] = 4;
+            set(fields, "public_key", Value::Bytes(keys));
+        },
+        ..Fixture::default()
+    };
+    assert!(
+        matches!(verify(&invalid_point), Err(error) if says(&error, "uncompressed P256 point"))
+    );
+}

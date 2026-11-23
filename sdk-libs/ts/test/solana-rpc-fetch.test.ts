@@ -1,9 +1,12 @@
 import {
   address,
+  assertIsSendableTransaction,
   blockhash,
+  generateKeyPairSigner,
   getBase64EncodedWireTransaction,
   getBase58Decoder,
   signature,
+  signTransactionWithSigners,
 } from "@solana/kit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -142,6 +145,43 @@ describe("Solana RPC through the configured fetch", () => {
       expect(request.headers.get("accept")).toBe("application/json");
     }
     expect(global).not.toHaveBeenCalled();
+  });
+
+  it("preserves the slot of an absent account and rejects an old context", async () => {
+    const { fetch, seen } = solanaRpcFetch();
+    const client = rpcClient(fetch);
+    await expect(client.getAccountWithContext(ACCOUNT, 1n)).resolves.toEqual({
+      slot: 1n,
+      account: undefined,
+    });
+    await expect(client.getAccountWithContext(ACCOUNT, 2n)).rejects.toMatchObject({
+      code: "CLIENT_INVALID_RPC_RESPONSE",
+      details: { method: "getAccountInfo", path: "context.slot" },
+    });
+    expect(JSON.parse(seen[1]!.body)).toMatchObject({
+      params: [ACCOUNT, { commitment: "confirmed", encoding: "base64", minContextSlot: 2 }],
+    });
+  });
+
+  it("sends the preflight minimum slot to Solana", async () => {
+    const { fetch, seen } = solanaRpcFetch();
+    const client = rpcClient(fetch);
+    const payer = await generateKeyPairSigner();
+    const unsigned = compileUnsignedTransaction({
+      feePayer: payer.address,
+      computeUnitLimit: 200_000,
+      instructions: [{ programAddress: SYSTEM_PROGRAM }],
+      lifetime: { blockhash: blockhash(SYSTEM_PROGRAM), lastValidBlockHeight: 1n },
+    });
+    const signed = await signTransactionWithSigners([payer], unsigned);
+    assertIsSendableTransaction(signed);
+    await expect(client.broadcastTransaction(signed, { minContextSlot: 42n })).resolves.toBe(
+      SIGNATURE,
+    );
+    expect(JSON.parse(seen[0]!.body).params[1]).toMatchObject({
+      preflightCommitment: "confirmed",
+      minContextSlot: 42,
+    });
   });
 
   it("lets a fetch wrapper retry a rate-limited signature status poll", async () => {

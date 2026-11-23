@@ -1,14 +1,14 @@
 use borsh::BorshDeserialize;
 use pinocchio::{error::ProgramError, AccountView, Address, ProgramResult};
 use spr_user_registry_interface::instruction::{
-    discriminator, RegisterData, SetMergeEncryptionData, UpdateKeysData,
+    discriminator, AssertPaymentTargetsData, RegisterData, SetMergeEncryptionData, UpdateKeysData,
 };
 
 use crate::{
     error::{fail, UserRegistryError},
     instructions::{
-        register::process_register, set_merge_encryption::process_set_merge_encryption,
-        update_keys::process_update_keys,
+        assert_payment_targets::process_assert_payment_targets, register::process_register,
+        set_merge_encryption::process_set_merge_encryption, update_keys::process_update_keys,
     },
 };
 
@@ -36,6 +36,11 @@ pub fn process_instruction(
             let data = UpdateKeysData::try_from_slice(payload)
                 .map_err(|_| fail(UserRegistryError::InvalidInstructionData))?;
             process_update_keys(program_id, accounts, data)
+        }
+        discriminator::ASSERT_PAYMENT_TARGETS => {
+            let data = AssertPaymentTargetsData::try_from_slice(payload)
+                .map_err(|_| fail(UserRegistryError::InvalidInstructionData))?;
+            process_assert_payment_targets(program_id, accounts, data)
         }
         _ => Err(ProgramError::InvalidInstructionData),
     }

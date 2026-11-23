@@ -97,6 +97,18 @@ pub enum ClientError {
     #[error("native Solana transaction signing failed: {0}")]
     SolanaTransactionSigning(String),
 
+    #[error("Solana RPC returned a signature that differs from the signed transaction")]
+    TransactionSignatureMismatch,
+
+    /// The send path was entered. Reconcile this signature before rebuilding the payment.
+    #[cfg(feature = "nitro")]
+    #[error("could not complete submission of payment {signature}: {source}")]
+    NitroPaymentSend {
+        signature: solana_signature::Signature,
+        #[source]
+        source: Box<ClientError>,
+    },
+
     #[error("compiling the v1 transaction message failed: {0}")]
     TransactionCompile(String),
 
@@ -131,6 +143,10 @@ pub enum ClientError {
 
     #[error("address resolution error: {0}")]
     AddressResolution(String),
+
+    #[cfg(feature = "nitro")]
+    #[error(transparent)]
+    NitroDecryption(#[from] crate::nitro_decryption::NitroDecryptionError),
 
     /// The pool has no protocol config account, so its tree count cannot be
     /// read and no tree id can be resolved.

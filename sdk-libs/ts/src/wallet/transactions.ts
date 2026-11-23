@@ -1,8 +1,14 @@
-import type {
-  ChainReader,
-  ProofDataSourceContext,
-  TransactionAssembler,
-  WalletKeys,
+import { address } from "@solana/kit";
+import {
+  authorizedPrivateTransactionMaterial,
+  type ChainReader,
+  type PaymentBuildResult,
+  type PaymentLookup,
+  type PreparedPayment,
+  type ProofDataSourceContext,
+  type TransactionAssembler,
+  type TransactionBroadcaster,
+  type WalletKeys,
 } from "../client/ports.js";
 import type { TransactOwnerSigner } from "../client/prover/types.js";
 import { withProofDataRetry } from "../client/retry.js";
@@ -13,7 +19,7 @@ import type {
   RequestContext,
   Transaction,
 } from "../interface/types.js";
-import type { ApprovalHandler } from "../transaction/wallet/intent.js";
+import { intentHash, type ApprovalHandler } from "../transaction/wallet/intent.js";
 import { SOL_MINT } from "../transaction/asset.js";
 import type { Wallet } from "../transaction/wallet/state.js";
 
@@ -24,7 +30,9 @@ import {
   createWithdrawal,
   type TransferDestination,
 } from "./actions.js";
-import { wrapWalletError } from "./error.js";
+import { WalletError, wrapWalletError } from "./error.js";
+import { prepareServicePayment } from "./payment.js";
+import { saveWalletSnapshot, type WalletPersistence } from "./persisted.js";
 import { authorizePrivateTransaction } from "./private-transaction.js";
 import { withdrawalSetupInstructions } from "../flows/settlement.js";
 
@@ -53,11 +61,12 @@ export interface PrivateTransactionParams {
   readonly approve?: ApprovalHandler;
 }
 
-export interface TransferTransactionParams extends PrivateTransactionParams {
-  readonly recipient: TransferDestination;
-  readonly asset?: Address;
-  readonly amount: bigint;
-}
+export type TransferTransactionParams = PrivateTransactionParams &
+  PaymentLookup<PrivateTransactionClient, Omit<WalletPersistence, "wallet">> & {
+    readonly recipient: TransferDestination;
+    readonly asset?: Address;
+    readonly amount: bigint;
+  };
 
 /** One payment of a multi-recipient transfer. */
 export interface TransferPayment {
@@ -65,11 +74,12 @@ export interface TransferPayment {
   readonly amount: bigint;
 }
 
-export interface MultiTransferTransactionParams extends PrivateTransactionParams {
-  /** Each paid as its own private output, in this order; one to fifteen of them. */
-  readonly payments: readonly TransferPayment[];
-  readonly asset?: Address;
-}
+export type MultiTransferTransactionParams = PrivateTransactionParams &
+  PaymentLookup<PrivateTransactionClient, Omit<WalletPersistence, "wallet">> & {
+    /** Each paid as its own private output, in this order; one to fifteen of them. */
+    readonly payments: readonly TransferPayment[];
+    readonly asset?: Address;
+  };
 
 export interface WithdrawalTransactionParams extends PrivateTransactionParams {
   readonly recipient: Address;
@@ -84,23 +94,37 @@ export interface SplitTransactionParams extends PrivateTransactionParams {
   readonly input?: Bytes32;
 }
 
-export async function buildTransferTransaction(
-  input: TransferTransactionParams,
+export function buildTransferTransaction<Input extends TransferTransactionParams>(
+  input: Input,
   context?: RequestContext,
-): Promise<Transaction> {
+): Promise<PaymentBuildResult<Input>>;
+export async function buildTransferTransaction(
+  parameters: TransferTransactionParams,
+  context?: RequestContext,
+): Promise<Transaction | PreparedPayment> {
   try {
+    const input = { ...parameters };
+    const payment = servicePaymentOptions(input);
     const created = await createTransfer(
       {
-        client: input.client,
-        wallet: input.wallet,
+        ...input,
         payer: input.feePayer,
-        recipient: input.recipient,
         asset: input.asset ?? SOL_MINT,
-        amount: input.amount,
       },
       context,
     );
-    return await buildAuthorizedTransaction(input, created.transaction, [], context);
+    return await buildAuthorizedTransaction(
+      input,
+      created.transaction,
+      [],
+      context,
+      payment && {
+        ...payment,
+        revalidate: created.revalidateRecipients,
+        confirm: created.confirmRecipients,
+        assertions: created.recipientAssertions,
+      },
+    );
   } catch (cause) {
     throw wrapWalletError("WALLET_BUILD_TRANSFER", cause);
   }
@@ -113,22 +137,37 @@ export async function buildTransferTransaction(
  * `transfer` intent for a single payment). UTXOs beyond the input count the
  * wider proof allows fail with `WALLET_TOO_MANY_INPUTS`; merge first.
  */
-export async function buildMultiTransferTransaction(
-  input: MultiTransferTransactionParams,
+export function buildMultiTransferTransaction<Input extends MultiTransferTransactionParams>(
+  input: Input,
   context?: RequestContext,
-): Promise<Transaction> {
+): Promise<PaymentBuildResult<Input>>;
+export async function buildMultiTransferTransaction(
+  parameters: MultiTransferTransactionParams,
+  context?: RequestContext,
+): Promise<Transaction | PreparedPayment> {
   try {
+    const input = { ...parameters };
+    const payment = servicePaymentOptions(input);
     const created = await createMultiTransfer(
       {
-        client: input.client,
-        wallet: input.wallet,
+        ...input,
         payer: input.feePayer,
-        payments: input.payments,
         asset: input.asset ?? SOL_MINT,
       },
       context,
     );
-    return await buildAuthorizedTransaction(input, created.transaction, [], context);
+    return await buildAuthorizedTransaction(
+      input,
+      created.transaction,
+      [],
+      context,
+      payment && {
+        ...payment,
+        revalidate: created.revalidateRecipients,
+        confirm: created.confirmRecipients,
+        assertions: created.recipientAssertions,
+      },
+    );
   } catch (cause) {
     throw wrapWalletError("WALLET_BUILD_TRANSFER", cause);
   }
@@ -178,12 +217,55 @@ export async function buildSplitTransaction(
   }
 }
 
+type PaymentChecks = Readonly<{
+  client: TransactionBroadcaster;
+  genesisHash: string;
+  persistence: WalletPersistence | undefined;
+  assertions: readonly Instruction[];
+  revalidate(context?: RequestContext, minContextSlot?: bigint): Promise<bigint>;
+  confirm(context?: RequestContext): Promise<void>;
+}>;
+
+function servicePaymentOptions(
+  input: TransferTransactionParams | MultiTransferTransactionParams,
+): Omit<PaymentChecks, "revalidate" | "assertions" | "confirm"> | undefined {
+  if (input.decryptionService === undefined) {
+    if (input.persistence !== undefined) throw new WalletError("WALLET_INVALID_PAYMENT");
+    return undefined;
+  }
+  const persistence = input.persistence;
+  return {
+    client: input.client,
+    genesisHash: input.decryptionService.genesisHash,
+    persistence: persistence && {
+      wallet: input.wallet,
+      store: persistence.store,
+      cipher: persistence.cipher,
+    },
+  };
+}
+
+function buildAuthorizedTransaction(
+  input: PrivateTransactionParams,
+  transaction: Parameters<typeof authorizePrivateTransaction>[0],
+  setupInstructions: readonly Instruction[],
+  context: RequestContext | undefined,
+): Promise<Transaction>;
+function buildAuthorizedTransaction(
+  input: PrivateTransactionParams,
+  transaction: Parameters<typeof authorizePrivateTransaction>[0],
+  setupInstructions: readonly Instruction[],
+  context: RequestContext | undefined,
+  payment: PaymentChecks | undefined,
+): Promise<Transaction | PreparedPayment>;
 async function buildAuthorizedTransaction(
   input: PrivateTransactionParams,
   transaction: Parameters<typeof authorizePrivateTransaction>[0],
   setupInstructions: readonly Instruction[],
   context: RequestContext | undefined,
-): Promise<Transaction> {
+  payment?: PaymentChecks,
+): Promise<Transaction | PreparedPayment> {
+  const reservationId = transaction._reservationId();
   try {
     const authorized = await authorizePrivateTransaction(
       transaction,
@@ -194,7 +276,7 @@ async function buildAuthorizedTransaction(
       context,
       input.owner !== undefined,
     );
-    return await withProofDataRetry(
+    const assembled = await withProofDataRetry(
       input.client.proofDataSource,
       (attempt) =>
         input.client.assembleAuthorizedPrivateTransaction(
@@ -208,8 +290,86 @@ async function buildAuthorizedTransaction(
         ),
       context,
     );
+    if (payment === undefined) return assembled;
+    await payment.revalidate();
+    await payment.confirm();
+    const authorizedMaterial = authorizedPrivateTransactionMaterial(authorized);
+    if (authorizedMaterial === undefined) throw new WalletError("WALLET_INTENT_MISMATCH");
+    const approvedIntent = intentHash(authorizedMaterial.intent);
+    const genesisHash = address(payment.genesisHash);
+    const persistence = payment.persistence;
+    const wallet = input.wallet;
+    return prepareServicePayment(
+      assembled,
+      payment.client,
+      payment.revalidate,
+      payment.confirm,
+      payment.assertions,
+      reservationId === undefined
+        ? undefined
+        : {
+            assertActive() {
+              if (
+                !wallet
+                  ._activeReservations(BigInt(Date.now()))
+                  .some(({ id }) => id === reservationId)
+              ) {
+                throw new WalletError("WALLET_UNSIGNED_INPUT_UNAVAILABLE");
+              }
+            },
+            async release() {
+              if (persistence === undefined) {
+                wallet._settleSubmission(reservationId);
+                return;
+              }
+              try {
+                await wallet._withSyncLock(async () => {
+                  const staged = wallet
+                    .pendingSubmissions()
+                    .some((entry) => entry.id === reservationId);
+                  wallet._settleSubmission(reservationId);
+                  if (!staged) return;
+                  await saveWalletSnapshot(persistence, { signal: new AbortController().signal });
+                });
+              } catch {
+                // The payment result is already decided. A failed corrective save
+                // must not surface later as an unhandled rejection.
+              }
+            },
+            assertPending(signature) {
+              if (!wallet._canBroadcastSubmission(reservationId, signature))
+                throw new WalletError("WALLET_UNSIGNED_INPUT_UNAVAILABLE");
+            },
+            async stage(signature, lifetime, signal) {
+              const begin = () => {
+                signal.throwIfAborted();
+                if (
+                  !wallet._beginSubmission(
+                    {
+                      id: reservationId,
+                      signature,
+                      ...lifetime,
+                      genesisHash,
+                      intentHash: approvedIntent,
+                    },
+                    BigInt(Date.now()),
+                  )
+                ) {
+                  throw new WalletError("WALLET_UNSIGNED_INPUT_UNAVAILABLE");
+                }
+              };
+              if (persistence === undefined) {
+                begin();
+                return;
+              }
+              await wallet._withSyncLock(async () => {
+                begin();
+                await saveWalletSnapshot(persistence, { signal });
+              });
+            },
+          },
+    );
   } catch (cause) {
-    const reservationId = transaction._reservationId();
     if (reservationId !== undefined) input.wallet._releaseReservation(reservationId);
     throw cause;
   }

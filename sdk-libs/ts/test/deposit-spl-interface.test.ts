@@ -1,8 +1,13 @@
+import { sha256 } from "@noble/hashes/sha2.js";
 import {
+  AccountRole,
   address,
   decompileTransactionMessage,
   getAddressEncoder,
   getCompiledTransactionMessageDecoder,
+  generateKeyPairSigner,
+  getSignatureFromTransaction,
+  signTransactionWithSigners,
   type Address,
 } from "@solana/kit";
 import { describe, expect, it, vi } from "vitest";
@@ -11,6 +16,7 @@ import {
   InstructionTag,
   SHIELDED_POOL_PROGRAM_ID,
   SPL_TOKEN_2022_PROGRAM_ID,
+  USER_REGISTRY_PROGRAM_ID,
 } from "../src/interface/index.js";
 import { decodeProtocolConfigAccount } from "../src/interface/codecs/index.js";
 import { SYSTEM_PROGRAM } from "../src/interface/instructions/index.js";
@@ -27,6 +33,7 @@ import type { RpcAccount } from "../src/client/rpc.js";
 import type { Instruction, Transaction } from "../src/interface/types.js";
 
 import { depositClient } from "./helpers/clients.js";
+import { getUserRecordAddress } from "../src/addresses.js";
 
 const PAYER = address("4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi");
 const OTHER = address("8qbHbw2BbbTHBW1sbeqakYXV9q2RZ1R6MUi6nEZa6wJk");
@@ -74,8 +81,8 @@ async function chain(accounts: Readonly<{ config?: RpcAccount; registry?: RpcAcc
 
 function splDepositParams(
   client: Partial<DepositClient>,
-  overrides: Partial<DepositTransactionParams> = {},
-): DepositTransactionParams {
+  overrides: Partial<Omit<DepositTransactionParams, "client" | "decryptionService">> = {},
+): Extract<DepositTransactionParams, { decryptionService?: undefined }> {
   return {
     client: depositClient(client),
     feePayer: PAYER,
@@ -89,7 +96,7 @@ function splDepositParams(
 
 function splDeposit(
   client: Partial<DepositClient>,
-  overrides: Partial<DepositTransactionParams> = {},
+  overrides: Partial<Omit<DepositTransactionParams, "client" | "decryptionService">> = {},
 ): Promise<Transaction> {
   return buildDepositTransaction(splDepositParams(client, overrides));
 }
@@ -104,6 +111,140 @@ function tagsOf(transaction: Transaction): number[] {
 }
 
 const CREATE_THEN_DEPOSIT = [InstructionTag.createSplInterface, InstructionTag.deposit];
+
+it("appends a registry absence assertion to a service-resolved SOL deposit", async () => {
+  const payer = await generateKeyPairSigner();
+  const recipient = ShieldedKeypair.generate().shieldedAddress();
+  const getAccount = vi.fn(async () => undefined);
+  const address = vi.fn(async () => recipient);
+  const genesisHash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
+  const getGenesisHash = vi.fn(async () => genesisHash);
+  const broadcastTransaction = vi.fn(async (transaction: Transaction) =>
+    getSignatureFromTransaction(transaction),
+  );
+  const input = {
+    client: { ...depositClient({ getAccount, broadcastTransaction }), getGenesisHash },
+    feePayer: payer.address,
+    amount: 5n,
+  };
+  const explicit = await buildDepositTransaction({ ...input, recipient });
+  const resolved = await buildDepositTransaction({
+    ...input,
+    recipient: recipient.solanaAddress(),
+    decryptionService: { address, genesisHash },
+  });
+  expect(getAccount).toHaveBeenCalledTimes(3);
+  expect(getGenesisHash).toHaveBeenCalledTimes(3);
+  expect(getGenesisHash.mock.invocationCallOrder[2]).toBeGreaterThan(
+    getAccount.mock.invocationCallOrder.at(-1)!,
+  );
+  expect(address).toHaveBeenCalledWith(recipient.solanaAddress(), undefined);
+  expect(address).toHaveBeenCalledTimes(2);
+  expect(address.mock.invocationCallOrder.at(-1)).toBeGreaterThan(
+    getGenesisHash.mock.invocationCallOrder[0]!,
+  );
+  expect(broadcastTransaction).not.toHaveBeenCalled();
+  await resolved.send(async (transaction) => {
+    expect(address).toHaveBeenCalledTimes(3);
+    const instructions = instructionsOf(transaction);
+    const record = await getUserRecordAddress(recipient.solanaAddress());
+    expect(instructions.slice(0, -1)).toEqual(instructionsOf(explicit));
+    expect(instructions.at(-1)).toEqual({
+      programAddress: USER_REGISTRY_PROGRAM_ID,
+      accounts: [
+        {
+          address: record,
+          role: AccountRole.READONLY,
+        },
+      ],
+      data: Uint8Array.of(
+        3,
+        ...sha256
+          .create()
+          .update(new TextEncoder().encode("spr/user-registry/payment-targets/v1"))
+          .update(Uint8Array.from(getAddressEncoder().encode(record)))
+          .update(Uint8Array.of(0))
+          .digest(),
+      ),
+    });
+    return signTransactionWithSigners([payer], transaction);
+  });
+  expect(address).toHaveBeenCalledTimes(4);
+  expect(broadcastTransaction).toHaveBeenCalledOnce();
+});
+
+it("refuses to return a deposit when payment lookup closes after preparation", async () => {
+  const recipient = ShieldedKeypair.generate().shieldedAddress();
+  const genesisHash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
+  const base = depositClient();
+  let prepared = false;
+  const address = vi.fn(async () => {
+    if (prepared) throw new Error("recovery-only policy");
+    return recipient;
+  });
+  await expect(
+    buildDepositTransaction({
+      client: {
+        ...base,
+        getGenesisHash: async () => genesisHash,
+        getLatestBlockhash: async () => {
+          prepared = true;
+          return base.getLatestBlockhash();
+        },
+      },
+      recipient: recipient.solanaAddress(),
+      feePayer: PAYER,
+      amount: 5n,
+      decryptionService: { address, genesisHash },
+    }),
+  ).rejects.toMatchObject({ code: "WALLET_BUILD_DEPOSIT" });
+  expect(address).toHaveBeenCalledTimes(2);
+});
+
+it("refuses service keys for another chain before building a deposit", async () => {
+  const recipient = ShieldedKeypair.generate().shieldedAddress();
+  const address = vi.fn(async () => recipient);
+  const getLatestBlockhash = vi.fn(depositClient().getLatestBlockhash);
+  const client = {
+    ...depositClient({ getLatestBlockhash }),
+    getGenesisHash: async () => "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+  };
+  await expect(
+    buildDepositTransaction({
+      client,
+      feePayer: PAYER,
+      amount: 5n,
+      recipient: recipient.solanaAddress(),
+      decryptionService: { address, genesisHash: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG" },
+    }),
+  ).rejects.toMatchObject({ causeCode: "WALLET_DECRYPTION_NETWORK_MISMATCH" });
+  expect(address).not.toHaveBeenCalled();
+  expect(getLatestBlockhash).not.toHaveBeenCalled();
+});
+
+it("refuses a prepared service deposit after the payment RPC changes networks", async () => {
+  const recipient = ShieldedKeypair.generate().shieldedAddress();
+  const address = vi.fn(async () => recipient);
+  const genesisHash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
+  const getGenesisHash = vi
+    .fn(async () => "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d")
+    .mockResolvedValueOnce(genesisHash);
+  const getLatestBlockhash = vi.fn(depositClient().getLatestBlockhash);
+  await expect(
+    buildDepositTransaction({
+      client: { ...depositClient({ getLatestBlockhash }), getGenesisHash },
+      feePayer: PAYER,
+      amount: 5n,
+      recipient: recipient.solanaAddress(),
+      decryptionService: { address, genesisHash },
+    }),
+  ).rejects.toMatchObject({
+    code: "WALLET_BUILD_DEPOSIT",
+    causeCode: "WALLET_DECRYPTION_NETWORK_MISMATCH",
+  });
+  expect(getLatestBlockhash).toHaveBeenCalledOnce();
+  expect(address).toHaveBeenCalledOnce();
+});
 
 describe("deposit SPL interface setup", () => {
   it("prepends the interface creation when the mint has no registry entry", async () => {
