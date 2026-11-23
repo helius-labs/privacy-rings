@@ -140,6 +140,7 @@ struct RegistryRpc {
     foreign_network: AtomicBool,
     blockhash_valid: Mutex<Result<bool, &'static str>>,
     registry_slot: AtomicU64,
+    broadcast_slot: AtomicU64,
     blockhash_slot: AtomicU64,
     rotate_on_blockhash_check: AtomicBool,
     broadcasts: AtomicUsize,
@@ -222,10 +223,12 @@ impl AsyncRpc for RegistryRpc {
             .map_err(|message| ClientError::Rpc(message.into()))
     }
 
-    async fn process_transaction(
+    async fn process_transaction_with_context(
         &self,
         transaction: VersionedTransaction,
+        min_context_slot: Option<u64>,
     ) -> Result<Signature, ClientError> {
+        self.broadcast_slot.store(min_context_slot.unwrap(), SeqCst);
         self.broadcasts.fetch_add(1, SeqCst);
         if self.stall_broadcast.load(SeqCst) {
             *self.stalled_broadcast.lock().unwrap() = transaction.signatures.first().copied();
@@ -280,6 +283,7 @@ async fn the_signed_payment_is_checked_before_broadcast() {
             foreign_network: AtomicBool::default(),
             blockhash_valid: Mutex::new(Ok(true)),
             registry_slot: AtomicU64::default(),
+            broadcast_slot: AtomicU64::default(),
             blockhash_slot: AtomicU64::default(),
             rotate_on_blockhash_check: AtomicBool::default(),
             broadcasts: AtomicUsize::default(),
@@ -513,12 +517,19 @@ async fn the_signed_payment_is_checked_before_broadcast() {
     ));
     assert_eq!(client.rpc().broadcasts.load(SeqCst), 0);
     client.rpc().rotated.store(false, SeqCst);
+    client.rpc().blockhash_slot.store(18, SeqCst);
+    client.rpc().registry_slot.store(19, SeqCst);
+    let ready = sign().await;
+    client.rpc().blockhash_slot.store(20, SeqCst);
+    client.rpc().registry_slot.store(21, SeqCst);
     assert!(matches!(
-        send().await,
+        ready.send(&client).await,
         Err(ClientError::NitroPaymentSend { signature, source })
             if signature == expected && matches!(*source, ClientError::Rpc(ref message) if message == "mock broadcast")
     ));
     assert_eq!(client.rpc().broadcasts.load(SeqCst), 1);
+    assert_eq!(client.rpc().broadcast_slot.load(SeqCst), 21);
+    client.rpc().blockhash_slot.store(21, SeqCst);
     *client.rpc().broadcast_reply.lock().unwrap() = Ok(Signature::default());
     assert!(matches!(
         send().await,

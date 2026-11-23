@@ -18,8 +18,9 @@ async function payment() {
   const payer = await generateKeyPairSigner();
   const recipient = ShieldedKeypair.generate().shieldedAddress();
   const address = vi.fn(async () => recipient);
-  const broadcastTransaction = vi.fn(async (transaction: Transaction) =>
-    getSignatureFromTransaction(transaction),
+  const broadcastTransaction = vi.fn(
+    async (transaction: Transaction, _context?: { readonly minContextSlot?: bigint }) =>
+      getSignatureFromTransaction(transaction),
   );
   const getBlockhashValidity = vi.fn(async () => ({ slot: 1n, valid: true }));
   const getGenesisHash = vi.fn(async () => GENESIS);
@@ -190,6 +191,18 @@ it("submits a prepared payment once, even when a second caller enters during sig
   expect(await first).toBe(getSignatureFromTransaction(broadcastTransaction.mock.calls[0]![0]));
   expect(address).toHaveBeenCalledTimes(9);
   expect(broadcastTransaction).toHaveBeenCalledOnce();
+});
+
+it("requires RPC preflight to reach the final recipient slot", async () => {
+  const { prepared, sign, broadcastTransaction, getBlockhashValidity, getAccountWithContext } =
+    await payment();
+  getBlockhashValidity.mockResolvedValue({ slot: 2n, valid: true });
+  getAccountWithContext.mockResolvedValue({ slot: 3n, account: undefined });
+  await prepared.send(sign);
+  expect(broadcastTransaction).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ minContextSlot: 3n }),
+  );
 });
 
 it("submits a private copy of the signatures after an asynchronous recipient refresh", async () => {

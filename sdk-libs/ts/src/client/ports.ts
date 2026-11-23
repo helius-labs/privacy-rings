@@ -98,7 +98,7 @@ export interface TransactionBroadcaster {
   ): Promise<Readonly<{ slot: bigint; valid: boolean }>>;
   broadcastTransaction(
     transaction: Transaction & SendableTransaction,
-    context?: RequestContext,
+    context?: RequestContext & Readonly<{ minContextSlot?: bigint }>,
   ): Promise<Signature>;
 }
 

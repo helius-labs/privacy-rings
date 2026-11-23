@@ -349,9 +349,11 @@ network and current recipients before invoking the signer. It verifies the
 returned message and signatures, then repeats the freshness checks before
 broadcast. Each registry recheck uses a slot at least as recent as that
 owner's preceding registry read and the corresponding blockhash check.
+RPC preflight uses the newest registry or blockhash slot checked by the wallet.
 Custom payment clients implement `getAccountWithContext` and report the slot
 even when the registry record is absent. `getBlockhashValidity` reports the
-slot of the exact blockhash check. Solana enforces expiry when it processes
+slot of the exact blockhash check, and `broadcastTransaction` passes
+`minContextSlot` to Solana. Solana enforces expiry when it processes
 the transaction. Explicit shielded addresses keep their original keys.
 Each prepared payment can be sent once. `cancel()`
 releases a transfer's reserved inputs before signing starts. A failure

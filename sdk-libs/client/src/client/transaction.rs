@@ -365,7 +365,7 @@ impl<'a> Submission<'a> {
     ) -> Result<Signature, ClientError> {
         let unsigned = self.finish_unsigned(client).await?;
         let transaction = sign_transaction(unsigned.message, signers)?;
-        send_signed(client, transaction).await
+        send_signed(client, transaction, None).await
     }
 
     /// See [`Self::finish_unsigned`].
@@ -389,11 +389,15 @@ impl<'a> Submission<'a> {
 pub(super) async fn send_signed<R: AsyncRpc, I: AsyncIndexer>(
     client: &AsyncSprClient<R, I>,
     transaction: VersionedTransaction,
+    min_context_slot: Option<u64>,
 ) -> Result<Signature, ClientError> {
     let expected = transaction.signatures.first().copied().ok_or_else(|| {
         ClientError::SolanaTransactionSigning("missing fee payer signature".into())
     })?;
-    if client.process_transaction(transaction).await? != expected {
+    let acknowledged = client
+        .process_transaction_with_context(transaction, min_context_slot)
+        .await?;
+    if acknowledged != expected {
         return Err(ClientError::TransactionSignatureMismatch);
     }
     client.confirm_private_transaction(expected).await?;

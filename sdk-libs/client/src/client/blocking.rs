@@ -136,6 +136,17 @@ impl<R: BlockingRpc, I: BlockingIndexer> Rpc for SprClient<R, I> {
         self.block_on(self.client.process_transaction(transaction))
     }
 
+    fn process_transaction_with_context(
+        &self,
+        transaction: VersionedTransaction,
+        min_context_slot: Option<u64>,
+    ) -> Result<Signature, ClientError> {
+        self.block_on(
+            self.client
+                .process_transaction_with_context(transaction, min_context_slot),
+        )
+    }
+
     fn confirm_transaction(&self, signature: Signature) -> Result<bool, ClientError> {
         self.block_on(self.client.confirm_transaction(signature))
     }

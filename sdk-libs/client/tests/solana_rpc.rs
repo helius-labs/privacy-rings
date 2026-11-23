@@ -30,8 +30,8 @@ use solana_transaction::versioned::VersionedTransaction;
 use solana_transaction_status_client_types::EncodedConfirmedTransactionWithStatusMeta;
 use spr_client::{
     rpc::{compile_message, sign_transaction, ComputeBudgetConfig},
-    AsyncRpc, AsyncSolanaRpc, ClientError, ConfirmedInstructionGroups, ProgramAccountsFilter, Rpc,
-    SolanaRpc,
+    AsyncRpc, AsyncSolanaRpc, Blocking, ClientError, ConfirmedInstructionGroups,
+    ProgramAccountsFilter, Rpc, SolanaRpc,
 };
 
 #[test]
@@ -465,20 +465,14 @@ fn a_v1_send_encodes_the_message_ahead_of_its_signatures() {
     thread::spawn(move || {
         let mut payload = read_send_transaction(&listener);
         sender.send(payload.encoded).expect("test still listening");
-        let body = json!({
-            "jsonrpc": "2.0",
-            "result": signature.to_string(),
-            "id": payload.id,
-        })
-        .to_string();
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
+        write_rpc_response(
+            &mut payload.stream,
+            json!({
+                "jsonrpc": "2.0",
+                "result": signature.to_string(),
+                "id": payload.id,
+            }),
         );
-        payload
-            .stream
-            .write_all(response.as_bytes())
-            .expect("write response");
     });
 
     let rpc = SolanaRpc::new(format!("http://{address}"));
@@ -494,6 +488,106 @@ fn a_v1_send_encodes_the_message_ahead_of_its_signatures() {
     let decoded: VersionedTransaction =
         wincode::deserialize(&bytes).expect("v1 wire bytes deserialize");
     assert_eq!(decoded, transaction);
+}
+
+#[tokio::test]
+async fn payment_rpc_reads_and_preflight_use_the_configured_commitment() {
+    async fn check(rpc: impl AsyncRpc, blockhash: Hash, transaction: VersionedTransaction) {
+        assert_eq!(rpc.get_account(Address::default()).await.unwrap(), None);
+        assert_eq!(
+            rpc.get_account_with_context(Address::default(), 41)
+                .await
+                .unwrap(),
+            (42, None)
+        );
+        assert_eq!(rpc.get_latest_blockhash().await.unwrap(), (blockhash, 100));
+        assert_eq!(
+            rpc.blockhash_validity_with_context(&blockhash, 41)
+                .await
+                .unwrap(),
+            (42, true)
+        );
+        let error = rpc
+            .process_transaction_with_context(transaction, Some(42))
+            .await
+            .expect_err("lagging preflight RPC");
+        assert!(matches!(error, ClientError::SolanaRpcTransaction { .. }));
+    }
+
+    let payer = Keypair::new();
+    let blockhash = Hash::new_from_array([7; 32]);
+    let message = compile_message(
+        &payer.pubkey(),
+        &[],
+        blockhash,
+        ComputeBudgetConfig::new(200_000),
+    )
+    .expect("compile");
+    let transaction = sign_transaction(message, &[&payer]).expect("sign");
+    for blocking in [true, false] {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let url = format!("http://{}", listener.local_addr().expect("local address"));
+        let server = thread::spawn(move || {
+            for (method, config_index, floor) in [
+                ("getAccountInfo", 1, 0),
+                ("getAccountInfo", 1, 41),
+                ("getLatestBlockhash", 0, 0),
+                ("isBlockhashValid", 1, 41),
+                ("sendTransaction", 1, 42),
+            ] {
+                let (mut stream, request) = read_rpc_request(&listener);
+                assert_eq!(request["method"], method);
+                let config = &request["params"][config_index];
+                assert_eq!(
+                    config[if method == "sendTransaction" {
+                        "preflightCommitment"
+                    } else {
+                        "commitment"
+                    }],
+                    "finalized"
+                );
+                if floor != 0 {
+                    assert_eq!(config["minContextSlot"], floor);
+                }
+                let result = match method {
+                    "getAccountInfo" => json!({ "context": { "slot": 42 }, "value": null }),
+                    "getLatestBlockhash" => json!({ "context": { "slot": 42 }, "value": {
+                        "blockhash": blockhash.to_string(), "lastValidBlockHeight": 100
+                    } }),
+                    "isBlockhashValid" => json!({ "context": { "slot": 42 }, "value": true }),
+                    "sendTransaction" => {
+                        write_rpc_response(
+                            &mut stream,
+                            json!({
+                                "jsonrpc": "2.0", "id": request["id"],
+                                "error": { "code": -32016, "message": "Minimum context slot has not been reached", "data": {"contextSlot": 40} }
+                            }),
+                        );
+                        continue;
+                    }
+                    _ => unreachable!(),
+                };
+                write_rpc_response(
+                    &mut stream,
+                    json!({ "jsonrpc": "2.0", "id": request["id"], "result": result }),
+                );
+            }
+        });
+        let transaction = transaction.clone();
+        let commitment = CommitmentConfig::finalized();
+        if blocking {
+            let rpc = Blocking::new(SolanaRpc::with_client(RpcClient::new_with_commitment(
+                url, commitment,
+            )));
+            check(rpc, blockhash, transaction).await;
+        } else {
+            let rpc = AsyncSolanaRpc::with_client(NonblockingRpcClient::new_with_commitment(
+                url, commitment,
+            ));
+            check(rpc, blockhash, transaction).await;
+        }
+        server.join().expect("inspect payment RPC requests");
+    }
 }
 
 #[test]
@@ -519,6 +613,21 @@ struct SendTransactionRequest {
 }
 
 fn read_send_transaction(listener: &TcpListener) -> SendTransactionRequest {
+    let (stream, body) = read_rpc_request(listener);
+    assert_eq!(body["method"].as_str(), Some("sendTransaction"));
+    let encoded = body["params"]
+        .get(0)
+        .and_then(Value::as_str)
+        .expect("base64 transaction")
+        .to_owned();
+    SendTransactionRequest {
+        stream,
+        id: body["id"].clone(),
+        encoded,
+    }
+}
+
+fn read_rpc_request(listener: &TcpListener) -> (TcpStream, Value) {
     let started = Instant::now();
     listener.set_nonblocking(true).expect("nonblocking");
     let mut stream = loop {
@@ -527,11 +636,11 @@ fn read_send_transaction(listener: &TcpListener) -> SendTransactionRequest {
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
                 assert!(
                     started.elapsed() < Duration::from_secs(5),
-                    "timed out waiting for sendTransaction"
+                    "timed out waiting for Solana RPC"
                 );
                 thread::sleep(Duration::from_millis(10));
             }
-            Err(error) => panic!("accept sendTransaction: {error}"),
+            Err(error) => panic!("accept Solana RPC: {error}"),
         }
     };
     stream.set_nonblocking(false).expect("blocking");
@@ -563,20 +672,20 @@ fn read_send_transaction(listener: &TcpListener) -> SendTransactionRequest {
     let body_at = header_end + 4;
     while buf.len() < body_at + content_length {
         let read = stream.read(&mut chunk).expect("read body");
-        assert!(read > 0, "truncated sendTransaction body");
+        assert!(read > 0, "truncated Solana RPC body");
         buf.extend_from_slice(&chunk[..read]);
     }
-    let body: Value = serde_json::from_slice(&buf[body_at..body_at + content_length])
-        .expect("sendTransaction json");
-    assert_eq!(body["method"].as_str(), Some("sendTransaction"));
-    let encoded = body["params"]
-        .get(0)
-        .and_then(Value::as_str)
-        .expect("base64 transaction")
-        .to_owned();
-    SendTransactionRequest {
-        stream,
-        id: body["id"].clone(),
-        encoded,
-    }
+    let body =
+        serde_json::from_slice(&buf[body_at..body_at + content_length]).expect("Solana RPC json");
+    (stream, body)
+}
+
+fn write_rpc_response(stream: &mut TcpStream, body: Value) {
+    let body = body.to_string();
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()
+    );
+    stream
+        .write_all(response.as_bytes())
+        .expect("write response");
 }

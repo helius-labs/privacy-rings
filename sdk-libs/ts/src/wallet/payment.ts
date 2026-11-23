@@ -68,7 +68,7 @@ function checkedSignatureTransaction(
 export function prepareServicePayment(
   transaction: Transaction,
   client: TransactionBroadcaster,
-  revalidate: (context?: RequestContext, minContextSlot?: bigint) => Promise<void>,
+  revalidate: (context?: RequestContext, minContextSlot?: bigint) => Promise<bigint>,
   reservation?: Readonly<{
     assertActive(): void;
     stage(
@@ -143,11 +143,11 @@ export function prepareServicePayment(
             signal.throwIfAborted();
             const broadcastSlot = await validAtSlot(signal, blockhashValidAtSlot);
             signal.throwIfAborted();
-            await revalidate({ signal }, broadcastSlot);
+            const minContextSlot = await revalidate({ signal }, broadcastSlot);
             signal.throwIfAborted();
             reservation?.assertPending(expected);
             attempted = expected;
-            if ((await broadcast(checked, { signal })) !== expected) {
+            if ((await broadcast(checked, { signal, minContextSlot })) !== expected) {
               throw new WalletError("WALLET_INTENT_MISMATCH", {
                 details: { field: "rpcSignature" },
               });

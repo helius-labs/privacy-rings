@@ -161,7 +161,10 @@ impl AsyncRpc for AsyncSolanaRpc {
         let pubkey = pubkey_from_address(&address);
         let response = self
             .client
-            .get_ui_account_with_config(&pubkey, account_read_config(min_context_slot))
+            .get_ui_account_with_config(
+                &pubkey,
+                account_read_config(self.client.commitment(), min_context_slot),
+            )
             .await
             .map_err(|err| ClientError::Rpc(format!("get_account {pubkey}: {err}")))?;
         account_with_slot(response, min_context_slot)
@@ -226,14 +229,14 @@ impl AsyncRpc for AsyncSolanaRpc {
 
     async fn get_latest_blockhash(&self) -> Result<(Hash, u64), ClientError> {
         self.client
-            .get_latest_blockhash_with_commitment(CommitmentConfig::confirmed())
+            .get_latest_blockhash_with_commitment(self.client.commitment())
             .await
             .map_err(|err| ClientError::Rpc(format!("get_latest_blockhash: {err}")))
     }
 
     async fn is_blockhash_valid(&self, blockhash: &Hash) -> Result<bool, ClientError> {
         self.client
-            .is_blockhash_valid(blockhash, CommitmentConfig::confirmed())
+            .is_blockhash_valid(blockhash, self.client.commitment())
             .await
             .map_err(|err| ClientError::Rpc(format!("is_blockhash_valid: {err}")))
     }
@@ -244,7 +247,7 @@ impl AsyncRpc for AsyncSolanaRpc {
         min_context_slot: u64,
     ) -> Result<(u64, bool), ClientError> {
         let config = RpcContextConfig {
-            commitment: Some(CommitmentConfig::confirmed()),
+            commitment: Some(self.client.commitment()),
             min_context_slot: Some(min_context_slot),
         };
         let response: Response<bool> = self
@@ -318,6 +321,15 @@ impl AsyncRpc for AsyncSolanaRpc {
         &self,
         transaction: VersionedTransaction,
     ) -> Result<Signature, ClientError> {
+        self.process_transaction_with_context(transaction, None)
+            .await
+    }
+
+    async fn process_transaction_with_context(
+        &self,
+        transaction: VersionedTransaction,
+        min_context_slot: Option<u64>,
+    ) -> Result<Signature, ClientError> {
         let error = |source| ClientError::SolanaRpcTransaction {
             operation: "process_transaction",
             source,
@@ -330,6 +342,7 @@ impl AsyncRpc for AsyncSolanaRpc {
                 &transaction,
                 RpcSendTransactionConfig {
                     preflight_commitment: Some(commitment.commitment),
+                    min_context_slot,
                     ..RpcSendTransactionConfig::default()
                 },
             )

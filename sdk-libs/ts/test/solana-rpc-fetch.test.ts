@@ -1,9 +1,12 @@
 import {
   address,
+  assertIsSendableTransaction,
   blockhash,
+  generateKeyPairSigner,
   getBase64EncodedWireTransaction,
   getBase58Decoder,
   signature,
+  signTransactionWithSigners,
 } from "@solana/kit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -157,6 +160,27 @@ describe("Solana RPC through the configured fetch", () => {
     });
     expect(JSON.parse(seen[1]!.body)).toMatchObject({
       params: [ACCOUNT, { commitment: "confirmed", encoding: "base64", minContextSlot: 2 }],
+    });
+  });
+
+  it("sends the preflight minimum slot to Solana", async () => {
+    const { fetch, seen } = solanaRpcFetch();
+    const client = rpcClient(fetch);
+    const payer = await generateKeyPairSigner();
+    const unsigned = compileUnsignedTransaction({
+      feePayer: payer.address,
+      computeUnitLimit: 200_000,
+      instructions: [{ programAddress: SYSTEM_PROGRAM }],
+      lifetime: { blockhash: blockhash(SYSTEM_PROGRAM), lastValidBlockHeight: 1n },
+    });
+    const signed = await signTransactionWithSigners([payer], unsigned);
+    assertIsSendableTransaction(signed);
+    await expect(client.broadcastTransaction(signed, { minContextSlot: 42n })).resolves.toBe(
+      SIGNATURE,
+    );
+    expect(JSON.parse(seen[0]!.body).params[1]).toMatchObject({
+      preflightCommitment: "confirmed",
+      minContextSlot: 42,
     });
   });
 

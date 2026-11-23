@@ -140,6 +140,18 @@ pub trait Rpc {
         Err(unsupported("process_transaction"))
     }
 
+    /// Send and confirm, requiring at least this slot for RPC preflight.
+    fn process_transaction_with_context(
+        &self,
+        transaction: VersionedTransaction,
+        min_context_slot: Option<u64>,
+    ) -> Result<Signature, ClientError> {
+        match min_context_slot {
+            None => self.process_transaction(transaction),
+            Some(_) => Err(unsupported("process_transaction_with_context")),
+        }
+    }
+
     /// Build, sign, and send a v1 transaction: the only format this client
     /// sends, because it lifts the 1,232-byte legacy packet ceiling to 4,096
     /// bytes and carries its budget in the message header.
@@ -404,6 +416,18 @@ pub trait AsyncRpc: Send + Sync {
         transaction: VersionedTransaction,
     ) -> Result<Signature, ClientError> {
         Err(unsupported("process_transaction"))
+    }
+
+    /// Send and confirm, requiring at least this slot for RPC preflight.
+    async fn process_transaction_with_context(
+        &self,
+        transaction: VersionedTransaction,
+        min_context_slot: Option<u64>,
+    ) -> Result<Signature, ClientError> {
+        match min_context_slot {
+            None => self.process_transaction(transaction).await,
+            Some(_) => Err(unsupported("process_transaction_with_context")),
+        }
     }
 
     async fn confirm_transaction(&self, signature: Signature) -> Result<bool, ClientError> {

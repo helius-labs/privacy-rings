@@ -227,14 +227,14 @@ impl SignedNitroPayment<'_> {
         self,
         client: &AsyncSprClient<R, I>,
     ) -> Result<Signature, ClientError> {
-        revalidate_payment(
+        let min_context_slot = revalidate_payment(
             client.rpc(),
             self.blockhash(),
             self.recipients,
             self.registry_slot,
         )
         .await?;
-        send_signed(client, self.transaction)
+        send_signed(client, self.transaction, Some(min_context_slot))
             .await
             .map_err(|source| ClientError::NitroPaymentSend {
                 signature: self.signature,

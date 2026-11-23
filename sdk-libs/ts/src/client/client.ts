@@ -475,14 +475,16 @@ export class SprClient
 
   broadcastTransaction(
     transaction: Transaction & SendableTransaction,
-    context?: RequestContext,
+    context?: RequestContext & Readonly<{ minContextSlot?: bigint }>,
   ): Promise<Signature> {
     return runKitRpc("sendTransaction", context, async (abortSignal) => {
       assertIsSendableTransaction(transaction);
+      const minContextSlot = context?.minContextSlot;
       const signature: unknown = await this.solanaRpc
         .sendTransaction(getBase64EncodedWireTransaction(transaction), {
           encoding: "base64",
           preflightCommitment: this.commitment,
+          ...(minContextSlot === undefined ? {} : { minContextSlot }),
         })
         .send({ abortSignal });
       return wireDecoder(

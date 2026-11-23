@@ -183,6 +183,15 @@ impl<T: Rpc + Send + Sync + 'static> AsyncRpc for Blocking<T> {
             .await
     }
 
+    async fn process_transaction_with_context(
+        &self,
+        transaction: VersionedTransaction,
+        min_context_slot: Option<u64>,
+    ) -> Result<Signature, ClientError> {
+        self.run(move |rpc| rpc.process_transaction_with_context(transaction, min_context_slot))
+            .await
+    }
+
     async fn confirm_transaction(&self, signature: Signature) -> Result<bool, ClientError> {
         self.run(move |rpc| rpc.confirm_transaction(signature))
             .await

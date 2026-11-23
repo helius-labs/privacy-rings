@@ -453,8 +453,8 @@ export function paymentRecipientResolver(
     }
     return lookup;
   }
-  async function revalidate(request = context, minContextSlot = 0n): Promise<void> {
-    if (service === undefined) return;
+  async function revalidate(request = context, minContextSlot = 0n): Promise<bigint> {
+    if (service === undefined) return minContextSlot;
     const requireCurrentServiceChain = chainCheckForBatch(request);
     function requireSame(current: ShieldedAddress, original: ShieldedAddress): void {
       if (!equalBytes(current.toBytes(), original.toBytes())) {
@@ -483,6 +483,11 @@ export function paymentRecipientResolver(
         requireSame(await readServiceAddress(service, owner, request), original);
       }),
     );
+    let floor = minContextSlot;
+    for (const slot of registrySlots.values()) {
+      if (slot > floor) floor = slot;
+    }
+    return floor;
   }
   return { resolve, revalidate };
 }

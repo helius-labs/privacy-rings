@@ -59,10 +59,13 @@ pub(super) fn filtered_program_accounts(
         .collect()
 }
 
-pub(super) fn account_read_config(min_context_slot: u64) -> RpcAccountInfoConfig {
+pub(super) fn account_read_config(
+    commitment: CommitmentConfig,
+    min_context_slot: u64,
+) -> RpcAccountInfoConfig {
     RpcAccountInfoConfig {
         encoding: Some(UiAccountEncoding::Base64),
-        commitment: Some(CommitmentConfig::confirmed()),
+        commitment: Some(commitment),
         min_context_slot: Some(min_context_slot),
         ..RpcAccountInfoConfig::default()
     }

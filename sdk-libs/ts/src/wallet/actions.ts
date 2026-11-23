@@ -157,7 +157,7 @@ export interface CreatedTransfer {
   readonly revalidateRecipients: (
     context?: RequestContext,
     minContextSlot?: bigint,
-  ) => Promise<void>;
+  ) => Promise<bigint>;
 }
 
 export type MultiTransferParams = RecipientLookup<Pick<ChainReader, "getAccount">> & {
@@ -174,7 +174,7 @@ export interface CreatedMultiTransfer {
   readonly revalidateRecipients: (
     context?: RequestContext,
     minContextSlot?: bigint,
-  ) => Promise<void>;
+  ) => Promise<bigint>;
 }
 
 export interface CreatedWithdrawal {
