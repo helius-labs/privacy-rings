@@ -19,6 +19,10 @@ name = "photon-migration"
 path = "src/migration/main.rs"
 
 [[bin]]
+name = "photon-upstreams"
+path = "src/upstreams/main.rs"
+
+[[bin]]
 name = "photon-openapi"
 path = "src/openapi/main.rs"
 
@@ -42,6 +46,7 @@ borsh = { workspace = true }
 bs58 = { workspace = true }
 cadence-macros = { workspace = true }
 clap = { workspace = true }
+ed25519-dalek = { workspace = true }
 futures = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
