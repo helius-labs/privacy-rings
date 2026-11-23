@@ -1,6 +1,6 @@
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst},
-    Arc,
+    Arc, Mutex,
 };
 
 use solana_account::Account;
@@ -104,6 +104,8 @@ struct RegistryRpc {
     rotated: AtomicBool,
     foreign_network: AtomicBool,
     broadcasts: AtomicUsize,
+    confirmations: Mutex<Vec<Signature>>,
+    broadcast_reply: Mutex<Result<Signature, &'static str>>,
 }
 
 #[async_trait::async_trait]
@@ -141,7 +143,15 @@ impl AsyncRpc for RegistryRpc {
 
     async fn process_transaction(&self, _: VersionedTransaction) -> Result<Signature, ClientError> {
         self.broadcasts.fetch_add(1, SeqCst);
-        Err(ClientError::Rpc("mock broadcast".into()))
+        self.broadcast_reply
+            .lock()
+            .unwrap()
+            .map_err(|message| ClientError::Rpc(message.into()))
+    }
+
+    async fn confirm_transaction(&self, signature: Signature) -> Result<bool, ClientError> {
+        self.confirmations.lock().unwrap().push(signature);
+        Err(ClientError::Rpc("mock confirmation".into()))
     }
 }
 
@@ -180,6 +190,8 @@ async fn the_signed_payment_is_checked_before_broadcast() {
             rotated: AtomicBool::default(),
             foreign_network: AtomicBool::default(),
             broadcasts: AtomicUsize::default(),
+            confirmations: Mutex::default(),
+            broadcast_reply: Mutex::new(Err("mock broadcast")),
         },
         AsyncSprIndexer::new("http://127.0.0.1:1"),
         AsyncProverClient::local(),
@@ -272,14 +284,35 @@ async fn the_signed_payment_is_checked_before_broadcast() {
     ));
     client.rpc().foreign_network.store(false, SeqCst);
 
+    let signed = sign_transaction(unsigned(1).message, &[&payer]).unwrap();
+    let expected = signed.signatures[0];
+    let send = || {
+        submission.send_unsigned(&client, unsigned(1), async |_: &UnsignedMessage| {
+            tokio::task::yield_now().await;
+            Ok(signed.clone())
+        })
+    };
     assert!(matches!(
-        submission
-            .send_unsigned(&client, unsigned(1), async |prepared: &UnsignedMessage| {
-                tokio::task::yield_now().await;
-                sign_transaction(prepared.message.clone(), &[&payer])
-            })
-            .await,
-        Err(ClientError::Rpc(message)) if message == "mock broadcast"
+        send().await,
+        Err(ClientError::NitroPaymentSend { signature, source })
+            if signature == expected && matches!(*source, ClientError::Rpc(ref message) if message == "mock broadcast")
     ));
     assert_eq!(client.rpc().broadcasts.load(SeqCst), 1);
+    *client.rpc().broadcast_reply.lock().unwrap() = Ok(Signature::default());
+    assert!(matches!(
+        send().await,
+        Err(ClientError::NitroPaymentSend { signature, source })
+            if signature == expected && matches!(*source, ClientError::TransactionSignatureMismatch)
+    ));
+    assert_eq!(client.rpc().broadcasts.load(SeqCst), 2);
+    assert!(client.rpc().confirmations.lock().unwrap().is_empty());
+
+    *client.rpc().broadcast_reply.lock().unwrap() = Ok(expected);
+    assert!(matches!(
+        send().await,
+        Err(ClientError::NitroPaymentSend { signature, source })
+            if signature == expected && matches!(*source, ClientError::Rpc(ref message) if message == "mock confirmation")
+    ));
+    assert_eq!(client.rpc().broadcasts.load(SeqCst), 3);
+    assert_eq!(*client.rpc().confirmations.lock().unwrap(), [expected]);
 }

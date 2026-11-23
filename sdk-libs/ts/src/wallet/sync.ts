@@ -711,6 +711,11 @@ async function runWalletSync(
     }
     const settledIds =
       expired === undefined ? [] : settlementIds(session, expired, settlementScans);
+    if (
+      expired !== undefined &&
+      (await pendingPaymentGenesis(expired.rpc, context)) !== expired.genesis
+    )
+      throw new WalletError("WALLET_DECRYPTION_NETWORK_MISMATCH");
     context?.signal?.throwIfAborted();
     input.wallet._commitSync(sealSyncDelta(session), session.baseRevision, settledIds);
     return report;
@@ -744,6 +749,16 @@ function settlementIds(
     .map(({ id }) => id);
 }
 
+async function pendingPaymentGenesis(rpc: KitRpcAccess["solanaRpc"], context?: RequestContext) {
+  const result = await runKitRpc("getGenesisHash", context, (abortSignal) =>
+    rpc.getGenesisHash().send({ abortSignal }),
+  );
+  return wireDecoder(() => new WalletError("WALLET_DECRYPTION_NETWORK_MISMATCH")).address(
+    result,
+    "getGenesisHash",
+  );
+}
+
 async function expiredPendingPayments(
   wallet: Wallet,
   client: SyncClient,
@@ -757,12 +772,10 @@ async function expiredPendingPayments(
   if (rpc === undefined) {
     throw new WalletError("WALLET_INVALID_SYNC_CONFIG", { details: { field: "solanaRpc" } });
   }
-  const genesisHash = await runKitRpc("getGenesisHash", context, (abortSignal) =>
-    rpc.getGenesisHash().send({ abortSignal }),
-  );
-  const networkError = () => new WalletError("WALLET_DECRYPTION_NETWORK_MISMATCH");
-  const genesis = wireDecoder(networkError).address(genesisHash, "getGenesisHash");
-  if (pending.some((entry) => entry.genesisHash !== genesis)) throw networkError();
+  const genesis = await pendingPaymentGenesis(rpc, context);
+  if (pending.some((entry) => entry.genesisHash !== genesis)) {
+    throw new WalletError("WALLET_DECRYPTION_NETWORK_MISMATCH");
+  }
   const { absoluteSlot, blockHeight } = await runKitRpc("getEpochInfo", context, (abortSignal) =>
     rpc.getEpochInfo({ commitment: "finalized" }).send({ abortSignal }),
   );
@@ -802,7 +815,7 @@ async function expiredPendingPayments(
       if (results[index]) mayHaveLanded.add(signature);
     });
   }
-  return { slot: settlementSlot, submissions, mayHaveLanded };
+  return { rpc, genesis, slot: settlementSlot, submissions, mayHaveLanded };
 }
 
 async function backfillSessionRegistry(

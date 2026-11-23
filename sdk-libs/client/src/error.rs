@@ -97,6 +97,18 @@ pub enum ClientError {
     #[error("native Solana transaction signing failed: {0}")]
     SolanaTransactionSigning(String),
 
+    #[error("Solana RPC returned a signature that differs from the signed transaction")]
+    TransactionSignatureMismatch,
+
+    /// The send path was entered. Reconcile this signature before rebuilding the payment.
+    #[cfg(feature = "reqwest")]
+    #[error("could not complete submission of payment {signature}: {source}")]
+    NitroPaymentSend {
+        signature: solana_signature::Signature,
+        #[source]
+        source: Box<ClientError>,
+    },
+
     #[error("compiling the v1 transaction message failed: {0}")]
     TransactionCompile(String),
 

@@ -390,9 +390,14 @@ pub(super) async fn send_signed<R: AsyncRpc, I: AsyncIndexer>(
     client: &AsyncSprClient<R, I>,
     transaction: VersionedTransaction,
 ) -> Result<Signature, ClientError> {
-    let signature = client.process_transaction(transaction).await?;
-    client.confirm_private_transaction(signature).await?;
-    Ok(signature)
+    let expected = transaction.signatures.first().copied().ok_or_else(|| {
+        ClientError::SolanaTransactionSigning("missing fee payer signature".into())
+    })?;
+    if client.process_transaction(transaction).await? != expected {
+        return Err(ClientError::TransactionSignatureMismatch);
+    }
+    client.confirm_private_transaction(expected).await?;
+    Ok(expected)
 }
 
 /// Conservative reuse window for a blockhash prefetched while proving,

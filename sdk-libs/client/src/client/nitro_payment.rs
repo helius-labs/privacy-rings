@@ -101,6 +101,8 @@ impl NitroPaymentSubmission<'_> {
 
     /// Get the completed transaction from an external signer and keep the final
     /// message and recipient checks on the SDK's path to RPC broadcast.
+    /// A send or confirmation failure carries the signed transaction ID in
+    /// [`ClientError::NitroPaymentSend`] for reconciliation before retrying.
     pub async fn send_with_signer<R: AsyncRpc, I: AsyncIndexer>(
         &self,
         client: &AsyncSprClient<R, I>,
@@ -126,8 +128,16 @@ impl NitroPaymentSubmission<'_> {
         signed
             .verify_and_hash_message()
             .map_err(|error| ClientError::SolanaTransactionSigning(error.to_string()))?;
+        let signature = signed.signatures.first().copied().ok_or_else(|| {
+            ClientError::SolanaTransactionSigning("missing fee payer signature".into())
+        })?;
         self.revalidate(client.rpc()).await?;
-        send_signed(client, signed).await
+        send_signed(client, signed)
+            .await
+            .map_err(|source| ClientError::NitroPaymentSend {
+                signature,
+                source: Box::new(source),
+            })
     }
 
     async fn revalidate<R: AsyncRpc>(&self, rpc: &R) -> Result<(), ClientError> {

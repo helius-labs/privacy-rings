@@ -195,6 +195,7 @@ describe("UTXO reservations", () => {
       err: string | null;
     } | null = null;
     let chain: Address = PAYER;
+    let switchChainDuringScan = false;
     const context = () => ({ slot: indexerSlot, blockTime: 1_700_000_000n });
     const checkBlockhash = vi.fn((checked: Blockhash, config: unknown) => ({
       send: async () => {
@@ -215,8 +216,9 @@ describe("UTXO reservations", () => {
         getShieldedTransactionsByTags: async () =>
           transactionsPage({ context: { ...context(), slot: 500n } }),
         getEncryptedUtxosByTags: async () => matchesPage({ context: { ...context(), slot: 500n } }),
-        getShieldedTransactionsByNullifiers: async () =>
-          transactionsPage({
+        getShieldedTransactionsByNullifiers: async () => {
+          if (switchChainDuringScan) chain = PAYER;
+          return transactionsPage({
             context: context(),
             data: transactionItems(
               indexedSpend
@@ -232,7 +234,8 @@ describe("UTXO reservations", () => {
                   ]
                 : [],
             ),
-          }),
+          });
+        },
       }),
       ...kitReads({
         solanaRpc: {
@@ -325,6 +328,16 @@ describe("UTXO reservations", () => {
     indexerSlot = 501n;
     const absent = deserializeWallet(serializeWallet(restored));
     signatureStatus = null;
+    const beforeNetworkChange = serializeWallet(absent);
+    switchChainDuringScan = true;
+    await expect(sync(absent)).rejects.toMatchObject({
+      code: "WALLET_SYNC",
+      causeCode: "WALLET_DECRYPTION_NETWORK_MISMATCH",
+    });
+    expect(serializeWallet(absent)).toBe(beforeNetworkChange);
+    expect(absent._activeReservations(1_000_000n)).toHaveLength(1);
+    switchChainDuringScan = false;
+    chain = genesisHash;
     await sync(absent);
     expect(absent.pendingSubmissions()).toEqual([]);
     signatureStatus = { slot: 500n, confirmationStatus: "finalized", err: "AccountNotFound" };
