@@ -44,7 +44,7 @@ impl NitroPolicyReader {
 
     /// Authentication and persistent storage finish before returning replica pins.
     pub async fn read(&self) -> Result<AcceptedNitroPolicy, NitroPolicyError> {
-        let [primary, mirror] = self.read_heads().await?;
+        let heads = self.read_heads().await;
         let trust = self.trust.clone();
         let store = self.store.clone();
         let latest = self.latest.clone();
@@ -53,7 +53,9 @@ impl NitroPolicyReader {
                 let mut latest = latest.lock().map_err(|_| NitroPolicyError::Storage)?;
                 accept_with_checkpoint(
                     &trust,
-                    [&primary, &mirror],
+                    heads
+                        .each_ref()
+                        .map(|head| head.as_deref().map_err(|error| *error)),
                     &*store,
                     now_ms()?,
                     &mut latest,
@@ -68,17 +70,17 @@ impl NitroPolicyReader {
         Ok(policy)
     }
 
-    async fn read_heads(&self) -> Result<[Vec<u8>; 2], NitroPolicyError> {
+    async fn read_heads(&self) -> [Result<Vec<u8>, NitroPolicyError>; 2] {
         #[cfg(test)]
         if let Some(heads) = self.test_heads.lock().unwrap().clone() {
-            return Ok(heads);
+            return heads.map(Ok);
         }
         let [(primary, primary_owner), (mirror, mirror_owner)] = self.trust.publication_routes();
-        let (primary, mirror) = tokio::try_join!(
+        let (primary, mirror) = tokio::join!(
             self.fetch(primary, primary_owner),
             self.fetch(mirror, mirror_owner),
-        )?;
-        Ok([primary, mirror])
+        );
+        [primary, mirror]
     }
 
     pub(crate) async fn require_current(

@@ -28,7 +28,7 @@ const MAX_LIFETIME_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 const RELEASE_DOMAIN: &[u8] = b"SPR/native-nitro/release-policy/v1";
 const CUSTODY_DOMAIN: &[u8] = b"SPR/native-nitro/custody-release-policy/v1";
 
-#[derive(Debug, Error)]
+#[derive(Clone, Copy, Debug, Error)]
 #[non_exhaustive]
 pub enum NitroPolicyError {
     #[error("invalid standalone decryption trust pins")]
@@ -169,12 +169,14 @@ pub struct NitroCheckpoint {
     pub digest: [u8; 32],
     pub minimum_custody_epoch: u64,
     pub recovery_only: bool,
+    #[serde(default)]
+    pub revoked: bool,
 }
 
-/// Both authenticated policy heads used by the next checkpoint transaction.
+/// Authenticated publication evidence for the next checkpoint transaction.
 pub struct NitroPolicyUpdate<'a> {
     primary: &'a Head,
-    mirror: &'a Head,
+    mirror: Option<&'a Head>,
 }
 
 impl NitroPolicyUpdate<'_> {
@@ -184,11 +186,28 @@ impl NitroPolicyUpdate<'_> {
 
     /// Apply inside the same transaction that persists the primary checkpoint.
     pub fn advances(&self, current: Option<&NitroCheckpoint>) -> bool {
+        let next = self.checkpoint();
+        if next.revoked {
+            return current.is_none_or(|prior| {
+                next.preserves_floor(prior)
+                    && (next.sequence > prior.sequence
+                        || (next.sequence == prior.sequence && (!prior.revoked || next == prior)))
+            });
+        }
+        let Some(mirror) = self.mirror else {
+            return false;
+        };
         current.is_none_or(|prior| {
             self.primary.follows(prior)
-                && (self.mirror.policy.checkpoint.sequence < prior.sequence
-                    || self.mirror.follows(prior))
+                && (mirror.policy.checkpoint.sequence < prior.sequence || mirror.follows(prior))
         })
+    }
+}
+
+impl NitroCheckpoint {
+    fn preserves_floor(&self, prior: &Self) -> bool {
+        self.minimum_custody_epoch >= prior.minimum_custody_epoch
+            && (!prior.recovery_only || self.recovery_only)
     }
 }
 
@@ -246,9 +265,16 @@ impl AcceptedNitroPolicy {
             Err(NitroPolicyError::Invalid)
         }
     }
+
+    fn current_under(&self, trust: &NitroTrust, now_ms: u64) -> bool {
+        self.require_valid_at(now_ms).is_ok()
+            && self.checkpoint.sequence >= trust.minimum_sequence
+            && self.checkpoint.minimum_custody_epoch >= trust.minimum_custody_epoch
+            && (!trust.recovery_only || self.checkpoint.recovery_only)
+    }
 }
 
-/// Validate both policy heads and durably accept the primary before returning any replica.
+/// An activation requires two authenticated heads. Either head can durably revoke.
 /// Callers fetching these themselves must use the pinned publication routes and owner headers.
 pub fn accept_published_nitro_policy(
     trust: &NitroTrust,
@@ -256,55 +282,84 @@ pub fn accept_published_nitro_policy(
     store: &dyn NitroCheckpointStore,
     now_ms: u64,
 ) -> Result<AcceptedNitroPolicy, NitroPolicyError> {
-    accept_with_checkpoint(trust, heads, store, now_ms, &mut None)
+    accept_with_checkpoint(trust, heads.map(Ok), store, now_ms, &mut None)
 }
 
 fn accept_with_checkpoint(
     trust: &NitroTrust,
-    heads: [&[u8]; 2],
+    heads: [Result<&[u8], NitroPolicyError>; 2],
     store: &dyn NitroCheckpointStore,
     now_ms: u64,
     latest: &mut Option<NitroCheckpoint>,
 ) -> Result<AcceptedNitroPolicy, NitroPolicyError> {
-    let [primary, mirror] = heads;
-    let primary = verify_head(trust, primary)?;
-    let mirror = verify_head(trust, mirror)?;
-    if primary.policy.checkpoint.digest != mirror.policy.checkpoint.digest {
-        let newer = &primary.policy.checkpoint;
-        let prior = &mirror.policy.checkpoint;
-        if prior.sequence.checked_add(1) != Some(newer.sequence)
-            || !primary.follows(prior)
-            || primary.policy.targets.iter().any(|target| {
-                mirror.policy.targets.iter().any(|old| {
-                    old.custody_epoch == target.custody_epoch
-                        && old.custody_digest != target.custody_digest
-                })
+    let [primary, mirror] = heads.map(|head| head.and_then(|head| verify_head(trust, head)));
+    let mut rejected = false;
+    if let Some((head, peer)) =
+        primary
+            .as_ref()
+            .ok()
+            .zip(mirror.as_ref().ok())
+            .filter(|(primary, mirror)| {
+                primary.pairs_with(mirror) && primary.policy.current_under(trust, now_ms)
             })
-        {
-            return Err(NitroPolicyError::Invalid);
-        }
-    }
-    let policy = &primary.policy;
-    policy.require_valid_at(now_ms)?;
-    if policy.checkpoint.sequence < trust.minimum_sequence
-        || policy.checkpoint.minimum_custody_epoch < trust.minimum_custody_epoch
-        || (trust.recovery_only && !policy.checkpoint.recovery_only)
     {
-        return Err(NitroPolicyError::Invalid);
+        if persist_checkpoint(
+            trust,
+            store,
+            latest,
+            NitroPolicyUpdate {
+                primary: head,
+                mirror: Some(peer),
+            },
+        )? {
+            let policy = primary?.policy;
+            if policy.checkpoint.revoked {
+                return Err(NitroPolicyError::Revoked);
+            }
+            policy.require_current(trust, store, now_ms)?;
+            return Ok(policy);
+        }
+        rejected = true;
     }
-    let update = NitroPolicyUpdate {
-        primary: &primary,
-        mirror: &mirror,
-    };
-    if !update.advances(latest.as_ref()) || !store.accept(trust, &update)? {
+    let mut revocations: Vec<_> = [&primary, &mirror]
+        .into_iter()
+        .filter_map(|head| head.as_ref().ok())
+        .filter(|head| head.policy.checkpoint.revoked && head.policy.current_under(trust, now_ms))
+        .collect();
+    revocations.sort_by_key(|head| std::cmp::Reverse(head.policy.checkpoint.sequence));
+    for revocation in revocations {
+        if persist_checkpoint(
+            trust,
+            store,
+            latest,
+            NitroPolicyUpdate {
+                primary: revocation,
+                mirror: None,
+            },
+        )? {
+            return Err(NitroPolicyError::Revoked);
+        }
+        rejected = true;
+    }
+    if rejected {
         return Err(NitroPolicyError::Rollback);
     }
-    *latest = Some(policy.checkpoint.clone());
-    if policy.targets.is_empty() {
-        return Err(NitroPolicyError::Revoked);
+    primary?;
+    mirror?;
+    Err(NitroPolicyError::Invalid)
+}
+
+fn persist_checkpoint(
+    trust: &NitroTrust,
+    store: &dyn NitroCheckpointStore,
+    latest: &mut Option<NitroCheckpoint>,
+    update: NitroPolicyUpdate<'_>,
+) -> Result<bool, NitroPolicyError> {
+    if !update.advances(latest.as_ref()) || !store.accept(trust, &update)? {
+        return Ok(false);
     }
-    policy.require_current(trust, store, now_ms)?;
-    Ok(primary.policy)
+    *latest = Some(update.checkpoint().clone());
+    Ok(true)
 }
 
 struct Head {
@@ -313,11 +368,23 @@ struct Head {
 }
 
 impl Head {
+    fn pairs_with(&self, mirror: &Self) -> bool {
+        let primary = self.policy.checkpoint();
+        let prior = mirror.policy.checkpoint();
+        primary.digest == prior.digest
+            || (prior.sequence.checked_add(1) == Some(primary.sequence)
+                && self.follows(prior)
+                && !self.policy.targets.iter().any(|target| {
+                    mirror.policy.targets.iter().any(|old| {
+                        old.custody_epoch == target.custody_epoch
+                            && old.custody_digest != target.custody_digest
+                    })
+                }))
+    }
+
     fn follows(&self, prior: &NitroCheckpoint) -> bool {
         let next = self.policy.checkpoint();
-        if next.minimum_custody_epoch < prior.minimum_custody_epoch
-            || (prior.recovery_only && !next.recovery_only)
-        {
+        if !next.preserves_floor(prior) {
             return false;
         }
         if next.sequence == prior.sequence {
@@ -410,6 +477,7 @@ fn verify_head(trust: &NitroTrust, input: &[u8]) -> Result<Head, NitroPolicyErro
                 digest,
                 minimum_custody_epoch,
                 recovery_only: policy.recovery_only,
+                revoked: policy.action == wire::Action::Revoke,
             },
         },
         previous,

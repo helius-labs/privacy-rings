@@ -354,7 +354,7 @@ fn live_reader_remembers_revocation_after_checkpoint_file_is_lost_or_rolled_back
     let accept = |primary, mirror, latest: &mut Option<NitroCheckpoint>| {
         accept_with_checkpoint(
             &trust,
-            [&fixture.head(primary), &fixture.head(mirror)],
+            [Ok(&fixture.head(primary)), Ok(&fixture.head(mirror))],
             &store,
             fixture.now(),
             latest,
@@ -516,7 +516,7 @@ fn stalled_checkpoint_lock_fails_closed_and_leaves_the_revision_intact() {
 }
 
 #[test]
-fn restored_checkpoint_rejects_a_disputed_predecessor_from_either_feed() {
+fn restored_checkpoint_rejects_a_disputed_activation_and_accepts_a_stop() {
     let fixture = Fixture::load();
     let trust = fixture.trust();
     let dir = tempfile::tempdir().unwrap();
@@ -525,25 +525,177 @@ fn restored_checkpoint_rejects_a_disputed_predecessor_from_either_feed() {
         .accept(&trust, &writer, "successor", "genesis")
         .unwrap();
     let restored = UnixNitroCheckpointStore::open(dir.path()).unwrap();
-    for (primary, mirror) in [
-        ("forkOfAccepted", "forkOfAccepted"),
-        ("forkOfAccepted", "competingSuccessor"),
-        ("witnessedFork", "forkOfAccepted"),
-    ] {
-        assert!(matches!(
-            fixture.accept(&trust, &restored, primary, mirror),
-            Err(NitroPolicyError::Rollback)
-        ));
-        assert_eq!(
-            restored.current(&trust).unwrap().as_ref(),
-            Some(saved.checkpoint())
-        );
-    }
+    assert!(matches!(
+        fixture.accept(&trust, &restored, "skipped", "skipped"),
+        Err(NitroPolicyError::Rollback)
+    ));
+    assert_eq!(
+        restored.current(&trust).unwrap().as_ref(),
+        Some(saved.checkpoint())
+    );
     assert!(matches!(
         fixture.accept(&trust, &restored, "agreedCatchUp", "agreedCatchUp"),
         Err(NitroPolicyError::Revoked)
     ));
     assert_eq!(restored.current(&trust).unwrap().unwrap().sequence, 4);
+}
+
+#[test]
+fn either_bucket_can_stop_a_wallet_and_the_stop_survives_restart() {
+    let fixture = Fixture::load();
+    let trust = fixture.trust();
+    let revoke = fixture.head("revoke");
+    let active = fixture.head("successor");
+    for heads in [
+        [Err(NitroPolicyError::Unavailable), Ok(revoke.as_slice())],
+        [Ok(revoke.as_slice()), Err(NitroPolicyError::Unavailable)],
+        [Ok(active.as_slice()), Ok(revoke.as_slice())],
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = UnixNitroCheckpointStore::open(dir.path()).unwrap();
+        let prior = fixture
+            .accept(&trust, &store, "successor", "genesis")
+            .unwrap();
+        assert!(matches!(
+            accept_with_checkpoint(&trust, heads, &store, fixture.now(), &mut None),
+            Err(NitroPolicyError::Revoked)
+        ));
+        let reopened = UnixNitroCheckpointStore::open(dir.path()).unwrap();
+        let saved = reopened.current(&trust).unwrap().unwrap();
+        assert!(saved.revoked);
+        assert_eq!(saved.sequence, 3);
+        assert!(matches!(
+            prior.require_current(&trust, &reopened, fixture.now()),
+            Err(NitroPolicyError::Superseded)
+        ));
+        assert!(matches!(
+            fixture.accept(&trust, &reopened, "successor", "successor"),
+            Err(NitroPolicyError::Rollback)
+        ));
+    }
+}
+
+#[test]
+fn a_lone_invalid_or_expired_stop_leaves_the_checkpoint_intact() {
+    let fixture = Fixture::load();
+    let trust = fixture.trust();
+    let dir = tempfile::tempdir().unwrap();
+    let store = UnixNitroCheckpointStore::open(dir.path()).unwrap();
+    let active = fixture
+        .accept(&trust, &store, "successor", "genesis")
+        .unwrap();
+    let revoke = fixture.head("revoke");
+    let mut incomplete: Value = serde_json::from_slice(&revoke).unwrap();
+    incomplete["custodySignatures"] = json!([]);
+    let incomplete = serde_json::to_vec(&incomplete).unwrap();
+    let expiry: u64 = fixture.0["envelopes"]["revoke"]["policy"]["expiresAtMs"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    for (payload, now) in [(incomplete, fixture.now()), (revoke, expiry)] {
+        assert!(matches!(
+            accept_with_checkpoint(
+                &trust,
+                [Err(NitroPolicyError::Unavailable), Ok(&payload)],
+                &store,
+                now,
+                &mut None
+            ),
+            Err(NitroPolicyError::Unavailable)
+        ));
+        assert_eq!(
+            store.current(&trust).unwrap().as_ref(),
+            Some(active.checkpoint())
+        );
+    }
+}
+
+#[test]
+fn a_revocation_replaces_a_conflicting_activation_at_the_same_sequence() {
+    let fixture = Fixture::load();
+    let trust = fixture.trust();
+    let dir = tempfile::tempdir().unwrap();
+    let store = UnixNitroCheckpointStore::open(dir.path()).unwrap();
+    let active = fixture
+        .accept(&trust, &store, "skipped", "skipped")
+        .unwrap();
+    assert!(matches!(
+        fixture.accept(&trust, &store, "skipped", "forkOfAccepted"),
+        Err(NitroPolicyError::Revoked)
+    ));
+    let stopped = store.current(&trust).unwrap().unwrap();
+    assert_eq!(stopped.sequence, active.checkpoint().sequence);
+    assert_ne!(stopped.digest, active.checkpoint().digest);
+    assert!(stopped.revoked);
+    assert!(matches!(
+        fixture.accept(&trust, &store, "skipped", "skipped"),
+        Err(NitroPolicyError::Rollback)
+    ));
+    assert!(matches!(
+        fixture.accept(&trust, &store, "agreedCatchUp", "agreedCatchUp"),
+        Err(NitroPolicyError::Revoked)
+    ));
+    assert_eq!(store.current(&trust).unwrap().unwrap().sequence, 4);
+}
+
+#[test]
+fn a_compatible_stop_is_retained_when_another_head_cannot_advance_the_checkpoint() {
+    use p256::ecdsa::{signature::hazmat::PrehashSigner, SigningKey};
+
+    let fixture = Fixture::load();
+    let trust = fixture.trust();
+    let resign = |mut envelope: Value| {
+        envelope["policy"].sort_all_objects();
+        let canonical = serde_json::to_vec(&envelope["policy"]).unwrap();
+        for (field, domain, keys) in [
+            ("signatures", RELEASE_DOMAIN, [1, 2]),
+            ("custodySignatures", CUSTODY_DOMAIN, [4, 5]),
+        ] {
+            for (entry, key) in envelope[field].as_array_mut().unwrap().iter_mut().zip(keys) {
+                let mut secret = [0; 32];
+                secret[31] = key;
+                let signature: Signature = SigningKey::from_slice(&secret)
+                    .unwrap()
+                    .sign_prehash(&signing_digest(domain, &canonical))
+                    .unwrap();
+                entry["signature"] = json!(hex::encode(signature.normalize_s().to_bytes()));
+            }
+        }
+        serde_json::to_vec(&envelope).unwrap()
+    };
+    let mut weaker = fixture.0["envelopes"]["revoke"].clone();
+    weaker["policy"]["minimumCustodyEpoch"] = json!("1");
+    let stop = fixture.head("forkOfAccepted");
+    let mut activation = fixture.0["envelopes"]["skipped"].clone();
+    activation["policy"]["sequence"] = json!("4");
+    activation["policy"]["previousPolicyDigest"] = json!(hex::encode(
+        verify_head(&trust, &stop)
+            .unwrap()
+            .policy
+            .checkpoint()
+            .digest
+    ));
+    for (starting, first, mirror) in [
+        ("successor", resign(weaker), fixture.head("revoke")),
+        ("skipped", resign(activation), stop),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = UnixNitroCheckpointStore::open(dir.path()).unwrap();
+        fixture.accept(&trust, &store, starting, starting).unwrap();
+        assert!(matches!(
+            accept_published_nitro_policy(&trust, [&first, &mirror], &store, fixture.now()),
+            Err(NitroPolicyError::Revoked)
+        ));
+        assert_eq!(
+            store.current(&trust).unwrap().unwrap(),
+            *verify_head(&trust, &mirror).unwrap().policy.checkpoint()
+        );
+        assert!(matches!(
+            fixture.accept(&trust, &store, starting, starting),
+            Err(NitroPolicyError::Rollback)
+        ));
+    }
 }
 
 #[test]
