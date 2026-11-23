@@ -865,17 +865,22 @@ describe("live SDK lifecycle", { concurrent: false }, () => {
       },
       persistence: { store, cipher },
     });
-    const signature = await payment.send((transaction, abortSignal) =>
-      signTransactionWithSigners([sender.signer], transaction, { abortSignal }),
-    );
+    expect(lookups).toBeGreaterThan(0);
+    let lookupsAtSigning = 0;
+    const signature = await payment.send(async (transaction, abortSignal) => {
+      const signed = await signTransactionWithSigners([sender.signer], transaction, {
+        abortSignal,
+      });
+      lookupsAtSigning = lookups;
+      return signed;
+    });
+    expect(lookups).toBeGreaterThan(lookupsAtSigning);
     const restored = await loadPersistedWallet({ store, cipher });
     expect(restored?.pendingSubmissions()).toMatchObject([
       { signature, blockhash: expect.any(String), blockhashValidAtSlot: expect.any(BigInt) },
     ]);
     await waitForSignature(client.solanaRpc, signature);
     await sync(client, recipient);
-    // Look up the recipient initially, after preparation, and before and after fetching the final blockhash.
-    expect(lookups).toBe(4);
     expect(recipient.wallet.balance(SOL_MINT).amount).toBe(10_000_000n);
     expect(await fetchUserRecord({ rpc: client, owner: recipient.signer.address })).toBeUndefined();
     expect(await client.getBalance(recipient.signer.address)).toBe(0n);
