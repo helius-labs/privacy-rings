@@ -518,19 +518,19 @@ The release workflow publishes the generated TypeDoc reference from
 `ts-sdk-v*` tags. The tag version must match this package's version. Published
 versions are immutable:
 
-- latest: <https://helius-labs.github.io/zolana/ts-sdk/>.
+- latest: <https://helius-labs.github.io/privacy-rings/ts-sdk/>.
 - explicit version:
-  <https://helius-labs.github.io/zolana/ts-sdk/v0.1.3-alpha/>.
+  <https://helius-labs.github.io/privacy-rings/ts-sdk/v0.9.0-alpha/>.
 - version index:
-  <https://helius-labs.github.io/zolana/ts-sdk/versions.json>.
+  <https://helius-labs.github.io/privacy-rings/ts-sdk/versions.json>.
 
 GitHub Pages must use GitHub Actions as its source before the first release
 workflow runs.
 
 The intended long-term canonical location is
 `https://www.helius.dev/privacy/api/`, with immutable versions such as
-`https://www.helius.dev/privacy/api/v0.1.3-alpha/`. Migrate only after the Helius
-website proxies `/privacy/api/*` to the GitHub Pages `/zolana/ts-sdk/*` origin.
+`https://www.helius.dev/privacy/api/v0.9.0-alpha/`. Migrate only after the Helius
+website proxies `/privacy/api/*` to the GitHub Pages `/privacy-rings/ts-sdk/*` origin.
 At that point, update the release workflow's `PUBLIC_BASE_URL`; existing GitHub
 Pages URLs remain available as the backing origin.
 
