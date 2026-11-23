@@ -15,7 +15,12 @@ import {
 
 import { compileUnsignedTransaction } from "../flows/compile.js";
 import { DEFAULT_COMPUTE_UNIT_LIMIT } from "../flows/internal.js";
-import type { BlockhashProvider, ChainReader, RecipientLookup } from "../client/ports.js";
+import type {
+  BlockhashProvider,
+  ChainReader,
+  DecryptionRecipientProvider,
+  RecipientLookup,
+} from "../client/ports.js";
 import type { RpcAccount } from "../client/rpc.js";
 import { equalBytes, bytesKey } from "../interface/bytes.js";
 import {
@@ -360,6 +365,23 @@ export function paymentRecipientResolver(
     let checked: Promise<void> | undefined;
     return () => (checked ??= checkServiceChain(request));
   }
+  async function readServiceAddress(
+    provider: DecryptionRecipientProvider,
+    recipient: Address,
+    request?: RequestContext,
+  ): Promise<ShieldedAddress> {
+    requireActive(request);
+    const address = await provider.address(recipient, request);
+    requireActive(request);
+    if (
+      !(address instanceof ShieldedAddress) ||
+      address.signingPublicKey.signatureType() !== "ed25519" ||
+      address.solanaAddress() !== recipient
+    ) {
+      throw new WalletError("WALLET_DECRYPTION_RECIPIENT_MISMATCH");
+    }
+    return address;
+  }
   async function resolveOwner(
     recipient: Address,
     requireServiceChain: () => Promise<void>,
@@ -378,15 +400,7 @@ export function paymentRecipientResolver(
       throw new WalletError("WALLET_RECIPIENT_NOT_REGISTERED", { details: { recipient } });
     }
     await requireServiceChain();
-    const address = await service.address(recipient, request);
-    requireActive(request);
-    if (
-      !(address instanceof ShieldedAddress) ||
-      address.signingPublicKey.signatureType() !== "ed25519" ||
-      address.solanaAddress() !== recipient
-    ) {
-      throw new WalletError("WALLET_DECRYPTION_RECIPIENT_MISMATCH");
-    }
+    const address = await readServiceAddress(service, recipient, request);
     const latestRegistration = await readRegistration(client);
     if (latestRegistration) return latestRegistration;
     return { kind: "shielded" as const, address, viewTag: address.confidentialViewTag() };
@@ -412,17 +426,30 @@ export function paymentRecipientResolver(
     return lookup;
   }
   async function revalidate(request = context): Promise<void> {
-    if (network === undefined) return;
+    if (service === undefined) return;
     const requireCurrentServiceChain = chainCheckForBatch(request);
-    await Promise.all(
-      [...paymentAddresses].map(async ([owner, original]) => {
-        const { address: current } = await resolveOwner(owner, requireCurrentServiceChain, request);
-        if (!equalBytes(current.toBytes(), original.toBytes())) {
-          throw new WalletError("WALLET_DECRYPTION_RECIPIENT_MISMATCH");
-        }
+    function requireSame(current: ShieldedAddress, original: ShieldedAddress): void {
+      if (!equalBytes(current.toBytes(), original.toBytes())) {
+        throw new WalletError("WALLET_DECRYPTION_RECIPIENT_MISMATCH");
+      }
+    }
+    const fallbackRecipients = await Promise.all(
+      [...paymentAddresses].map(async (entry) => {
+        const [owner, original] = entry;
+        const current = await resolveOwner(owner, requireCurrentServiceChain, request);
+        requireSame(current.address, original);
+        return current.kind === "shielded" ? entry : undefined;
       }),
     );
     await checkServiceChain(request);
+    // Payment policy can change while the final Solana RPC is in flight.
+    await Promise.all(
+      fallbackRecipients.map(async (entry) => {
+        if (entry === undefined) return;
+        const [owner, original] = entry;
+        requireSame(await readServiceAddress(service, owner, request), original);
+      }),
+    );
   }
   return { resolve, revalidate };
 }

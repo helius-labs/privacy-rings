@@ -135,13 +135,16 @@ it("builds the same SOL deposit with a service-resolved recipient as with explic
     getAccount.mock.invocationCallOrder[3]!,
   );
   expect(address).toHaveBeenCalledWith(recipient.solanaAddress(), undefined);
-  expect(address).toHaveBeenCalledTimes(2);
+  expect(address).toHaveBeenCalledTimes(3);
+  expect(address.mock.invocationCallOrder[2]).toBeGreaterThan(
+    getGenesisHash.mock.invocationCallOrder[2]!,
+  );
   expect(broadcastTransaction).not.toHaveBeenCalled();
   await resolved.send(async (transaction) => {
     expect(transaction.messageBytes).toEqual(explicit.messageBytes);
     return signTransactionWithSigners([payer], transaction);
   });
-  expect(address).toHaveBeenCalledTimes(4);
+  expect(address).toHaveBeenCalledTimes(7);
   expect(broadcastTransaction).toHaveBeenCalledOnce();
 });
 

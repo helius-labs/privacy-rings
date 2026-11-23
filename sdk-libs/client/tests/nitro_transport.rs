@@ -151,7 +151,7 @@ fn reply_for(body: &[u8], owner: Pubkey, result: Value, session_expires_at_ms: u
     })
 }
 
-struct PaymentRpc([u8; 32]);
+struct PaymentRpc([u8; 32], Option<Box<dyn Fn() + Send + Sync>>);
 
 impl crate::Rpc for PaymentRpc {
     fn get_account(
@@ -162,6 +162,9 @@ impl crate::Rpc for PaymentRpc {
     }
 
     fn genesis_hash(&self) -> Result<[u8; 32], crate::ClientError> {
+        if let Some(check) = &self.1 {
+            check();
+        }
         Ok(self.0)
     }
 }
@@ -176,7 +179,7 @@ impl crate::AsyncRpc for PaymentRpc {
     }
 
     async fn genesis_hash(&self) -> Result<[u8; 32], crate::ClientError> {
-        Ok(self.0)
+        crate::Rpc::genesis_hash(self)
     }
 }
 
@@ -517,6 +520,93 @@ async fn unsigned_lookup_refreshes_one_superseded_policy_and_reports_its_result(
 }
 
 #[tokio::test]
+async fn a_payment_disabled_during_the_final_chain_check_is_refused() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/nitro/", listener.local_addr().unwrap());
+    let fixture = serde_json::from_str(POLICY_FIXTURE).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(UnixNitroCheckpointStore::open(directory.path()).unwrap());
+    let (trust, session, active) = accepted_boot(&fixture, &endpoint, now_ms().unwrap(), &store);
+    let service = NitroDecryptionService::new(trust.clone(), store.clone()).unwrap();
+    let mut recovery: Value = serde_json::from_slice(&active).unwrap();
+    recovery["policy"]["sequence"] = json!("2");
+    recovery["policy"]["previousPolicyDigest"] =
+        json!(hex::encode(session.policy.checkpoint().digest));
+    recovery["policy"]["recoveryOnly"] = json!(true);
+    sign_policy(&mut recovery);
+    let recovery = json(&recovery).unwrap();
+    *service.0.policies.test_heads.lock().unwrap() = Some([active.clone(), active.clone()]);
+    service.0.cache.lock().await.session = Some(session.clone());
+
+    let publisher = service.clone();
+    let network_checks = Arc::new(AtomicUsize::new(0));
+    let calls = network_checks.clone();
+    let rpc = PaymentRpc(
+        "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"
+            .parse::<solana_hash::Hash>()
+            .unwrap()
+            .to_bytes(),
+        Some(Box::new(move || {
+            if calls.fetch_add(1, Ordering::SeqCst) == 1 {
+                *publisher.0.policies.test_heads.lock().unwrap() =
+                    Some([recovery.clone(), active.clone()]);
+            }
+        })),
+    );
+
+    let owner = Keypair::new_from_array([21; 32]).pubkey();
+    let expires_at = session.window.expires_at_ms;
+    let server = tokio::spawn(async move {
+        let (socket, _) = tokio::time::timeout(Duration::from_secs(4), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut socket = socket.into_std().unwrap();
+        socket.set_nonblocking(false).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(4)))
+            .unwrap();
+        socket
+            .set_write_timeout(Some(Duration::from_secs(4)))
+            .unwrap();
+        tokio::task::spawn_blocking(move || {
+            let body = read_http(&socket);
+            let result = json!({
+                "type": "PublicKeys",
+                "viewing_public_key": hex::encode(X25519Pubkey::from_u([9; 32]).unwrap().as_bytes()),
+                "nullifier_public_key": hex::encode(NullifierKey::from_secret([0x44; 31]).pubkey().unwrap()),
+            });
+            let reply = json(&reply_for(&body, owner, result, expires_at)).unwrap();
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                reply.len()
+            )
+            .unwrap();
+            socket.write_all(&reply).unwrap();
+        })
+        .await
+        .unwrap();
+        listener
+    });
+
+    assert!(matches!(
+        service.resolve_recipient(&rpc, owner).await,
+        Err(crate::ClientError::NitroDecryption(
+            NitroDecryptionError::RecoveryOnly
+        ))
+    ));
+    assert_eq!(network_checks.load(Ordering::SeqCst), 2);
+    assert!(store.current(&trust).unwrap().unwrap().recovery_only);
+    let listener = server.await.unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(10), listener.accept())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
 async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}/nitro/", listener.local_addr().unwrap());
@@ -549,6 +639,7 @@ async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
     let server = tokio::spawn(async move {
         for (i, result) in [
             owner_response.clone(),
+            owner_response.clone(),
             owner_response,
             boot_response,
             note_response.clone(),
@@ -577,7 +668,7 @@ async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
                     .windows(owner.to_string().len())
                     .any(|w| w == owner.to_string().as_bytes()));
                 let reply = json(&reply_for(&body, owner, result, session_expires_at_ms)).unwrap();
-                if i == 4 {
+                if i == 5 {
                     *publisher.0.policies.test_heads.lock().unwrap() =
                         Some([revocation.clone(), revocation]);
                 }
@@ -599,6 +690,7 @@ async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
             .parse::<solana_hash::Hash>()
             .unwrap()
             .to_bytes(),
+        None,
     );
     for rejected in [
         service.resolve_recipient_sync(&mainnet, owner),
@@ -616,6 +708,7 @@ async fn recovered_wallet_can_decrypt_until_its_policy_is_revoked() {
             .parse::<solana_hash::Hash>()
             .unwrap()
             .to_bytes(),
+        None,
     );
     let address = service.resolve_recipient(&devnet, owner).await.unwrap();
     assert_eq!(address.address().viewing_pubkey, viewing);

@@ -41,16 +41,15 @@ impl NitroPaymentRecipient {
         self.address
     }
 
-    async fn revalidate<R: AsyncRpc>(&self, rpc: &R) -> Result<(), ClientError> {
-        if self
+    async fn revalidate<R: AsyncRpc>(&self, rpc: &R) -> Result<bool, ClientError> {
+        let (address, from_service) = self
             .service
             .resolve_recipient_address(rpc, self.owner)
-            .await?
-            != self.address
-        {
+            .await?;
+        if address != self.address {
             return Err(NitroDecryptionError::PaymentRecipientChanged.into());
         }
-        Ok(())
+        Ok(from_service)
     }
 }
 
@@ -141,7 +140,7 @@ impl NitroPaymentSubmission<'_> {
     }
 
     async fn revalidate<R: AsyncRpc>(&self, rpc: &R) -> Result<(), ClientError> {
-        try_join_all(
+        let from_service = try_join_all(
             self.recipients
                 .iter()
                 .map(|recipient| recipient.revalidate(rpc)),
@@ -153,6 +152,19 @@ impl NitroPaymentSubmission<'_> {
                 recipient.service.require_chain(genesis)?;
             }
         }
+        // Payment policy can change while the final Solana RPC is in flight.
+        try_join_all(
+            self.recipients
+                .iter()
+                .zip(from_service)
+                .filter(|(_, from_service)| *from_service)
+                .map(|(recipient, _)| {
+                    recipient
+                        .service
+                        .confirm_payment_address(recipient.owner, recipient.address)
+                }),
+        )
+        .await?;
         Ok(())
     }
 

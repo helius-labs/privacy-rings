@@ -51,7 +51,7 @@ it("refuses a different Solana message from the signing callback", async () => {
     code: "WALLET_SUBMIT_PAYMENT",
     causeCode: "WALLET_INTENT_MISMATCH",
   });
-  expect(address).toHaveBeenCalledTimes(2);
+  expect(address).toHaveBeenCalledTimes(3);
   expect(broadcastTransaction).not.toHaveBeenCalled();
 });
 
@@ -107,7 +107,7 @@ it("submits a prepared payment once, even when a second caller enters during sig
     causeCode: "WALLET_PAYMENT_ALREADY_USED",
   });
   expect(await first).toBe(getSignatureFromTransaction(broadcastTransaction.mock.calls[0]![0]));
-  expect(address).toHaveBeenCalledTimes(4);
+  expect(address).toHaveBeenCalledTimes(7);
   expect(broadcastTransaction).toHaveBeenCalledOnce();
 });
 
@@ -158,7 +158,7 @@ it.each(["signing", "recipient lookup"] as const)(
       }),
     ).rejects.toMatchObject({ causeCode: "WALLET_PAYMENT_BLOCKHASH" });
     expect(getBlockhashValidity).toHaveBeenCalledOnce();
-    expect(address).toHaveBeenCalledTimes(3);
+    expect(address).toHaveBeenCalledTimes(5);
     expect(broadcastTransaction).not.toHaveBeenCalled();
   },
 );
@@ -206,7 +206,38 @@ it("refuses an RPC network change during the final recipient lookup", async () =
     code: "WALLET_SUBMIT_PAYMENT",
     causeCode: "WALLET_DECRYPTION_NETWORK_MISMATCH",
   });
-  expect(address).toHaveBeenCalledTimes(4);
+  expect(address).toHaveBeenCalledTimes(6);
+  expect(broadcastTransaction).not.toHaveBeenCalled();
+});
+
+it("refuses a payment disabled during the final RPC network check", async () => {
+  const {
+    prepared,
+    sign,
+    recipient,
+    address,
+    broadcastTransaction,
+    getBlockhashValidity,
+    getGenesisHash,
+  } = await payment();
+  getBlockhashValidity.mockImplementationOnce(async () => {
+    address.mockImplementationOnce(async () => {
+      getGenesisHash.mockImplementationOnce(async () => {
+        address.mockRejectedValueOnce(
+          Object.assign(new Error("recovery only"), {
+            code: "ReleasePolicyRecoveryOnly",
+          }),
+        );
+        return GENESIS;
+      });
+      return recipient;
+    });
+    return { slot: 2n, valid: true };
+  });
+  await expect(prepared.send(sign)).rejects.toMatchObject({
+    code: "WALLET_SUBMIT_PAYMENT",
+    causeCode: "ReleasePolicyRecoveryOnly",
+  });
   expect(broadcastTransaction).not.toHaveBeenCalled();
 });
 

@@ -47,7 +47,7 @@ Changed
 
 Fixed
 
-- Service-backed payments recheck the RPC genesis after the final recipient lookup, so a network change during the lookup blocks broadcast.
+- Service-backed payments recheck the RPC genesis after resolving recipients, then confirm service keys and payment policy for unregistered recipients before broadcast.
 - Wallet sync rechecks the RPC genesis before committing an expired payment settlement. A network change leaves the pending payment and its input reservation intact.
 - Wallet sync wipes plaintext buffers returned by `ShieldedKeys.decrypt`, including on cancellation and malformed replies. Custom key holders must return fresh buffers and transfer their ownership to the caller.
 - `PreparedPayment.send` refreshes the recipient after checking the blockhash so a key change during that RPC stops the payment before broadcast.

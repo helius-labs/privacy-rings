@@ -486,14 +486,20 @@ pub fn resolve_shielded_recipient<R: Rpc>(
     owner: Pubkey,
     service: impl FnOnce(Pubkey) -> Result<ShieldedAddress, ClientError>,
 ) -> Result<ShieldedAddress, ClientError> {
+    resolve_shielded_recipient_with_source(rpc, owner, service).map(|(address, _)| address)
+}
+
+pub(crate) fn resolve_shielded_recipient_with_source<R: Rpc>(
+    rpc: &R,
+    owner: Pubkey,
+    service: impl FnOnce(Pubkey) -> Result<ShieldedAddress, ClientError>,
+) -> Result<(ShieldedAddress, bool), ClientError> {
     if let Some(record) = try_resolve_registered_address(rpc, owner)? {
-        return Ok(record.address);
+        return Ok((record.address, false));
     }
     let service_address = check_service_recipient(owner, service(owner)?)?;
-    Ok(
-        try_resolve_registered_address(rpc, owner)?
-            .map_or(service_address, |record| record.address),
-    )
+    Ok(try_resolve_registered_address(rpc, owner)?
+        .map_or((service_address, true), |record| (record.address, false)))
 }
 
 /// Asynchronous variant of [`resolve_shielded_recipient`].
@@ -505,13 +511,26 @@ pub async fn resolve_shielded_recipient_async<R: AsyncRpc, F>(
 where
     F: std::future::Future<Output = Result<ShieldedAddress, ClientError>>,
 {
+    resolve_shielded_recipient_with_source_async(rpc, owner, service)
+        .await
+        .map(|(address, _)| address)
+}
+
+pub(crate) async fn resolve_shielded_recipient_with_source_async<R: AsyncRpc, F>(
+    rpc: &R,
+    owner: Pubkey,
+    service: impl FnOnce(Pubkey) -> F,
+) -> Result<(ShieldedAddress, bool), ClientError>
+where
+    F: std::future::Future<Output = Result<ShieldedAddress, ClientError>>,
+{
     if let Some(record) = try_resolve_registered_address_async(rpc, owner).await? {
-        return Ok(record.address);
+        return Ok((record.address, false));
     }
     let service_address = check_service_recipient(owner, service(owner).await?)?;
     Ok(try_resolve_registered_address_async(rpc, owner)
         .await?
-        .map_or(service_address, |record| record.address))
+        .map_or((service_address, true), |record| (record.address, false)))
 }
 
 fn check_service_recipient(

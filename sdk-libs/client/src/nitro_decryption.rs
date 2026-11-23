@@ -31,7 +31,9 @@ use crate::{
         now_ms, read_limited, AcceptedNitroPolicy, NitroCheckpointStore, NitroNetwork,
         NitroPolicyError, NitroPolicyReader, NitroTarget, NitroTrust,
     },
-    user_registry::{resolve_shielded_recipient, resolve_shielded_recipient_async},
+    user_registry::{
+        resolve_shielded_recipient_with_source, resolve_shielded_recipient_with_source_async,
+    },
     AsyncRpc, ClientError, Rpc,
 };
 
@@ -179,8 +181,11 @@ impl NitroDecryptionService {
         rpc: &R,
         owner: Pubkey,
     ) -> Result<NitroPaymentRecipient, ClientError> {
-        let address = self.resolve_recipient_address(rpc, owner).await?;
+        let (address, from_service) = self.resolve_recipient_address(rpc, owner).await?;
         self.require_chain(rpc.genesis_hash().await?)?;
+        if from_service {
+            self.confirm_payment_address(owner, address).await?;
+        }
         Ok(NitroPaymentRecipient::new(self.clone(), owner, address))
     }
 
@@ -188,8 +193,8 @@ impl NitroDecryptionService {
         &self,
         rpc: &R,
         owner: Pubkey,
-    ) -> Result<ShieldedAddress, ClientError> {
-        resolve_shielded_recipient_async(rpc, owner, |owner| async move {
+    ) -> Result<(ShieldedAddress, bool), ClientError> {
+        resolve_shielded_recipient_with_source_async(rpc, owner, |owner| async move {
             self.require_chain(rpc.genesis_hash().await?)?;
             self.address(owner).await.map_err(ClientError::from)
         })
@@ -202,14 +207,30 @@ impl NitroDecryptionService {
         rpc: &R,
         owner: Pubkey,
     ) -> Result<NitroPaymentRecipient, ClientError> {
-        let address = resolve_shielded_recipient(rpc, owner, |owner| {
-            self.require_chain(rpc.genesis_hash()?)?;
-            self.runtime()
-                .block_on(self.address(owner))
-                .map_err(ClientError::from)
-        })?;
+        let (address, from_service) =
+            resolve_shielded_recipient_with_source(rpc, owner, |owner| {
+                self.require_chain(rpc.genesis_hash()?)?;
+                self.runtime()
+                    .block_on(self.address(owner))
+                    .map_err(ClientError::from)
+            })?;
         self.require_chain(rpc.genesis_hash()?)?;
+        if from_service {
+            self.runtime()
+                .block_on(self.confirm_payment_address(owner, address))?;
+        }
         Ok(NitroPaymentRecipient::new(self.clone(), owner, address))
+    }
+
+    pub(crate) async fn confirm_payment_address(
+        &self,
+        owner: Pubkey,
+        expected: ShieldedAddress,
+    ) -> Result<(), ClientError> {
+        if self.address(owner).await? != expected {
+            return Err(NitroDecryptionError::PaymentRecipientChanged.into());
+        }
+        Ok(())
     }
 
     pub(crate) fn require_chain(&self, genesis_hash: [u8; 32]) -> Result<(), NitroDecryptionError> {
