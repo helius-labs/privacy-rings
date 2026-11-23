@@ -116,12 +116,27 @@ pub enum IndexerRequirement {
     Required,
 }
 
+/// Assembled proof inputs available to an in-process prover.
+pub enum LocalProvingInputs<'a> {
+    Transfer(&'a super::TransferInputs),
+    TransferRing(&'a super::TransferInputs),
+    RingAuthority(&'a super::TransferInputs),
+    Merge(&'a super::MergeInputs),
+    MergeRing(&'a super::MergeInputs),
+}
+
 /// One proof request: the body in the prover's wire format and what a backend
 /// needs to prove it. Downstream crates implement it for their own circuits;
 /// a [`Prover`] receives it whole.
 pub trait ProveRequest {
     /// `Zeroizing`, a body may carry key material.
     fn body(&self) -> Result<Zeroizing<String>, ClientError>;
+
+    /// Borrow the assembled inputs when this request has a native circuit.
+    /// Custom wire requests can use the default.
+    fn local_inputs(&self) -> Option<LocalProvingInputs<'_>> {
+        None
+    }
 
     /// The proving key the proof must come from; the prover's reported
     /// `provingKeySha256` is checked against it.
