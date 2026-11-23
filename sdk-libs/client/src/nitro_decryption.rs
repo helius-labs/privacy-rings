@@ -38,7 +38,7 @@ use crate::{
 };
 
 pub use self::keys::NitroDecryptionKeys;
-pub use crate::client::{NitroPaymentRecipient, NitroPaymentSubmission};
+pub use crate::client::{NitroPaymentRecipient, NitroPaymentSubmission, SignedNitroPayment};
 
 use self::{
     crypto::{random_bytes, response_secret, OVERHEAD},

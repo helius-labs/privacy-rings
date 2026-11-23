@@ -41,7 +41,7 @@ use crate::{indexer::SprIndexer, prover::tee::TeePolicy};
 
 pub use merge::{check_merge_record, MergeSubmission, ProvedMerge, MERGE_CU_LIMIT};
 #[cfg(feature = "reqwest")]
-pub use nitro_payment::{NitroPaymentRecipient, NitroPaymentSubmission};
+pub use nitro_payment::{NitroPaymentRecipient, NitroPaymentSubmission, SignedNitroPayment};
 pub use transaction::{SignedPrivateTransaction, Submission, UnsignedMessage};
 pub use validation::check_service_url;
 

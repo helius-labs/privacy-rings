@@ -85,13 +85,15 @@ superseded or unavailable policy stops either lookup.
 
 Build each output with `recipient.address()` and pass at least one resolved
 recipient to `Submission::with_nitro_recipients`. Every output to an attached
-owner must use those keys. Each send consumes the submission. After signing,
-the SDK verifies the exact message and signatures, checks its blockhash at
-confirmed commitment, then rechecks the recipients before broadcast. Custom RPC
-implementations must support `is_blockhash_valid`. Use `send_with_signer` or
-`send_with_signer_sync` to return a signed transaction from an external signer.
-If `ClientError::NitroPaymentSend` carries a transaction ID, reconcile it before
-building another payment.
+owner must use those keys. Call `sign` or `sign_with` to get a signed payment
+with the exact message and signatures verified. Record its transaction ID,
+blockhash and last valid block height before calling `send`. They let the
+application reconcile even if the send future is cancelled after dispatch.
+`send` consumes the signed payment and checks its blockhash at confirmed
+commitment, then rechecks the recipients before broadcast. Custom RPC
+implementations must support `is_blockhash_valid`. An error after entering the
+send path carries the same ID in `ClientError::NitroPaymentSend`.
+Blocking clients use `sign_sync` or `sign_with_sync`, then `send_sync`.
 
 Use `NitroDecryptionService::open` with the owner's Solana signer to recover notes
 under the service keys. The returned handle implements `ShieldedKeys` for

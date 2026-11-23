@@ -2,6 +2,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst},
     Arc, Mutex,
 };
+use std::time::Duration;
 
 use solana_account::Account;
 use solana_hash::Hash;
@@ -112,6 +113,9 @@ struct RegistryRpc {
     blockhash_valid: Mutex<Result<bool, &'static str>>,
     rotate_on_blockhash_check: AtomicBool,
     broadcasts: AtomicUsize,
+    stalled_broadcast: Mutex<Option<Signature>>,
+    stall_broadcast: AtomicBool,
+    broadcast_started: tokio::sync::Notify,
     confirmations: Mutex<Vec<Signature>>,
     broadcast_reply: Mutex<Result<Signature, &'static str>>,
 }
@@ -160,8 +164,16 @@ impl AsyncRpc for RegistryRpc {
             .map_err(|message| ClientError::Rpc(message.into()))
     }
 
-    async fn process_transaction(&self, _: VersionedTransaction) -> Result<Signature, ClientError> {
+    async fn process_transaction(
+        &self,
+        transaction: VersionedTransaction,
+    ) -> Result<Signature, ClientError> {
         self.broadcasts.fetch_add(1, SeqCst);
+        if self.stall_broadcast.load(SeqCst) {
+            *self.stalled_broadcast.lock().unwrap() = transaction.signatures.first().copied();
+            self.broadcast_started.notify_one();
+            std::future::pending::<()>().await;
+        }
         self.broadcast_reply
             .lock()
             .unwrap()
@@ -211,6 +223,9 @@ async fn the_signed_payment_is_checked_before_broadcast() {
             blockhash_valid: Mutex::new(Ok(true)),
             rotate_on_blockhash_check: AtomicBool::default(),
             broadcasts: AtomicUsize::default(),
+            stalled_broadcast: Mutex::default(),
+            stall_broadcast: AtomicBool::default(),
+            broadcast_started: tokio::sync::Notify::new(),
             confirmations: Mutex::default(),
             broadcast_reply: Mutex::new(Err("mock broadcast")),
         },
@@ -240,12 +255,15 @@ async fn the_signed_payment_is_checked_before_broadcast() {
         last_valid_block_height: 1,
     };
     let signer = RotatingSigner(&payer, &client.rpc().rotated);
+    let payment = submission()
+        .sign_unsigned(unsigned(1), async |prepared: &UnsignedMessage| {
+            sign_transaction(prepared.message.clone(), &[&signer])
+        })
+        .await
+        .unwrap();
+    assert_eq!(client.rpc().broadcasts.load(SeqCst), 0);
     assert!(matches!(
-        submission()
-            .send_unsigned(&client, unsigned(1), async |prepared: &UnsignedMessage| {
-                sign_transaction(prepared.message.clone(), &[&signer])
-            })
-            .await,
+        payment.send(&client).await,
         Err(ClientError::NitroDecryption(
             NitroDecryptionError::PaymentRecipientChanged
         ))
@@ -256,7 +274,7 @@ async fn the_signed_payment_is_checked_before_broadcast() {
     client.rpc().rotated.store(false, SeqCst);
     assert!(matches!(
         submission()
-            .send_unsigned(&client, unsigned(1), async |_: &UnsignedMessage| {
+            .sign_unsigned(unsigned(1), async |_: &UnsignedMessage| {
                 sign_transaction(unsigned(2).message, &[&payer])
             })
             .await,
@@ -267,16 +285,12 @@ async fn the_signed_payment_is_checked_before_broadcast() {
     for signatures in [vec![], vec![Signature::default()]] {
         assert!(matches!(
             submission()
-                .send_unsigned(
-                    &client,
-                    unsigned(1),
-                    async move |prepared: &UnsignedMessage| {
-                        Ok(VersionedTransaction {
-                            message: prepared.message.clone(),
-                            signatures,
-                        })
-                    }
-                )
+                .sign_unsigned(unsigned(1), async move |prepared: &UnsignedMessage| {
+                    Ok(VersionedTransaction {
+                        message: prepared.message.clone(),
+                        signatures,
+                    })
+                })
                 .await,
             Err(ClientError::SolanaTransactionSigning(_))
         ));
@@ -284,11 +298,14 @@ async fn the_signed_payment_is_checked_before_broadcast() {
     assert_eq!(client.rpc().broadcasts.load(SeqCst), 0);
 
     let result = submission()
-        .send_unsigned(&client, unsigned(1), async |prepared: &UnsignedMessage| {
+        .sign_unsigned(unsigned(1), async |prepared: &UnsignedMessage| {
             let signed = sign_transaction(prepared.message.clone(), &[&payer])?;
             client.rpc().foreign_network.store(true, SeqCst);
             Ok(signed)
         })
+        .await
+        .unwrap()
+        .send(&client)
         .await;
     assert!(matches!(
         result,
@@ -309,12 +326,16 @@ async fn the_signed_payment_is_checked_before_broadcast() {
 
     let signed_transaction = sign_transaction(unsigned(1).message, &[&payer]).unwrap();
     let expected = signed_transaction.signatures[0];
-    let send = || {
-        submission().send_unsigned(&client, unsigned(1), async |_: &UnsignedMessage| {
-            tokio::task::yield_now().await;
-            Ok(signed_transaction.clone())
-        })
+    let sign = async || {
+        submission()
+            .sign_unsigned(unsigned(1), async |_: &UnsignedMessage| {
+                tokio::task::yield_now().await;
+                Ok(signed_transaction.clone())
+            })
+            .await
+            .unwrap()
     };
+    let send = async || sign().await.send(&client).await;
     *client.rpc().blockhash_valid.lock().unwrap() = Ok(false);
     assert!(matches!(
         send().await,
@@ -360,5 +381,25 @@ async fn the_signed_payment_is_checked_before_broadcast() {
             if signature == expected && matches!(*source, ClientError::Rpc(ref message) if message == "mock confirmation")
     ));
     assert_eq!(client.rpc().broadcasts.load(SeqCst), 3);
+    assert_eq!(*client.rpc().confirmations.lock().unwrap(), [expected]);
+
+    let payment = sign().await;
+    let recorded = payment.signature();
+    assert_eq!(recorded, expected);
+    assert_eq!(payment.blockhash().as_bytes(), &[1; 32]);
+    assert_eq!(payment.last_valid_block_height(), 1);
+    assert_eq!(client.rpc().broadcasts.load(SeqCst), 3);
+    client.rpc().stall_broadcast.store(true, SeqCst);
+    tokio::select! {
+        _ = payment.send(&client) => panic!("the send is still in flight"),
+        result = tokio::time::timeout(Duration::from_secs(1), client.rpc().broadcast_started.notified()) => {
+            result.unwrap();
+        }
+    }
+    assert_eq!(
+        *client.rpc().stalled_broadcast.lock().unwrap(),
+        Some(recorded)
+    );
+    assert_eq!(client.rpc().broadcasts.load(SeqCst), 4);
     assert_eq!(*client.rpc().confirmations.lock().unwrap(), [expected]);
 }
