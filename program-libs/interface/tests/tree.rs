@@ -118,7 +118,7 @@ fn tree_creation_takes_four_allocation_steps() {
     nullifier_tree_params()
         .validate()
         .expect("valid production parameters");
-    assert_eq!(tree_account_size(), 40_080);
+    assert_eq!(tree_account_size(), 40_112);
     assert_eq!(tree_creation_step_count(), 4);
     assert!(tree_account_size() > 3 * TREE_ALLOCATION_STEP);
     assert!(tree_account_size() <= 4 * TREE_ALLOCATION_STEP);

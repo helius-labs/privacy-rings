@@ -17,6 +17,7 @@ use crate::instructions::settlement::{
     validate_sol_settlement, validate_spl_deposit_settlement, validate_spl_withdrawal_settlement,
     Settlement, SettlementAccountsSol, SplDepositAccounts, SplWithdrawalAccounts,
 };
+use crate::instructions::tree_owner::TreeOwnerSigners;
 
 pub struct TransactAccounts<'a> {
     pub payer: &'a AccountView,
@@ -24,6 +25,9 @@ pub struct TransactAccounts<'a> {
     /// `tree_index` selects its tree from this run.
     pub input_trees: ArrayVec<&'a mut AccountView, INPUT_TREES>,
     pub output_tree: &'a mut AccountView,
+    /// Signers for the owners of the trees; each tree is checked against them
+    /// where it is loaded.
+    pub(crate) tree_owners: TreeOwnerSigners<'a>,
     pub nullifier_pdas: ArrayVec<&'a mut AccountView, MAX_INPUTS>,
     pub owner_signers: &'a [AccountView],
     pub settlements: ArrayVec<Settlement<'a>, MAX_INTERFACE_TRANSFERS>,
@@ -42,9 +46,13 @@ impl<'a> TransactAccounts<'a> {
     /// 3. self program - program id match
     /// 4. system program - program id match
     /// 5. T input trees - mut, one per declared tree context, in context order
-    ///    5 + T: I nullifier PDAs - mut, one per input in `inputs` order
-    ///    5 + T + I: N signers - signer
-    ///    5 + T + I + N: transfer settlement accounts
+    ///    5 + T: K tree owners - signer, one per distinct owner of the output
+    ///    and input trees, in any order; K is 0 when no tree has an owner.
+    ///    They are the signers before the first nullifier PDA, which never
+    ///    signs.
+    ///    5 + T + K: I nullifier PDAs - mut, one per input in `inputs` order
+    ///    5 + T + K + I: N signers - signer
+    ///    5 + T + K + I + N: transfer settlement accounts
     ///    A cached selector's read cache follows all settlement accounts when
     ///    it reads, then its writable write cache and writer (signer) when it
     ///    writes.
@@ -64,7 +72,7 @@ impl<'a> TransactAccounts<'a> {
 
     /// 1. Validate spl interface transfers.
     pub(crate) fn from_iter(
-        mut iter: AccountIterator<'a>,
+        iter: AccountIterator<'a>,
         ix: &TransactIxDataRef<'_>,
         payer: &'a AccountView,
         input_trees: ArrayVec<&'a mut AccountView, INPUT_TREES>,
@@ -74,10 +82,22 @@ impl<'a> TransactAccounts<'a> {
         // Check non-zero amounts and the protocol transfer bound.
         validate_interface_transfers(&ix.interface_transfers)?;
 
+        // 2. Take the tree-owner signers: every signer before the first
+        //    nullifier PDA. There is at least one input, and its PDA is not a
+        //    signer.
+        let remaining = iter.remaining_unchecked_mut()?;
+        let tree_owner_count = remaining
+            .iter()
+            .position(|account| !account.is_signer())
+            .unwrap_or(remaining.len());
+        let (tree_owner_signers, remaining) = remaining.split_at_mut(tree_owner_count);
+        let mut iter = AccountIterator::new(remaining);
+
         let mut this = Box::new(Self {
             payer,
             input_trees,
             output_tree,
+            tree_owners: TreeOwnerSigners::new(tree_owner_signers)?,
             nullifier_pdas: ArrayVec::new(),
             owner_signers: &[],
             settlements: ArrayVec::new(),
@@ -90,7 +110,7 @@ impl<'a> TransactAccounts<'a> {
         }
 
         let remaining = iter.remaining_unchecked_mut()?;
-        // 2. Search first account that is not signer.
+        // 3. Search first account that is not signer.
         let signer_count = remaining
             .iter()
             .position(|account| !account.is_signer())
@@ -104,7 +124,7 @@ impl<'a> TransactAccounts<'a> {
         }
         let (owner_signers, settlement_accounts) = remaining.split_at_mut(signer_count);
         this.owner_signers = owner_signers;
-        // 3. Check transfer settlement accounts: exactly one group per leg, sized
+        // 4. Check transfer settlement accounts: exactly one group per leg, sized
         //    by the shared layout the event parser also reads.
         let settlement_account_count = ix
             .interface_transfers

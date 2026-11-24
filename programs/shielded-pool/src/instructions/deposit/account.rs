@@ -18,6 +18,7 @@ use crate::instructions::{
         validate_sol_settlement, validate_spl_deposit_settlement, Settlement,
         SettlementAccountsSol, SplDepositAccounts, ValidatedSplSettlement,
     },
+    tree_owner::TreeOwnerSigners,
 };
 
 /// One deposited asset: its validated settlement accounts plus the asset
@@ -42,6 +43,9 @@ pub struct DepositAccounts<'a> {
     /// Settlement groups in account order: the SOL group first when present,
     /// then one group per SPL mint. `DepositEntry::asset_index` indexes this.
     pub groups: Vec<DepositAssetGroup<'a>>,
+    /// The accounts after the settlement groups: the tree's owner, signing,
+    /// when the tree has one, and nothing otherwise.
+    pub(crate) tree_owners: TreeOwnerSigners<'a>,
 }
 
 impl<'a> DepositAccounts<'a> {
@@ -51,7 +55,9 @@ impl<'a> DepositAccounts<'a> {
     /// group reads (`token_program`, `mint`, `user_token`, `spl_interface`). The
     /// instruction data declares the layout, so nothing is inferred from the
     /// account count: too few accounts hits NotEnoughAccountKeys and too many
-    /// leaves the iterator non-empty (InvalidSettlementAccounts).
+    /// leaves an account the tree's owner check does not use
+    /// (InvalidSettlementAccounts). A tree with an owner takes that owner,
+    /// signing, as the one account after the groups.
     pub fn validate_and_parse<const HAS_RING: bool>(
         program_id: &Address,
         accounts: &'a mut [AccountView],
@@ -144,11 +150,18 @@ impl<'a> DepositAccounts<'a> {
             }
             groups.push(group);
         }
-        if !iter.iterator_is_empty() {
-            return Err(ShieldedPoolError::InvalidSettlementAccounts.into());
-        }
+        // Only the tree's owner may follow the settlement groups. The
+        // processor checks it against the tree once the tree is loaded.
+        let tree_owners = TreeOwnerSigners::new(iter.remaining_unchecked()?)?;
 
-        Ok((Self { tree, groups }, ring_program_id))
+        Ok((
+            Self {
+                tree,
+                groups,
+                tree_owners,
+            },
+            ring_program_id,
+        ))
     }
 }
 

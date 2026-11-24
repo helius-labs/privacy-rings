@@ -1,7 +1,6 @@
-use crate::instructions::cache::write::CacheWrite;
+use crate::instructions::{cache::write::CacheWrite, tree_owner::TreeOwnerSigners};
 use pinocchio::{error::ProgramError, AccountView};
 use spr_account_checks::AccountIterator;
-use spr_interface::error::ShieldedPoolError;
 
 /// The writable cache a merge names, the signer that must hold its write
 /// authority, and the destination slot.
@@ -11,12 +10,14 @@ pub struct MergeCacheAccounts<'info> {
     pub slot: u8,
 }
 
-/// The trailing accounts both merge rails share. Neither rail accepts any
-/// account beyond them.
+/// The trailing accounts both merge rails share: the cache accounts when the
+/// merge writes a cache, then one signer per distinct owner of `input_tree`
+/// and `output_tree`. Neither rail accepts any account beyond them; the
+/// processor checks the signers against the trees once they are loaded.
 pub(crate) fn parse_cache_accounts<'info>(
     mut iter: AccountIterator<'info>,
     cache_slot: Option<u8>,
-) -> Result<Option<MergeCacheAccounts<'info>>, ProgramError> {
+) -> Result<(Option<MergeCacheAccounts<'info>>, TreeOwnerSigners<'info>), ProgramError> {
     let accounts = match cache_slot {
         Some(slot) => Some(MergeCacheAccounts {
             cache: iter.next_mut("cache")?,
@@ -25,10 +26,8 @@ pub(crate) fn parse_cache_accounts<'info>(
         }),
         None => None,
     };
-    if !iter.remaining_unchecked_mut()?.is_empty() {
-        return Err(ShieldedPoolError::InvalidMergeShape.into());
-    }
-    Ok(accounts)
+    let tree_owners = TreeOwnerSigners::new(iter.remaining_unchecked()?)?;
+    Ok((accounts, tree_owners))
 }
 
 /// Load the cache a merge writes, if it names one: the writer, the expiry and

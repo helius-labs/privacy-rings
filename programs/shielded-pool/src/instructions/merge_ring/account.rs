@@ -8,6 +8,7 @@ use spr_interface::{
 use crate::instructions::{
     merge::cache::{parse_cache_accounts, MergeCacheAccounts},
     ring_config::loader::load_active_ring_config,
+    tree_owner::TreeOwnerSigners,
 };
 
 /// Validated accounts for `merge_ring`, in loader order: `input_tree` and
@@ -25,6 +26,7 @@ pub struct MergeRingAccounts<'a> {
     pub payer: &'a AccountView,
     pub nullifier_pdas: ArrayVec<&'a mut AccountView, MAX_MERGE_INPUTS>,
     pub cache: Option<MergeCacheAccounts<'a>>,
+    pub(crate) tree_owners: TreeOwnerSigners<'a>,
     /// The calling ring's `program_id`, read from the signed `ring_config`. Bound
     /// into the proof as the UTXO `ring_program_id`.
     pub ring_program_id: Address,
@@ -56,9 +58,10 @@ impl<'a> MergeRingAccounts<'a> {
                 .try_push(iter.next_mut("nullifier_pda")?)
                 .map_err(|_| ShieldedPoolError::InvalidMergeShape)?;
         }
-        let cache = parse_cache_accounts(iter, cache_slot)?;
+        let (cache, tree_owners) = parse_cache_accounts(iter, cache_slot)?;
         Ok(Self {
             cache,
+            tree_owners,
             input_tree,
             output_tree,
             payer,

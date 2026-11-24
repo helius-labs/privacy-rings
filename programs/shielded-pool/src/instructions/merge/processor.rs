@@ -34,6 +34,7 @@ use crate::instructions::{
         bool_field, check_field_element, check_field_elements, check_nonzero_field_elements,
         check_not_expired, tree_error,
     },
+    tree_owner::TreeOwnerSigners,
 };
 
 pub(crate) struct MergeCoreAccounts<'a> {
@@ -41,6 +42,7 @@ pub(crate) struct MergeCoreAccounts<'a> {
     pub output_tree: &'a mut AccountView,
     pub payer: &'a AccountView,
     pub nullifier_pdas: ArrayVec<&'a mut AccountView, MAX_MERGE_INPUTS>,
+    pub tree_owners: TreeOwnerSigners<'a>,
 }
 
 pub(crate) fn validate_field_elements(ix: &MergeTransactIxDataRef<'_>) -> ProgramResult {
@@ -107,6 +109,7 @@ pub fn process_merge_transact_ix(accounts: &mut [AccountView], data: &[u8]) -> P
             output_tree: merge_accounts.output_tree,
             payer: merge_accounts.payer,
             nullifier_pdas: merge_accounts.nullifier_pdas,
+            tree_owners: merge_accounts.tree_owners,
         },
         &ix,
         MergeOwnerBinding::Default {
@@ -151,6 +154,7 @@ pub(crate) fn process_merge_core(
             TREE_ACCOUNT_DISCRIMINATOR,
         )
         .map_err(tree_error)?;
+        accounts.tree_owners.check(&tree)?;
         let allow_dummy_inputs =
             tree.dummy_input_headroom().map_err(tree_error)? >= ix.nullifiers.len() as u64;
         let mut derived = MergeProofInputs {
@@ -198,6 +202,12 @@ pub(crate) fn process_merge_core(
             TREE_ACCOUNT_DISCRIMINATOR,
         )
         .map_err(tree_error)?;
+        accounts.tree_owners.check(&tree)?;
+        // Both trees are loaded: a trailing account neither needed is not
+        // part of the account list.
+        accounts
+            .tree_owners
+            .finish(ShieldedPoolError::InvalidMergeShape)?;
         derived.output_tree_id = tree.tree_id_array();
         if let Some((cache, _)) = cache.as_ref() {
             cache.check_output_tree(tree.tree_id())?;

@@ -92,7 +92,7 @@ fn process_deposit_internal<'a, const HAS_RING: bool>(
         return Err(ShieldedPoolError::EmptyDepositBatch.into());
     }
 
-    let (parsed, ring_program_id) =
+    let (mut parsed, ring_program_id) =
         DepositAccounts::validate_and_parse::<HAS_RING>(&crate::ID, accounts, assets)?;
 
     let zero = [0u8; 32];
@@ -113,6 +113,10 @@ fn process_deposit_internal<'a, const HAS_RING: bool>(
     let mut tree =
         TreeAccount::from_account_view_mut(parsed.tree, &crate::ID, TREE_ACCOUNT_DISCRIMINATOR)
             .map_err(ShieldedPoolError::from)?;
+    parsed.tree_owners.check(&tree)?;
+    parsed
+        .tree_owners
+        .finish(ShieldedPoolError::InvalidSettlementAccounts)?;
     let tree_id = tree.tree_id_array();
     let first_output_leaf_index = tree.utxo_tree().next_index();
 

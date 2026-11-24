@@ -29,6 +29,12 @@ use crate::instructions::{
 pub fn process_create_tree(accounts: &mut [AccountView], ix_data: &[u8]) -> ProgramResult {
     let data = CreateTreeData::try_from_slice(ix_data)
         .map_err(caused_by(ShieldedPoolError::InvalidInstructionData))?;
+    let owner = data.owner.map(|owner| owner.to_bytes());
+    // Zero means unowned in the account, so it cannot name an owner. Rejected
+    // here like the other parameters, before the first step takes lamports.
+    if owner == Some([0u8; 32]) {
+        return Err(ShieldedPoolError::InvalidTreeOwner.into());
+    }
     // Every later step must repeat these bytes, so reject what `init` would
     // reject before the first step records them and takes the lamports.
     data.fees.validate().map_err(tree_error)?;
@@ -105,7 +111,7 @@ pub fn process_create_tree(accounts: &mut [AccountView], ix_data: &[u8]) -> Prog
     let mut tree_data = tree
         .try_borrow_mut()
         .map_err(|_| ProgramError::AccountBorrowFailed)?;
-    TreeAccount::init(
+    let mut tree_account = TreeAccount::init(
         &mut tree_data,
         TREE_ACCOUNT_DISCRIMINATOR,
         STATE_HEIGHT as u8,
@@ -115,5 +121,10 @@ pub fn process_create_tree(accounts: &mut [AccountView], ix_data: &[u8]) -> Prog
         data.fees,
     )
     .map_err(tree_error)?;
+    // The owner is part of the instruction data the first step recorded, so
+    // every step named the same one.
+    if let Some(owner) = owner {
+        tree_account.assign_owner(owner).map_err(tree_error)?;
+    }
     Ok(())
 }

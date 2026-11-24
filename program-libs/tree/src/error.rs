@@ -36,4 +36,8 @@ pub enum TreeError {
     FeeTooHigh,
     #[error("poseidon hash of a tree node failed")]
     Hash,
+    #[error("tree already has an owner")]
+    OwnerAlreadyAssigned,
+    #[error("tree owner must not be the zero address")]
+    ZeroTreeOwner,
 }

@@ -138,7 +138,13 @@ fn process_resolved_transact(
         ix,
         clock.slot,
         output_is_input_tree,
+        &mut transact_accounts.tree_owners,
     )?;
+    // Every tree is loaded: a leading signer no tree needed is not part of
+    // the account list.
+    transact_accounts
+        .tree_owners
+        .finish(ShieldedPoolError::InvalidTransactShape)?;
     collect_tree_fee(
         transact_accounts.payer,
         transact_accounts.output_tree,
