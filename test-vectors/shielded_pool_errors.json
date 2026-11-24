@@ -80,5 +80,8 @@
   "TreeFeeTooHigh": 7080,
   "TreeCreationMismatch": 7081,
   "NonCanonicalMergeCiphertext": 7082,
-  "CircuitFeatureDisabled": 7083
+  "CircuitFeatureDisabled": 7083,
+  "TreeOwnerMustSign": 7084,
+  "InvalidTreeOwner": 7085,
+  "TreeNotResizable": 7086
 }

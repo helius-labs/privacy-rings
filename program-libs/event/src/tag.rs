@@ -43,6 +43,10 @@ pub const RING_AUTHORITY_TRANSACT: u8 = 21;
 pub const CREATE_CACHE: u8 = 22;
 pub const CLOSE_CACHE: u8 = 23;
 
+/// Permissionless: grows a tree account created before trees could have an
+/// owner to the current layout, leaving it unowned.
+pub const RESIZE_TREE: u8 = 24;
+
 /// Implemented instruction tags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -71,6 +75,7 @@ pub enum InstructionTag {
     RingAuthorityTransact = RING_AUTHORITY_TRANSACT,
     CreateCache = CREATE_CACHE,
     CloseCache = CLOSE_CACHE,
+    ResizeTree = RESIZE_TREE,
 }
 
 impl TryFrom<u8> for InstructionTag {
@@ -102,6 +107,7 @@ impl TryFrom<u8> for InstructionTag {
             RING_AUTHORITY_TRANSACT => Ok(Self::RingAuthorityTransact),
             CREATE_CACHE => Ok(Self::CreateCache),
             CLOSE_CACHE => Ok(Self::CloseCache),
+            RESIZE_TREE => Ok(Self::ResizeTree),
             _ => Err(()),
         }
     }

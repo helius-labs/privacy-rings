@@ -34,6 +34,7 @@ impl CreateTree {
             tree_id: self.tree_id,
             nullifier_params: self.nullifier_params,
             fees: self.fees,
+            owner: None,
         };
         Instruction {
             program_id: PROGRAM_ID_PUBKEY,

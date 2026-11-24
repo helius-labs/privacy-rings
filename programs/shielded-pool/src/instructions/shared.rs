@@ -26,6 +26,7 @@ pub fn tree_error(error: TreeError) -> ProgramError {
         TreeError::TreeIsFull => ShieldedPoolError::StateAppendFailed.into(),
         TreeError::FeeOverflow => ShieldedPoolError::InvalidForesterFee.into(),
         TreeError::FeeTooHigh => ShieldedPoolError::TreeFeeTooHigh.into(),
+        TreeError::ZeroTreeOwner => ShieldedPoolError::InvalidTreeOwner.into(),
         _ => {
             print_collapsed(ShieldedPoolError::InvalidTreeAccounts, &error);
             ShieldedPoolError::InvalidTreeAccounts.into()

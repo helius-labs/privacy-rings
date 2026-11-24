@@ -1,5 +1,5 @@
 use super::cache::{parse_cache_accounts, MergeCacheAccounts};
-use crate::instructions::shared::caused_by;
+use crate::instructions::{shared::caused_by, tree_owner::TreeOwnerSigners};
 use arrayvec::ArrayVec;
 use pinocchio::{
     address::{address_eq, Address},
@@ -28,6 +28,7 @@ pub struct MergeTransactAccounts<'a> {
     pub user_record: &'a AccountView,
     pub nullifier_pdas: ArrayVec<&'a mut AccountView, MAX_MERGE_INPUTS>,
     pub cache: Option<MergeCacheAccounts<'a>>,
+    pub(crate) tree_owners: TreeOwnerSigners<'a>,
 }
 
 impl<'a> MergeTransactAccounts<'a> {
@@ -55,9 +56,10 @@ impl<'a> MergeTransactAccounts<'a> {
                 .try_push(iter.next_mut("nullifier_pda")?)
                 .map_err(|_| ShieldedPoolError::InvalidMergeShape)?;
         }
-        let cache = parse_cache_accounts(iter, cache_slot)?;
+        let (cache, tree_owners) = parse_cache_accounts(iter, cache_slot)?;
         Ok(Self {
             cache,
+            tree_owners,
             input_tree,
             output_tree,
             payer,

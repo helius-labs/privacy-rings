@@ -16,6 +16,7 @@ use super::{account::TransactAccounts, event::TreeWrite, verify::TransactProofIn
 use crate::instructions::{
     nullifier_pda::{create_nullifier_pdas, credit_output_tree_fee, InputTreeResult},
     shared::tree_error,
+    tree_owner::TreeOwnerSigners,
 };
 
 /// Resolve every declared input tree's roots into its proof tree slot, assign
@@ -49,6 +50,7 @@ pub(crate) fn apply_input_trees(
     let TransactAccounts {
         payer,
         input_trees,
+        tree_owners,
         nullifier_pdas,
         ..
     } = accounts;
@@ -86,6 +88,7 @@ pub(crate) fn apply_input_trees(
                 TREE_ACCOUNT_DISCRIMINATOR,
             )
             .map_err(tree_error)?;
+            tree_owners.check(&input_tree)?;
             allow_dummy_inputs &=
                 input_tree.dummy_input_headroom().map_err(tree_error)? >= tree_input_count as u64;
             tree_slots
@@ -161,6 +164,7 @@ pub(crate) fn apply_output_tree(
     ix: &TransactIxDataRef<'_>,
     slot: u64,
     is_input_tree: bool,
+    tree_owners: &mut TreeOwnerSigners<'_>,
 ) -> Result<(TreeWrite, u64), ProgramError> {
     let output_tree_address = output_tree_account.address().to_bytes();
     let mut output_tree = TreeAccount::from_account_view_mut(
@@ -169,6 +173,7 @@ pub(crate) fn apply_output_tree(
         TREE_ACCOUNT_DISCRIMINATOR,
     )
     .map_err(tree_error)?;
+    tree_owners.check(&output_tree)?;
     // Leaf index the first output lands at; the rest follow sequentially.
     let first_output_leaf_index = output_tree.utxo_tree().next_index();
     output_tree

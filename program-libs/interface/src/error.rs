@@ -191,6 +191,12 @@ pub enum ShieldedPoolError {
     NonCanonicalMergeCiphertext = 7082,
     #[error("circuit feature is disabled in this program build")]
     CircuitFeatureDisabled = 7083,
+    #[error("tree owner must sign an instruction that writes its tree")]
+    TreeOwnerMustSign = 7084,
+    #[error("tree owner must not be the zero address")]
+    InvalidTreeOwner = 7085,
+    #[error("tree account is not at the size resize_tree grows")]
+    TreeNotResizable = 7086,
 }
 
 impl From<ShieldedPoolError> for ProgramError {
@@ -221,6 +227,7 @@ impl From<TreeError> for ShieldedPoolError {
             TreeError::TreeIsFull => ShieldedPoolError::StateAppendFailed,
             TreeError::FeeOverflow => ShieldedPoolError::InvalidForesterFee,
             TreeError::FeeTooHigh => ShieldedPoolError::TreeFeeTooHigh,
+            TreeError::ZeroTreeOwner => ShieldedPoolError::InvalidTreeOwner,
             _ => ShieldedPoolError::InvalidTreeAccounts,
         }
     }
@@ -321,6 +328,9 @@ mod tests {
                 TreeCreationMismatch => 7081,
                 NonCanonicalMergeCiphertext => 7082,
                 CircuitFeatureDisabled => 7083,
+                TreeOwnerMustSign => 7084,
+                InvalidTreeOwner => 7085,
+                TreeNotResizable => 7086,
             }
         }
 
@@ -409,6 +419,9 @@ mod tests {
             TreeCreationMismatch,
             NonCanonicalMergeCiphertext,
             CircuitFeatureDisabled,
+            TreeOwnerMustSign,
+            InvalidTreeOwner,
+            TreeNotResizable,
         ];
         let codes = (7000_u32..).filter(|code| *code != 7063 && *code != 7072);
         for (variant, code) in variants.into_iter().zip(codes) {
@@ -420,7 +433,7 @@ mod tests {
             assert_eq!(variant as u32, code, "error codes must be contiguous");
         }
         // The list above must contain every live variant.
-        assert_eq!(variants.len(), 82, "variant count drifted");
+        assert_eq!(variants.len(), 85, "variant count drifted");
 
         let expected: std::collections::BTreeMap<String, u32> = serde_json::from_str(include_str!(
             "../../../test-vectors/shielded_pool_errors.json"

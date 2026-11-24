@@ -42,6 +42,7 @@ use crate::instructions::{
         create::process_create_protocol_config, pause_tree::process_pause_tree,
         update::process_update_protocol_config,
     },
+    resize_tree::process_resize_tree,
     ring_config::{
         create::process_create_ring_config, set_activation::process_set_ring_activation,
         update::process_update_ring_config, update_owner::process_update_ring_config_owner,
@@ -112,5 +113,6 @@ pub fn process_instruction(
         InstructionTag::CloseNullifierPdas => process_close_nullifier_pdas(accounts, payload),
         InstructionTag::SetTreeFees => process_set_tree_fees(accounts, payload),
         InstructionTag::ClaimTreeLamports => process_claim_tree_lamports(accounts, payload),
+        InstructionTag::ResizeTree => process_resize_tree(accounts, payload),
     }
 }

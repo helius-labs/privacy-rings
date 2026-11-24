@@ -19,8 +19,11 @@ type NullifierBatch = Batch<NULLIFIER_TREE_ZKP_BATCHES>;
 #[test]
 fn account_layout_is_pinned() {
     assert_eq!(NULLIFIER_TREE_ZKP_BATCHES, 100);
-    assert_eq!(size_of::<Layout>(), 40_080);
-    assert_eq!(TreeAccount::account_size(), 40_080);
+    assert_eq!(size_of::<Layout>(), 40_112);
+    assert_eq!(TreeAccount::account_size(), 40_112);
+    assert_eq!(offset_of!(Layout, owner), 40_080);
+    assert_eq!(TreeAccount::owner_offset(), 40_080);
+    assert_eq!(TreeAccount::legacy_account_size(), 40_080);
     assert_eq!(offset_of!(Layout, tree_id), 2);
     assert_eq!(offset_of!(Layout, fees), 8);
     assert_eq!(offset_of!(Layout, fee_balance), 32);
@@ -51,11 +54,11 @@ fn account_layout_is_pinned() {
     assert_eq!(offset_of!(NullifierBatch, start_index), 48);
 }
 
-/// Reject both the old layout without pending-value buffers and the
-/// accidentally reduced five-root layout.
+/// Reject the layout without the trailing owner, the old layout without
+/// pending-value buffers and the accidentally reduced five-root layout.
 #[test]
 fn previous_layout_size_is_rejected() {
-    for size in [39_952, 18_608] {
+    for size in [TreeAccount::legacy_account_size(), 39_952, 18_608] {
         let mut bytes = vec![0u8; size];
         assert!(matches!(
             TreeAccount::from_bytes(&mut bytes, [2u8; 32]),
@@ -118,6 +121,112 @@ fn init_zeroes_reserved_header() {
     assert_eq!(layout.live_nullifier_pdas, 0);
     assert_eq!(layout.tree_id, 0x0102);
     assert_eq!(bytes.get(2..4), Some(&[0x02, 0x01][..]));
+}
+
+fn init_tree(bytes: &mut [u8]) -> TreeAccount<'_> {
+    TreeAccount::init(
+        bytes,
+        7,
+        UTXO_TREE_HEIGHT as u8,
+        [2u8; 32],
+        1,
+        NullifierTreeInitParams::default(),
+        TreeFeeSchedule {
+            fee_per_tree: 0,
+            append_reimbursement: 0,
+            close_reimbursement: 0,
+        },
+    )
+    .expect("initialize tree")
+}
+
+/// `init` clears a stale owner, an owner is assigned once and never to the
+/// zero address, and the raw reader agrees with the loaded account.
+#[test]
+fn owner_is_unset_by_init_and_assigned_once() {
+    let mut bytes = vec![0u8; TreeAccount::account_size()];
+    bytes
+        .get_mut(TreeAccount::owner_offset()..)
+        .expect("owner bytes")
+        .fill(0xa5);
+    {
+        let mut tree = init_tree(&mut bytes);
+        assert_eq!(tree.owner(), None);
+        assert_eq!(tree.assign_owner([0u8; 32]), Err(TreeError::ZeroTreeOwner));
+        assert_eq!(tree.owner(), None);
+        assert_eq!(tree.assign_owner([9u8; 32]), Ok(()));
+        assert_eq!(tree.owner(), Some([9u8; 32]));
+        assert_eq!(
+            tree.assign_owner([8u8; 32]),
+            Err(TreeError::OwnerAlreadyAssigned)
+        );
+        assert_eq!(tree.owner(), Some([9u8; 32]));
+    }
+    assert_eq!(TreeAccount::read_owner(&bytes), Some([9u8; 32]));
+    assert_eq!(
+        bytes.get(TreeAccount::owner_offset()..),
+        Some(&[9u8; 32][..])
+    );
+    let mut reloaded = TreeAccount::from_bytes(&mut bytes, [2u8; 32]).expect("reload tree");
+    assert_eq!(reloaded.owner(), Some([9u8; 32]));
+    assert_eq!(reloaded.utxo_tree().next_index(), 0);
+}
+
+/// The raw reader reports no owner for an unowned tree and for data that is
+/// not a current-size tree account, including the pre-owner size.
+#[test]
+fn read_owner_is_none_for_unowned_and_wrong_size_data() {
+    let mut bytes = vec![0u8; TreeAccount::account_size()];
+    init_tree(&mut bytes);
+    assert_eq!(TreeAccount::read_owner(&bytes), None);
+
+    let nonzero = vec![0xa5u8; TreeAccount::account_size()];
+    assert_eq!(TreeAccount::read_owner(&nonzero), Some([0xa5u8; 32]));
+    for len in [
+        TreeAccount::legacy_account_size(),
+        TreeAccount::account_size() + 1,
+        0,
+    ] {
+        assert_eq!(TreeAccount::read_owner(&vec![0xa5u8; len]), None);
+    }
+}
+
+/// Growing a pre-owner account by zero bytes yields a loadable, unowned tree
+/// whose other fields did not move.
+#[test]
+fn legacy_account_grown_with_zeroes_is_an_unowned_tree() {
+    let mut bytes = vec![0u8; TreeAccount::account_size()];
+    {
+        let mut tree = init_tree(&mut bytes);
+        let mut leaf = [0u8; 32];
+        leaf[31] = 5;
+        tree.utxo_tree().append(leaf, 3).expect("append leaf");
+    }
+    let root_before = bytes
+        .get(TreeAccount::state_root_offset()..TreeAccount::state_root_offset() + 32)
+        .expect("root bytes")
+        .to_vec();
+
+    let mut legacy = bytes
+        .get(..TreeAccount::legacy_account_size())
+        .expect("legacy prefix")
+        .to_vec();
+    assert!(matches!(
+        TreeAccount::from_bytes(&mut legacy, [2u8; 32]),
+        Err(TreeError::Deserialize)
+    ));
+    legacy.resize(TreeAccount::account_size(), 0);
+
+    {
+        let mut tree = TreeAccount::from_bytes(&mut legacy, [2u8; 32]).expect("load grown tree");
+        assert_eq!(tree.owner(), None);
+        assert_eq!(tree.tree_id(), 1);
+        assert_eq!(tree.utxo_tree().next_index(), 1);
+    }
+    assert_eq!(
+        legacy.get(TreeAccount::state_root_offset()..TreeAccount::state_root_offset() + 32),
+        Some(root_before.as_slice())
+    );
 }
 
 #[test]

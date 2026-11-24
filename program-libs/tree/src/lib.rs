@@ -108,6 +108,9 @@ pub const PAUSED: u8 = 2;
 /// Bytes reserved in the account header for future tree metadata.
 pub const TREE_RESERVED_BYTES: usize = 24;
 
+/// Bytes of the trailing owner address.
+pub const TREE_OWNER_BYTES: usize = 32;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct TreeAccountLayout<const UTXO_HEIGHT: usize, const ZKP_BATCHES: usize> {
@@ -124,6 +127,12 @@ pub struct TreeAccountLayout<const UTXO_HEIGHT: usize, const ZKP_BATCHES: usize>
     pub _reserved: [u8; TREE_RESERVED_BYTES],
     pub utxo: UtxoTreeLayout<UTXO_HEIGHT>,
     pub nullifier: NullifierTreeLayout<ZKP_BATCHES>,
+    /// The address that must sign every deposit, transact and merge that
+    /// writes this tree; all zero for a tree anyone may use. It is the last
+    /// field so an account created before it existed grows into this layout
+    /// without moving a byte, and the zero fill of that growth reads as
+    /// unowned.
+    pub owner: [u8; TREE_OWNER_BYTES],
 }
 
 unsafe impl<C: ConfigCore, const UH: usize, const ZKP_BATCHES: usize> ZeroCopy<C>
@@ -186,6 +195,29 @@ impl<'a> TreeAccount<'a> {
         core::mem::offset_of!(SppTreeLayout, tree_id)
     }
 
+    /// Byte offset of the owner address, the last field of the account.
+    pub const fn owner_offset() -> usize {
+        core::mem::offset_of!(SppTreeLayout, owner)
+    }
+
+    /// Byte length of a tree account created before the owner field existed.
+    /// Such an account holds every other field at its current offset and
+    /// becomes loadable once it is grown to [`Self::account_size`].
+    pub const fn legacy_account_size() -> usize {
+        Self::owner_offset()
+    }
+
+    /// The owner stored in raw tree-account data of the current size: `None`
+    /// for an unowned tree and for data of any other length.
+    pub fn read_owner(account_data: &[u8]) -> Option<[u8; TREE_OWNER_BYTES]> {
+        if account_data.len() != Self::account_size() {
+            return None;
+        }
+        let owner: [u8; TREE_OWNER_BYTES] =
+            account_data.get(Self::owner_offset()..)?.try_into().ok()?;
+        (owner != [0u8; TREE_OWNER_BYTES]).then_some(owner)
+    }
+
     pub fn init(
         bytes: &'a mut [u8],
         discriminator: u8,
@@ -217,6 +249,7 @@ impl<'a> TreeAccount<'a> {
         layout.fee_balance = 0;
         layout.live_nullifier_pdas = 0;
         layout._reserved = [0u8; TREE_RESERVED_BYTES];
+        layout.owner = [0u8; TREE_OWNER_BYTES];
 
         layout.utxo.init(utxo_tree_height as usize)?;
 
@@ -372,6 +405,28 @@ impl<'a> TreeAccount<'a> {
         let mut field = [0u8; 32];
         field[30..].copy_from_slice(&self.tree_id().to_be_bytes());
         field
+    }
+
+    /// The address that must sign user writes to this tree, `None` when anyone
+    /// may use it.
+    pub fn owner(&self) -> Option<[u8; TREE_OWNER_BYTES]> {
+        let owner = self.layout().owner;
+        (owner != [0u8; TREE_OWNER_BYTES]).then_some(owner)
+    }
+
+    /// Give an unowned tree its owner. Tree creation calls this once, right
+    /// after `init`; an owner never changes afterwards, because assigning one
+    /// to a tree that already holds other users' UTXOs would let the new
+    /// owner gate their funds. The zero address means unowned and is rejected.
+    pub fn assign_owner(&mut self, owner: [u8; TREE_OWNER_BYTES]) -> Result<(), TreeError> {
+        if owner == [0u8; TREE_OWNER_BYTES] {
+            return Err(TreeError::ZeroTreeOwner);
+        }
+        if self.owner().is_some() {
+            return Err(TreeError::OwnerAlreadyAssigned);
+        }
+        self.layout_mut().owner = owner;
+        Ok(())
     }
 
     pub fn state(&self) -> u8 {
