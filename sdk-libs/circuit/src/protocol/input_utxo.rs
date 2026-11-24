@@ -85,6 +85,20 @@ impl Utxo {
             poseidon(&[Field::zero(), Field::zero()])?,
         )
     }
+    #[inline(always)]
+    pub(super) fn hash_on_with(
+        &self,
+        ring_program_id: Option<&Field>,
+        owner_hash: &Field,
+        asset_hash: &Field,
+    ) -> Result<Field, CircuitError> {
+        let Some(ring_program_id) = ring_program_id else {
+            return self.hash_default_ring_with(owner_hash, asset_hash);
+        };
+        require_eq(self.ring_program_id, *ring_program_id);
+        require_eq(self.ring_data_hash, Field::zero());
+        self.hash_with(owner_hash, asset_hash)
+    }
     fn hash_with_ring(
         &self,
         owner_hash: &Field,

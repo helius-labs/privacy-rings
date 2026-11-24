@@ -47,6 +47,13 @@ impl ConfidentialTransaction {
         Ok(transaction)
     }
 
+    /// Outputs added earlier keep their rings.
+    #[must_use]
+    pub fn with_ring(mut self, ring_program_id: Address) -> Self {
+        self.ring_program_id = Some(ring_program_id);
+        self
+    }
+
     /// Transfer to an explicitly selected ring: `Some(address)` selects a custom
     /// ring, and `None` selects the default ring.
     ///

@@ -77,6 +77,7 @@ pub struct DataUtxo<S> {
     spent: Option<SpentInput>,
     output_state: OutputState,
     unwrapped_data_hash: bool,
+    ring_program_id: Option<Field>,
 }
 impl<S> HasBalance for DataUtxo<S> {
     fn balance(&self) -> &Balance {
@@ -96,7 +97,14 @@ impl<S: Default> DataUtxo<S> {
 }
 impl<S: DataHash + Clone> DataUtxo<S> {
     pub fn new_mut(input: &Utxo, state: &S) -> Result<Self, CircuitError> {
-        Self::spend(input, state.clone(), None)
+        Self::spend(input, state.clone(), None, None)
+    }
+    pub fn new_mut_on(
+        ring_program_id: &Field,
+        input: &Utxo,
+        state: &S,
+    ) -> Result<Self, CircuitError> {
+        Self::spend(input, state.clone(), None, Some(ring_program_id))
     }
 }
 impl<S: DataHash> DataUtxo<S> {
@@ -104,14 +112,16 @@ impl<S: DataHash> DataUtxo<S> {
         input: &Utxo,
         state: S,
         address: Option<Field>,
+        ring_program_id: Option<&Field>,
     ) -> Result<Self, CircuitError> {
-        Self::spend_with_hash(input, state, address, false)
+        Self::spend_with_hash(input, state, address, false, ring_program_id)
     }
     fn spend_with_hash(
         input: &Utxo,
         state: S,
         address: Option<Field>,
         unwrapped: bool,
+        ring_program_id: Option<&Field>,
     ) -> Result<Self, CircuitError> {
         require_eq(input.domain, UTXO_DOMAIN);
         let expected = if unwrapped {
@@ -122,7 +132,7 @@ impl<S: DataHash> DataUtxo<S> {
         require_eq(input.data_hash, expected);
         let owner_hash = input.owner.hash()?;
         let asset_hash = hash_bytes(&input.asset)?;
-        let input_hash = input.hash_default_ring_with(&owner_hash, &asset_hash)?;
+        let input_hash = input.hash_on_with(ring_program_id, &owner_hash, &asset_hash)?;
         Ok(Self {
             balance: Balance::new(input.owner, input.asset, u128::from(input.amount)),
             state,
@@ -130,6 +140,7 @@ impl<S: DataHash> DataUtxo<S> {
             spent: Some(input.spent(input_hash)),
             output_state: OutputState::Default,
             unwrapped_data_hash: unwrapped,
+            ring_program_id: ring_program_id.copied(),
         })
     }
     pub fn output(&self) -> Result<Option<Output>, CircuitError> {
@@ -176,6 +187,7 @@ impl<S> DataUtxo<S> {
             spent: None,
             output_state: OutputState::Default,
             unwrapped_data_hash: false,
+            ring_program_id: None,
         }
     }
     pub fn with_asset(mut self, asset: &[u8; 32]) -> Result<Self, CircuitError> {
@@ -185,6 +197,9 @@ impl<S> DataUtxo<S> {
     }
     pub fn spent_input(&self) -> Option<SpentInput> {
         self.spent
+    }
+    pub(in crate::protocol) fn ring_program_id(&self) -> Option<Field> {
+        self.ring_program_id
     }
     pub fn public_transfers(&self) -> &[crate::protocol::PublicTransfer] {
         &self.balance.public_transfers
@@ -211,7 +226,14 @@ impl DataUtxo<Field> {
         utxo
     }
     pub fn new_mut_with_hash(input: &Utxo, hash: &Field) -> Result<Self, CircuitError> {
-        Self::spend_with_hash(input, *hash, None, true)
+        Self::spend_with_hash(input, *hash, None, true, None)
+    }
+    pub fn new_mut_with_hash_on(
+        ring_program_id: &Field,
+        input: &Utxo,
+        hash: &Field,
+    ) -> Result<Self, CircuitError> {
+        Self::spend_with_hash(input, *hash, None, true, Some(ring_program_id))
     }
 }
 fn data_hash<S: DataHash>(address: Option<&Field>, state: &S) -> Result<Field, CircuitError> {
