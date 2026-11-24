@@ -24,6 +24,7 @@ use jsonrpsee::{
     types::error::ErrorCode,
 };
 use thiserror::Error;
+use tokio::sync::Semaphore;
 use tower::{Layer, Service};
 
 use super::{error_response, Call};
@@ -36,7 +37,11 @@ static REQUEST_HEADERS: [HeaderName; 3] = [
     HeaderName::from_static("x-api-key"),
     HeaderName::from_static("x-forwarded-for"),
 ];
-static RESPONSE_HEADERS: [HeaderName; 2] = [CONTENT_TYPE, RETRY_AFTER];
+static RESPONSE_HEADERS: [HeaderName; 3] = [
+    CONTENT_TYPE,
+    RETRY_AFTER,
+    HeaderName::from_static("x-helius-metering-units"),
+];
 
 /// An http(s) base without query or fragment, request paths append to it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,6 +93,8 @@ pub trait Resolve: Send + Sync + 'static {
 pub struct ForwardLimits {
     pub request_bytes: usize,
     pub timeout: Duration,
+    /// Requests in the layer at once, local and forwarded.
+    pub concurrent: usize,
 }
 
 pub struct ForwardLayer<Resolver> {
@@ -105,6 +112,7 @@ impl<Resolver> ForwardLayer<Resolver> {
                     .redirect(reqwest::redirect::Policy::none())
                     .retry(reqwest::retry::never())
                     .build()?,
+                admitted: Semaphore::new(limits.concurrent),
                 limits,
             }),
         })
@@ -165,6 +173,15 @@ where
         let mut inner = std::mem::replace(&mut self.inner, ready);
         let forwarder = self.forwarder.clone();
         Box::pin(async move {
+            // The server counts a call only after this layer, a forwarded call never reaches it.
+            let Ok(_admitted) = forwarder.admitted.try_acquire() else {
+                return Ok(error_response(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    None,
+                    ErrorCode::ServerIsBusy,
+                    ErrorCode::ServerIsBusy.message(),
+                ));
+            };
             let (parts, body) = request.into_parts();
             let Ok(collected) = Limited::new(body, forwarder.limits.request_bytes)
                 .collect()
@@ -203,6 +220,7 @@ where
 struct Forwarder<Resolver> {
     resolver: Resolver,
     http: reqwest::Client,
+    admitted: Semaphore,
     limits: ForwardLimits,
 }
 
@@ -285,6 +303,7 @@ mod tests {
     const LIMITS: ForwardLimits = ForwardLimits {
         request_bytes: 1024,
         timeout: Duration::from_secs(5),
+        concurrent: 8,
     };
 
     struct Only(&'static str, UpstreamUrl);
@@ -298,6 +317,8 @@ mod tests {
     #[derive(Clone)]
     struct ReceivedHops(Option<String>);
 
+    static UNITS: HeaderName = HeaderName::from_static("x-helius-metering-units");
+
     /// Answers `ringStatus` with the hop count it received.
     async fn upstream() -> (UpstreamUrl, ServerHandle) {
         let mut module = RpcModule::new(());
@@ -309,17 +330,22 @@ mod tests {
             })
             .unwrap();
         let server = ServerBuilder::default()
-            .set_http_middleware(tower::ServiceBuilder::new().map_request(
-                |mut request: HttpRequest| {
-                    let hops = request
-                        .headers()
-                        .get(&HOPS)
-                        .and_then(|hops| hops.to_str().ok());
-                    let hops = ReceivedHops(hops.map(str::to_owned));
-                    request.extensions_mut().insert(hops);
-                    request
-                },
-            ))
+            .set_http_middleware(
+                tower::ServiceBuilder::new()
+                    .map_request(|mut request: HttpRequest| {
+                        let hops = request
+                            .headers()
+                            .get(&HOPS)
+                            .and_then(|hops| hops.to_str().ok());
+                        let hops = ReceivedHops(hops.map(str::to_owned));
+                        request.extensions_mut().insert(hops);
+                        request
+                    })
+                    .map_response(|mut response: HttpResponse| {
+                        response.headers_mut().insert(&UNITS, 3.into());
+                        response
+                    }),
+            )
             .build(SocketAddr::from(([127, 0, 0, 1], 0)))
             .await
             .unwrap();
@@ -330,7 +356,14 @@ mod tests {
     fn service(
         url: UpstreamUrl,
     ) -> impl Service<HttpRequest, Response = HttpResponse, Error = BoxError> + Clone {
-        ForwardLayer::new(Only("ringStatus", url), LIMITS)
+        limited(url, LIMITS)
+    }
+
+    fn limited(
+        url: UpstreamUrl,
+        limits: ForwardLimits,
+    ) -> impl Service<HttpRequest, Response = HttpResponse, Error = BoxError> + Clone {
+        ForwardLayer::new(Only("ringStatus", url), limits)
             .unwrap()
             .layer(service_fn(|_request: HttpRequest| async {
                 Ok::<_, BoxError>(HttpResponse::new(HttpBody::from("local")))
@@ -372,6 +405,32 @@ mod tests {
             HttpRequest::post("/").extension(r#"[{"method":"ringStatus","id":1}]"#.to_owned()),
         ] {
             assert_eq!(answer(service.clone(), request).await.1, "local");
+        }
+        server.stop().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_forwarded_answer_keeps_its_metering_units() {
+        let (url, server) = upstream().await;
+        let request = call("ringStatus").body(HttpBody::from(
+            r#"{"jsonrpc":"2.0","id":1,"method":"ringStatus"}"#,
+        ));
+        let response = service(url).oneshot(request.unwrap()).await.unwrap();
+        assert_eq!(response.headers()[&UNITS], "3");
+        server.stop().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_call_above_the_concurrency_limit_is_refused_local_or_forwarded() {
+        let (url, server) = upstream().await;
+        let limits = ForwardLimits {
+            concurrent: 0,
+            ..LIMITS
+        };
+        for method in ["ringStatus", "getMerkleProofs"] {
+            let (status, body) = answer(limited(url.clone(), limits), call(method)).await;
+            assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{method}");
+            assert!(body.contains("-32009"), "{body}");
         }
         server.stop().unwrap();
     }

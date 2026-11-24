@@ -15,7 +15,7 @@ use jsonrpsee::{
     RpcModule,
 };
 use sea_orm::{
-    sea_query::{Expr, Func, OnConflict},
+    sea_query::{Expr, Func, OnConflict, Query, SimpleExpr},
     ColumnTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter, QueryOrder, Set,
 };
 use solana_pubkey::Pubkey;
@@ -122,7 +122,7 @@ impl Announced {
             methods: Set(serde_json::to_string(&self.methods)?),
             announced_at: Set(self.timestamp),
             approved_url: Set(None),
-            approved_at: Set(None),
+            approval_order: Set(None),
         };
         let written = Entity::insert(row)
             .on_conflict(
@@ -160,13 +160,26 @@ pub struct Approve {
 
 impl Approve {
     pub async fn record(self, db: &DatabaseConnection) -> Result<(), UpstreamError> {
-        let now = i64::try_from(unix_now()).unwrap_or(i64::MAX);
+        let next = Query::select()
+            .expr(
+                Expr::expr(Func::coalesce([
+                    Expr::col(Column::ApprovalOrder).max(),
+                    Expr::value(0),
+                ]))
+                .add(1),
+            )
+            .from(Entity)
+            .to_owned();
         let approved = Entity::update_many()
             .col_expr(Column::ApprovedUrl, Expr::value(self.url.as_str()))
             // The first approval keeps its place among upstreams naming one method.
             .col_expr(
-                Column::ApprovedAt,
-                Func::coalesce([Expr::col(Column::ApprovedAt).into(), Expr::value(now)]).into(),
+                Column::ApprovalOrder,
+                Func::coalesce([
+                    Expr::col(Column::ApprovalOrder).into(),
+                    SimpleExpr::SubQuery(None, Box::new(next.into_sub_query_statement())),
+                ])
+                .into(),
             )
             .filter(Column::Pubkey.eq(self.pubkey.to_bytes().to_vec()))
             .filter(Column::Url.eq(self.url.as_str()))
@@ -201,25 +214,26 @@ pub async fn list(db: &DatabaseConnection) -> Result<Vec<Model>, UpstreamError> 
 pub struct Routes(RwLock<HashMap<String, UpstreamUrl>>);
 
 impl Routes {
-    pub fn spawn(db: Arc<DatabaseConnection>) -> Arc<Self> {
+    /// Returns after the first refresh, a restarted Photon routes its first call.
+    pub async fn spawn(db: Arc<DatabaseConnection>) -> Result<Arc<Self>, UpstreamError> {
         let routes = Arc::new(Self::default());
+        routes.refresh(&db).await?;
         let refreshed = routes.clone();
         tokio::spawn(async move {
             loop {
+                tokio::time::sleep(REFRESH_INTERVAL).await;
                 if let Err(error) = refreshed.refresh(&db).await {
                     log::warn!("upstream routes: {error}");
                 }
-                tokio::time::sleep(REFRESH_INTERVAL).await;
             }
         });
-        routes
+        Ok(routes)
     }
 
     pub async fn refresh(&self, db: &DatabaseConnection) -> Result<(), UpstreamError> {
         let approved = Entity::find()
             .filter(Column::ApprovedUrl.is_not_null())
-            .order_by_asc(Column::ApprovedAt)
-            .order_by_asc(Column::Pubkey)
+            .order_by_asc(Column::ApprovalOrder)
             .all(db)
             .await?;
         let mut routes = HashMap::new();
@@ -281,7 +295,7 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 pub(crate) mod tests {
     use ed25519_dalek::{Signer, SigningKey};
-    use sea_orm::{ConnectionTrait, Database};
+    use sea_orm::Database;
     use spr_indexer_api::UpstreamAnnouncement;
 
     use super::*;
@@ -396,7 +410,10 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn an_approval_pins_the_announced_url_and_the_first_approval_keeps_a_method() {
         let db = database().await;
-        let (first, second) = (key(1), key(2));
+        // The first approved key sorts last, only the approval order ranks them.
+        let mut keys = [key(1), key(2)];
+        keys.sort_by_key(|key| std::cmp::Reverse(pubkey(key).to_bytes()));
+        let [first, second] = keys;
         let announce = |key: &SigningKey, url: &str, timestamp| {
             Announced::verify(signed(key, url, &["ringStatus"], timestamp), timestamp).unwrap()
         };
@@ -423,10 +440,8 @@ pub(crate) mod tests {
             Err(UpstreamError::NotAnnounced)
         ));
         approve(&first, "http://first").record(&db).await.unwrap();
-        db.execute_unprepared("UPDATE rpc_upstreams SET approved_at = approved_at - 1")
-            .await
-            .unwrap();
         approve(&second, "http://second").record(&db).await.unwrap();
+        approve(&first, "http://first").record(&db).await.unwrap();
         routes.refresh(&db).await.unwrap();
         assert_eq!(routed(&routes).as_deref(), Some("http://first"));
 

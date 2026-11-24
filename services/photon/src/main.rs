@@ -508,9 +508,11 @@ async fn main() -> Result<()> {
                 api,
                 port: args.port,
                 max_http_connections: args.max_http_connections,
-                upstreams: args
-                    .forward_upstreams
-                    .then(|| Routes::spawn(db_conn.clone())),
+                upstreams: if args.forward_upstreams {
+                    Some(Routes::spawn(db_conn.clone()).await?)
+                } else {
+                    None
+                },
             }
             .start()
             .await?,

@@ -17,7 +17,8 @@ pub struct Model {
     pub announced_at: i64,
     #[sea_orm(column_type = "Text", nullable)]
     pub approved_url: Option<String>,
-    pub approved_at: Option<i64>,
+    #[sea_orm(unique)]
+    pub approval_order: Option<i64>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
