@@ -46,7 +46,19 @@ impl<S: Default> UniqueDataUtxo<S> {
 impl<S: DataHash + Clone> UniqueDataUtxo<S> {
     pub fn new_mut(input: &Utxo, address: &Field, state: &S) -> Result<Self, CircuitError> {
         Ok(Self {
-            utxo: DataUtxo::spend(input, state.clone(), Some(*address))?,
+            utxo: DataUtxo::spend(input, state.clone(), Some(*address), None)?,
+            address: *address,
+            created: None,
+        })
+    }
+    pub fn new_mut_on(
+        ring_program_id: &Field,
+        input: &Utxo,
+        address: &Field,
+        state: &S,
+    ) -> Result<Self, CircuitError> {
+        Ok(Self {
+            utxo: DataUtxo::spend(input, state.clone(), Some(*address), Some(ring_program_id))?,
             address: *address,
             created: None,
         })

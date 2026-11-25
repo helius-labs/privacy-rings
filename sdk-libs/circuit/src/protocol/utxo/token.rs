@@ -12,6 +12,7 @@ pub struct TokenUtxos {
     optional: bool,
     close: bool,
     retain_zero_output: bool,
+    ring_program_id: Option<Field>,
 }
 impl HasBalance for TokenUtxos {
     fn balance(&self) -> &Balance {
@@ -33,9 +34,17 @@ impl TokenUtxos {
             optional: false,
             close: false,
             retain_zero_output: false,
+            ring_program_id: None,
         }
     }
     pub fn new_mut(inputs: &[Utxo]) -> Result<Self, CircuitError> {
+        Self::spend(inputs, None)
+    }
+    pub fn new_mut_on(ring_program_id: &Field, inputs: &[Utxo]) -> Result<Self, CircuitError> {
+        Self::spend(inputs, Some(ring_program_id))
+    }
+    #[inline(always)]
+    fn spend(inputs: &[Utxo], ring_program_id: Option<&Field>) -> Result<Self, CircuitError> {
         const {
             assert!(usize::BITS <= 64);
         }
@@ -74,7 +83,7 @@ impl TokenUtxos {
             let hash = if dummy {
                 Field::zero()
             } else {
-                input.hash_default_ring_with(&owner_hash, &asset_hash)?
+                input.hash_on_with(ring_program_id, &owner_hash, &asset_hash)?
             };
             spent_inputs.push((input.spent(hash), dummy));
         }
@@ -85,6 +94,7 @@ impl TokenUtxos {
             optional: false,
             close: false,
             retain_zero_output: false,
+            ring_program_id: ring_program_id.copied(),
         })
     }
     pub fn close(mut self) -> Self {
@@ -107,6 +117,9 @@ impl TokenUtxos {
     }
     pub fn spent_inputs(&self) -> &[(SpentInput, bool)] {
         &self.spent_inputs
+    }
+    pub(in crate::protocol) fn ring_program_id(&self) -> Option<Field> {
+        self.ring_program_id
     }
     pub fn public_transfers(&self) -> &[crate::protocol::PublicTransfer] {
         &self.balance.public_transfers

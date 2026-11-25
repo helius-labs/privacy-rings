@@ -17,6 +17,25 @@ impl Output {
         self.empty_if_zero && self.amount == 0
     }
     pub fn hash(&self, empty: bool, blinding: Field, tree_id: u16) -> Result<Field, CircuitError> {
+        self.hash_on(None, empty, blinding, tree_id)
+    }
+    pub(in crate::protocol) fn hash_on(
+        &self,
+        ring_program_id: Option<&Field>,
+        empty: bool,
+        blinding: Field,
+        tree_id: u16,
+    ) -> Result<Field, CircuitError> {
+        let ring_program_id = match ring_program_id {
+            Some(ring_program_id) => {
+                if empty {
+                    Field::zero()
+                } else {
+                    *ring_program_id
+                }
+            }
+            None => Field::zero(),
+        };
         let utxo = Utxo {
             domain: if empty { DUMMY_DOMAIN } else { UTXO_DOMAIN },
             owner: self.owner,
@@ -24,6 +43,7 @@ impl Output {
             amount: self.amount,
             blinding,
             data_hash: self.data_hash,
+            ring_program_id,
             tree_id,
             ..Utxo::default()
         };
