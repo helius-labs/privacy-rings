@@ -124,6 +124,29 @@ fn each_nitro_check_refuses_with_its_own_error() {
             |e| says(e, "a float"),
         ),
         (
+            "timestamp stale",
+            |f| {
+                f.edit_document =
+                    |d| set(d, "timestamp", Value::Integer(((NOW - 301) * 1000).into()))
+            },
+            |e| says(e, "over 300 seconds old"),
+        ),
+        (
+            "timestamp 2^53 minus 1, parsed then in the future",
+            |f| {
+                f.edit_document = |d| set(d, "timestamp", Value::Integer(((1u64 << 53) - 1).into()))
+            },
+            |e| says(e, "in the future"),
+        ),
+        (
+            "timestamp in the future",
+            |f| {
+                f.edit_document =
+                    |d| set(d, "timestamp", Value::Integer(((NOW + 301) * 1000).into()))
+            },
+            |e| says(e, "in the future"),
+        ),
+        (
             "repeated document key",
             |f| {
                 f.edit_document =
@@ -348,7 +371,7 @@ fn each_nitro_check_refuses_with_its_own_error() {
 #[test]
 fn a_document_passes_at_each_tolerated_edge() {
     type Edit = fn(&mut Fixture);
-    let cases: [(&str, Edit); 7] = [
+    let cases: [(&str, Edit); 8] = [
         ("leaf notBefore at the skew", |f| {
             f.leaf_not_before = NOW + NOT_BEFORE_SKEW_SECS;
         }),
@@ -357,8 +380,11 @@ fn a_document_passes_at_each_tolerated_edge() {
         ("pcr index 31", |f| {
             f.edit_document = |d| pcrs(d).push((31.into(), Value::Bytes(vec![0; 48])));
         }),
-        ("timestamp 2^53 minus 1", |f| {
-            f.edit_document = |d| set(d, "timestamp", Value::Integer(((1u64 << 53) - 1).into()));
+        ("timestamp at the max age", |f| {
+            f.edit_document = |d| set(d, "timestamp", Value::Integer(((NOW - 300) * 1000).into()));
+        }),
+        ("timestamp at the future skew", |f| {
+            f.edit_document = |d| set(d, "timestamp", Value::Integer(((NOW + 300) * 1000).into()));
         }),
         ("unknown integer keyed entry", |f| {
             f.edit_document = |d| d.push((7.into(), Value::Text("extra".into())));

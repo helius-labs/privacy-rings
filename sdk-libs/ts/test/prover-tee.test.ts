@@ -1144,6 +1144,14 @@ describe("AWS Nitro attestation", () => {
     ],
     ["a document of 16 entries", { extra: extras(7) }],
     ["32 PCRs", { payload: replaced("pcrs", pcrs(pcr(1), undefined, 32)) }],
+    [
+      "a document at the max age",
+      { payload: replaced("timestamp", encodeCbor((nowSecs - 300) * 1000)) },
+    ],
+    [
+      "a document at the future skew",
+      { payload: replaced("timestamp", encodeCbor((nowSecs + 300) * 1000)) },
+    ],
   ];
   it.each(accepted)("accepts %s", (_name, spec) => {
     expect(verify(attestation(spec)).imageId).toEqual(pcr(1));
@@ -1156,6 +1164,9 @@ describe("AWS Nitro attestation", () => {
   const cases: readonly (readonly [string, DocumentSpec])[] = [
     ["signature", { tamperSignature: true }],
     ["certificate_validity", { leafNotAfter: nowSecs - 1 }],
+    ["timestamp", { payload: replaced("timestamp", encodeCbor((nowSecs - 301) * 1000)) }],
+    ["timestamp", { payload: replaced("timestamp", encodeCbor((nowSecs + 301) * 1000)) }],
+    ["timestamp", { payload: replaced("timestamp", encodeCbor(Number.MAX_SAFE_INTEGER)) }],
     ["certificate_validity", { leafNotBefore: nowSecs + 301 }],
     ["certificate_chain", { leafKeyUsage: KeyUsageFlags.keyCertSign }],
     ["certificate_chain", { intermediateIsCa: false }],

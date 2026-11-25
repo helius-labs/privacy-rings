@@ -78,6 +78,7 @@ The checks:
 - the document is a CBOR map of at most 16 entries, and every map in it has unique text or integer keys
 - the document holds text where text is due, byte strings where bytes are due and integers where integers are due
 - the document has a `module_id` and a `timestamp`, `pcrs` holds at most 32 entries, `cabundle` at most 8 certificates, `digest` is `SHA384`, PCR0, PCR1 and PCR2 are pinned, and PCR0 is not zero as in a debug enclave
+- the document's `timestamp` (milliseconds) is at most 300 seconds before the verifier's clock and at most 300 seconds after it, checked after the signature
 - `user_data`, `nonce` and `public_key` equal report_data, the client's nonce and `hpke_public_key`
 - `hpke_public_key` equals the pinned key when the policy pins one
 
