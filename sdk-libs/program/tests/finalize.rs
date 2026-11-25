@@ -14,7 +14,7 @@ use spr_program::{
     poseidon, to_bytes, CircuitError, ClientError, Field, InputRecords, ProgramOwner,
     ShieldedAddress, TxContext, ADDRESS_TREE_ID,
 };
-use spr_transaction::instructions::transact::FinalizedTransaction;
+use spr_transaction::instructions::transact::{canonical_shape, FinalizedTransaction};
 use spr_transaction::{Mint, SppProofOutputUtxo, WalletUtxo};
 
 const STATE_TREE: u16 = 3;
@@ -331,4 +331,95 @@ fn an_owner_recorded_with_two_viewing_keys_is_refused_as_ambiguous() {
         matches!(&error, ClientError::InvalidInput(message) if message == "the output owner has ambiguous viewing addresses"),
         "{error}"
     );
+}
+
+/// Reserves an address, spends a real note and leaves an empty output, then
+/// pads and finalizes outside `InputRecords`.
+fn reserve_spend_and_leave_an_empty_output(dummy_padding: bool, ring_program_id: Option<Address>) {
+    let fixture = Fixture::new();
+    let mut records = InputRecords::new();
+    let public = fixture.public(&mut records);
+    let note = SppProofOutputUtxo::new(Mint::SOL, 77, fixture.owner).unwrap();
+    let note = match ring_program_id {
+        Some(ring_program_id) => note.with_ring_program_id(ring_program_id),
+        None => note,
+    };
+    let note = records
+        .utxo(&fixture.program.input(&note, STATE_TREE, 1).unwrap())
+        .unwrap();
+    let ring = ring_program_id.map(|ring_program_id| records.ring(ring_program_id).unwrap());
+    let checked = spr_program::checked(|| {
+        let state = DataUtxo::new_init_with_hash(&public.owner, &public.state_hash);
+        let spent = match &ring {
+            Some(ring) => TokenUtxos::new_mut_on(ring, &[note])?,
+            None => TokenUtxos::new_mut(&[note])?,
+        };
+        let empty = TokenUtxos::new_init(&public.owner, &spent.asset());
+        let context = Fixture::context(7);
+        let mut transaction = ConfidentialTransaction::new(&context, &public);
+        if dummy_padding {
+            transaction = transaction.with_dummy_padding();
+        }
+        if let Some(ring) = ring {
+            transaction = transaction.with_ring(ring);
+        }
+        transaction
+            .with(NewAddress::new(&public.owner, &public.state_hash)?)
+            .with(state)
+            .with(spent)
+            .with(empty)
+            .check()
+    })
+    .unwrap();
+
+    let sender = fixture.sender();
+    let mut transaction = records
+        .transaction(&checked, &sender, sender.solana_address().unwrap())
+        .unwrap();
+    assert_eq!(
+        transaction
+            .outputs()
+            .iter()
+            .map(|output| (output.amount, output.is_dummy(), output.ring_program_id))
+            .collect::<Vec<_>>(),
+        vec![
+            (0, false, ring_program_id),
+            (77, false, ring_program_id),
+            (0, true, None)
+        ]
+    );
+    let shape = canonical_shape(
+        transaction.inputs().len() + checked.addresses.len(),
+        checked.outputs.len(),
+    )
+    .unwrap();
+    transaction
+        .pad_utxos_with_empty_outputs(shape, &sender)
+        .unwrap();
+    let finalized = transaction.finalize(&sender).unwrap();
+    records.check_commitment(&checked, &finalized).unwrap();
+    assert_eq!(
+        (
+            input_slots(&finalized)[..2].to_vec(),
+            finalized.output_utxos()[2].compact
+        ),
+        (
+            vec![(true, false, ADDRESS_TREE_ID), (false, false, STATE_TREE)],
+            !dummy_padding
+        )
+    );
+}
+
+#[test]
+fn a_compact_transaction_passes_the_commitment_check_after_external_finalization() {
+    for ring_program_id in [None, Some(Address::new_from_array([41; 32]))] {
+        reserve_spend_and_leave_an_empty_output(false, ring_program_id);
+    }
+}
+
+#[test]
+fn a_dummy_padded_transaction_passes_the_commitment_check_after_external_finalization() {
+    for ring_program_id in [None, Some(Address::new_from_array([41; 32]))] {
+        reserve_spend_and_leave_an_empty_output(true, ring_program_id);
+    }
 }

@@ -4,8 +4,8 @@ use spr_circuit::protocol::{
     Utxo, UtxoMeta, UtxoTrait,
 };
 use spr_circuit::{
-    CircuitError, CircuitErrorKind, Field, SigningPubkey, UtxoOwner, checked, from_bytes, poseidon,
-    to_bytes,
+    CircuitError, CircuitErrorKind, Field, SigningPubkey, UtxoOwner, checked, from_bytes,
+    hash_bytes, poseidon, to_bytes,
 };
 use spr_keypair::PublicKey;
 use spr_transaction::{Data, Mint};
@@ -229,4 +229,149 @@ fn data_inputs_reject_nondefault_ring_preimages() {
             DataUtxo::new_mut_with_hash(&input, &input.data_hash).map(drop)
         }));
     }
+}
+
+const RING: [u8; 32] = [41; 32];
+
+fn ring() -> Field {
+    hash_bytes(&RING).unwrap()
+}
+
+fn ring_input(seed: u8, ring_program_id: Field) -> Utxo {
+    Utxo {
+        ring_program_id,
+        ..input(seed)
+    }
+}
+
+/// The wallet's commitment to `utxo` in `RING`.
+fn ring_wallet_hash(utxo: &Utxo) -> [u8; 32] {
+    let (_, key, nullifier_pk) = utxo.owner.preimage();
+    spr_transaction::Utxo {
+        owner: PublicKey::from_ed25519(&key),
+        asset: Mint::new(Address::new_from_array(utxo.asset), 0),
+        amount: utxo.amount,
+        blinding: to_bytes(&utxo.blinding),
+        ring_program_id: Some(Address::new_from_array(RING)),
+        data: Data::default(),
+    }
+    .hash(
+        &nullifier_pk,
+        &to_bytes(&utxo.data_hash),
+        &[0; 32],
+        utxo.tree_id,
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_ring_transaction_commits_every_note_to_the_wallet_ring_commitment() {
+    let input = ring_input(7, ring());
+    let checked = checked(|| {
+        let mut source = TokenUtxos::new_mut_on(&ring(), &[input, Utxo::dummy()])?;
+        let mut recipient = TokenUtxos::new_init(&owner(9), &input.asset);
+        source.transfer(&mut recipient, &37)?;
+        ConfidentialTransaction::new(&context(), &Public)
+            .with_ring(ring())
+            .with(source)
+            .with(recipient)
+            .check()
+    })
+    .unwrap();
+    assert_eq!(checked.ring_program_id(), Some(&ring()));
+    assert_eq!(
+        checked.inputs.iter().map(to_bytes).collect::<Vec<_>>(),
+        vec![ring_wallet_hash(&input), [0; 32]]
+    );
+    let first = to_bytes(&checked.first_nullifier);
+    let output_seed =
+        derive_output_blinding_seed(&first, &to_bytes(&checked.blinding_seed)).unwrap();
+    assert_eq!(
+        checked
+            .outputs
+            .iter()
+            .map(|output| output.output.amount)
+            .collect::<Vec<_>>(),
+        vec![63, 37]
+    );
+    for (output, slot) in checked.outputs.iter().zip(0u32..) {
+        let blinding = derive_transact_output_blinding(&first, &output_seed, slot).unwrap();
+        let utxo = Utxo {
+            owner: output.output.owner,
+            asset: output.output.asset,
+            amount: output.output.amount,
+            blinding: from_bytes(&blinding).unwrap(),
+            tree_id: checked.output_tree_id,
+            ..Utxo::default()
+        };
+        assert_eq!(
+            to_bytes(&output.hash),
+            ring_wallet_hash(&utxo),
+            "output {slot}"
+        );
+    }
+}
+
+#[test]
+fn ring_inputs_reject_another_ring_and_ring_fields_on_a_dummy() {
+    let other_ring = Field::from(5u64);
+    for input in [
+        ring_input(7, other_ring),
+        Utxo {
+            ring_data_hash: Field::one(),
+            ..ring_input(7, ring())
+        },
+        Utxo {
+            ring_program_id: ring(),
+            ..Utxo::dummy()
+        },
+        Utxo {
+            ring_data_hash: Field::one(),
+            ..Utxo::dummy()
+        },
+    ] {
+        assert_rejected_by_ring_check(checked(|| {
+            TokenUtxos::new_mut_on(&ring(), &[input]).map(drop)
+        }));
+    }
+    let input = ring_input(7, other_ring);
+    assert_rejected_by_ring_check(checked(|| {
+        DataUtxo::new_mut_with_hash_on(&ring(), &input, &input.data_hash).map(drop)
+    }));
+}
+
+#[test]
+fn a_transaction_refuses_inputs_of_two_rings() {
+    let other_ring = Field::from(5u64);
+    let check = |transaction_ring: Option<Field>, second: Option<Field>| {
+        checked(|| {
+            let first = TokenUtxos::new_mut_on(&ring(), &[ring_input(7, ring())])?;
+            let second = match second {
+                Some(ring_program_id) => {
+                    TokenUtxos::new_mut_on(&ring_program_id, &[ring_input(8, ring_program_id)])?
+                }
+                None => TokenUtxos::new_mut(&[input(8)])?,
+            };
+            let context = context();
+            let transaction = ConfidentialTransaction::new(&context, &Public);
+            let transaction = match transaction_ring {
+                Some(ring_program_id) => transaction.with_ring(ring_program_id),
+                None => transaction,
+            };
+            transaction.with(first).with(second).check().map(drop)
+        })
+        .unwrap_err()
+    };
+    for (transaction_ring, second) in [(None, Some(ring())), (Some(ring()), None)] {
+        let error = check(transaction_ring, second);
+        assert_eq!(
+            error.broken_rule(),
+            Some("every spent input is on the ring of the transaction")
+        );
+    }
+    let error = check(Some(ring()), Some(other_ring));
+    assert!(
+        matches!(error.kind(), CircuitErrorKind::RequirementFailed { file, .. } if file.ends_with("transaction.rs")),
+        "expected the transaction ring requirement, got {error}"
+    );
 }

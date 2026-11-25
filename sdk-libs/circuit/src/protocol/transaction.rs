@@ -51,6 +51,7 @@ pub struct CheckedTransaction {
     private_tx_hash: Field,
     transaction_hash: Field,
     public_hash: Field,
+    ring_program_id: Option<Field>,
 }
 impl CheckedTransaction {
     pub fn private_tx_hash(&self) -> &Field {
@@ -61,6 +62,9 @@ impl CheckedTransaction {
     }
     pub fn public_hash(&self) -> &Field {
         &self.public_hash
+    }
+    pub fn ring_program_id(&self) -> Option<&Field> {
+        self.ring_program_id.as_ref()
     }
 }
 
@@ -73,12 +77,14 @@ pub struct ConfidentialTransaction<'a, P> {
     context: &'a TxContext,
     public: &'a P,
     inputs: Vec<(SpentInput, bool)>,
+    input_rings: Vec<Option<Field>>,
     addresses: Vec<CreatedAddress>,
     outputs: Vec<Output>,
     public_transfers: Vec<PublicTransfer>,
     transferred: Field,
     error: Option<CircuitError>,
     preserve_input_slots: bool,
+    ring_program_id: Option<Field>,
 }
 impl<'a, P: PublicInputs> ConfidentialTransaction<'a, P> {
     pub fn new(context: &'a TxContext, public: &'a P) -> Self {
@@ -86,16 +92,23 @@ impl<'a, P: PublicInputs> ConfidentialTransaction<'a, P> {
             context,
             public,
             inputs: Vec::new(),
+            input_rings: Vec::new(),
             addresses: Vec::new(),
             outputs: Vec::new(),
             public_transfers: Vec::new(),
             transferred: Field::zero(),
             error: None,
             preserve_input_slots: false,
+            ring_program_id: None,
         }
     }
     pub fn with_dummy_padding(mut self) -> Self {
         self.preserve_input_slots = true;
+        self
+    }
+    /// Every real output and every spent input must carry `ring_program_id`.
+    pub fn with_ring(mut self, ring_program_id: Field) -> Self {
+        self.ring_program_id = Some(ring_program_id);
         self
     }
     pub fn with(mut self, item: impl TransactionItem) -> Self {
@@ -109,6 +122,7 @@ impl<'a, P: PublicInputs> ConfidentialTransaction<'a, P> {
     ) {
         if let Some(input) = utxo.spent_input() {
             self.inputs.push((input, false));
+            self.input_rings.push(utxo.ring_program_id());
         }
         self.public_transfers
             .extend_from_slice(utxo.public_transfers());
@@ -140,6 +154,18 @@ impl<'a, P: PublicInputs> ConfidentialTransaction<'a, P> {
             return Err(error);
         }
         require_eq(self.transferred, Field::zero());
+        // Each spending item admitted its slots on the ring the transaction names.
+        for admitted in &self.input_rings {
+            if admitted.is_some() != self.ring_program_id.is_some() {
+                return Err(CircuitErrorKind::RuleBroken(
+                    "every spent input is on the ring of the transaction",
+                )
+                .into());
+            }
+            if let Some((admitted, named)) = admitted.zip(self.ring_program_id) {
+                require_eq(admitted, named);
+            }
+        }
         let mut slots = Vec::new();
         for address in &self.addresses {
             slots.push(SpentInput {
@@ -176,7 +202,12 @@ impl<'a, P: PublicInputs> ConfidentialTransaction<'a, P> {
                 output_seed,
                 Field::from(slot as u64),
             ])?;
-            let hash = output.hash(empty, blinding, output_tree_id)?;
+            let hash = output.hash_on(
+                self.ring_program_id.as_ref(),
+                empty,
+                blinding,
+                output_tree_id,
+            )?;
             outputs.push(CheckedOutput {
                 output,
                 hash,
@@ -226,6 +257,7 @@ impl<'a, P: PublicInputs> ConfidentialTransaction<'a, P> {
             private_tx_hash,
             transaction_hash,
             public_hash,
+            ring_program_id: self.ring_program_id,
         })
     }
 }
@@ -237,6 +269,9 @@ impl TransactionItem for NewAddress {
 impl TransactionItem for TokenUtxos {
     fn register<P: PublicInputs>(self, tx: &mut ConfidentialTransaction<'_, P>) {
         tx.inputs.extend_from_slice(self.spent_inputs());
+        if !self.spent_inputs().is_empty() {
+            tx.input_rings.push(self.ring_program_id());
+        }
         tx.public_transfers
             .extend_from_slice(self.public_transfers());
         tx.transferred += *self.transferred();

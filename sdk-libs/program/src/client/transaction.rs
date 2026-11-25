@@ -6,7 +6,7 @@ use spr_transaction::instructions::transact::{
     canonical_shape, ConfidentialTransaction, FinalizedTransaction,
 };
 use spr_transaction::{
-    utxo::{ProofInputUtxo, SppProofInputUtxo},
+    utxo::{ring_program_id_proof_input_hash, ProofInputUtxo, SppProofInputUtxo},
     Mint, SppProofOutputUtxo, WalletUtxo,
 };
 
@@ -92,6 +92,7 @@ pub struct InputRecords {
     inputs: Vec<WalletUtxo>,
     addresses: Vec<NativeShieldedAddress>,
     mints: Vec<Mint>,
+    rings: Vec<Address>,
 }
 
 impl InputRecords {
@@ -138,6 +139,15 @@ impl InputRecords {
             None => self.mints.push(mint),
         }
         Ok(*mint.asset.as_array())
+    }
+
+    /// Records the ring program for a transaction that names its ring.
+    pub fn ring(&mut self, ring_program_id: Address) -> Result<spr_circuit::Field, ClientError> {
+        let ring = ring_program_id_proof_input_hash(&Some(ring_program_id)).map_err(fail)?;
+        if !self.rings.contains(&ring_program_id) {
+            self.rings.push(ring_program_id);
+        }
+        from_bytes(&ring).map_err(fail)
     }
 
     pub fn utxo(&mut self, wallet: &WalletUtxo) -> Result<Utxo, ClientError> {
@@ -238,12 +248,46 @@ impl InputRecords {
             .ok_or_else(|| fail("the asset has no registry record"))
     }
 
+    fn ring_program(&self, ring_program_id: &spr_circuit::Field) -> Result<Address, ClientError> {
+        let ring = to_bytes(ring_program_id);
+        for recorded in self.rings.iter().copied().chain(
+            self.inputs
+                .iter()
+                .filter_map(|input| input.utxo.ring_program_id),
+        ) {
+            if ring_program_id_proof_input_hash(&Some(recorded)).map_err(fail)? == ring {
+                return Ok(recorded);
+            }
+        }
+        Err(fail("the ring has no recorded program"))
+    }
+
     pub fn finalize(
         &self,
         checked: &CheckedTransaction,
         sender: &NativeShieldedAddress,
         payer: Address,
     ) -> Result<FinalizedTransaction, ClientError> {
+        let mut tx = self.transaction(checked, sender, payer)?;
+        let shape = canonical_shape(
+            tx.inputs().len() + checked.addresses.len(),
+            checked.outputs.len(),
+        )
+        .map_err(fail)?;
+        tx.pad_utxos_with_empty_outputs(shape, sender)
+            .map_err(fail)?;
+        let finalized = tx.finalize(sender).map_err(fail)?;
+        self.check_commitment(checked, &finalized)?;
+        Ok(finalized)
+    }
+
+    /// Unpadded, the caller selects the shape and the rail.
+    pub fn transaction(
+        &self,
+        checked: &CheckedTransaction,
+        sender: &NativeShieldedAddress,
+        payer: Address,
+    ) -> Result<ConfidentialTransaction, ClientError> {
         let tree = checked.output_tree_id;
         // Dummy slots sit in the tree of the first spent input, or in the
         // address tree when the transaction only creates addresses.
@@ -297,8 +341,10 @@ impl InputRecords {
             }
             addresses.push(input);
         }
-        let shape =
-            canonical_shape(inputs.len() + addresses.len(), checked.outputs.len()).map_err(fail)?;
+        let ring_program_id = checked
+            .ring_program_id()
+            .map(|ring_program_id| self.ring_program(ring_program_id))
+            .transpose()?;
         let tx = if checked.preserve_input_slots {
             ConfidentialTransaction::new_with_addresses(inputs, addresses, payer)
         } else {
@@ -308,6 +354,9 @@ impl InputRecords {
             .and_then(|tx| tx.with_blinding_seed(to_bytes(&checked.blinding_seed)))
             .and_then(|tx| tx.with_output_tree_id(tree))
             .map_err(fail)?;
+        if let Some(ring_program_id) = ring_program_id {
+            tx = tx.with_ring(ring_program_id);
+        }
         for item in &checked.outputs {
             if item.empty {
                 tx.add_empty_output_utxo().map_err(fail)?;
@@ -325,6 +374,9 @@ impl InputRecords {
                     utxo = utxo.with_utxo_data(data.clone(), hash);
                 } else if hash != [0; 32] {
                     utxo.data_hash = Some(hash);
+                }
+                if let Some(ring_program_id) = ring_program_id {
+                    utxo = utxo.with_ring_program_id(ring_program_id);
                 }
                 tx.add_output_utxo(utxo).map_err(fail)?;
             }
@@ -346,9 +398,14 @@ impl InputRecords {
             tx.settle(mint, transfer.is_deposit, amount, target)
                 .map_err(fail)?;
         }
-        tx.pad_utxos_with_empty_outputs(shape, sender)
-            .map_err(fail)?;
-        let finalized = tx.finalize(sender).map_err(fail)?;
+        Ok(tx)
+    }
+
+    pub fn check_commitment(
+        &self,
+        checked: &CheckedTransaction,
+        finalized: &FinalizedTransaction,
+    ) -> Result<(), ClientError> {
         let actual_hash = finalized
             .padding_independent_private_tx_hash()
             .map_err(fail)?;
@@ -388,7 +445,7 @@ impl InputRecords {
                 ));
             }
         }
-        Ok(finalized)
+        Ok(())
     }
 }
 
