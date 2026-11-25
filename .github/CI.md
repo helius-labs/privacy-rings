@@ -196,7 +196,8 @@ and verifies real proofs and rejected witness/public-input mutations.
     2. OpenAPI generation: `cargo run --bin photon-openapi`.
     3. OpenAPI drift: `git diff --exit-code`.
     4. `spr-indexer-api`: `cargo test`.
-    5. `photon-indexer`: `cargo test`.
+    5. `photon-indexer`: `cargo test`, with the approval order test on
+       PostgreSQL through `PHOTON_TEST_POSTGRES_URL`.
 
     Protocol-ops changes do not select this workflow.
 

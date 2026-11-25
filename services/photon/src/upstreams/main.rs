@@ -39,10 +39,16 @@ async fn main() -> anyhow::Result<()> {
         Command::List => {
             for upstream in upstreams::list(&db).await? {
                 let pubkey = Pubkey::try_from(upstream.pubkey.as_slice())?;
-                let approved = upstream.approved_url.as_deref().unwrap_or("pending");
+                let announced: UpstreamUrl = upstream.url.parse()?;
+                let approved = match (upstream.approved_url, upstream.approved_methods) {
+                    (Some(url), Some(methods)) => {
+                        format!("{} {methods}", url.parse::<UpstreamUrl>()?)
+                    }
+                    _ => "pending".to_owned(),
+                };
                 println!(
-                    "{pubkey}\tannounced {}\tapproved {approved}\t{}",
-                    upstream.url, upstream.methods
+                    "{pubkey}\tannounced {announced} {}\tapproved {approved}",
+                    upstream.methods
                 );
             }
         }

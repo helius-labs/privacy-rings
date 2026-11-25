@@ -149,13 +149,17 @@ photon-upstreams approve <pubkey> <url>
 photon-upstreams revoke <pubkey>
 ```
 
+`list` and the logs print a URL without its username and password. `approve`
+takes the full URL.
+
 What approval locks in:
 
 - The URL. `approve` takes the URL the operator read and fails when the key has
   announced another one since. After the key announces a new URL, Photon
   keeps the approved URL until the operator approves the new one.
 - Not the methods. The approved key adds and removes methods with its next
-  announcement.
+  announcement of the approved URL. The methods it announces for another URL
+  wait for the approval of that URL.
 - Precedence. When two approved upstreams announce one method, the upstream
   approved first serves it.
 

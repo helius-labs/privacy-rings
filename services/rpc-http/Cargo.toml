@@ -19,7 +19,7 @@ solana-pubkey = { workspace = true }
 solana-signature = { workspace = true }
 spr-indexer-api = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["sync", "time"] }
 tower = { workspace = true }
 url = { workspace = true }
 

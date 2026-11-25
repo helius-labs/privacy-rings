@@ -26,11 +26,6 @@ use tower_http::cors::{Any, CorsLayer};
 use super::service::PhotonApi;
 use crate::upstreams::Routes;
 
-const FORWARD_LIMITS: ForwardLimits = ForwardLimits {
-    request_bytes: TEN_MB_SIZE_BYTES as usize,
-    timeout: Duration::from_secs(90),
-};
-
 pub struct RpcServer {
     pub api: PhotonApi,
     pub max_connections: u32,
@@ -52,7 +47,12 @@ impl RpcServer {
         let forward = upstreams
             .map(|routes| {
                 let served = rpc_module.method_names().collect();
-                ForwardLayer::new(Unserved { served, routes }, FORWARD_LIMITS)
+                let limits = ForwardLimits {
+                    request_bytes: TEN_MB_SIZE_BYTES as usize,
+                    timeout: Duration::from_secs(90),
+                    concurrent: max_connections as usize,
+                };
+                ForwardLayer::new(Unserved { served, routes }, limits)
             })
             .transpose()?;
         start_server(rpc_module, forward, addr, max_connections).await
@@ -88,11 +88,11 @@ async fn start_server(
             ("/liveness", "liveness"),
             ("/readiness", "readiness"),
         ])?)
-        // Outside the path check, a forwarded call skips it here.
-        .layer(option_layer(forward))
+        // Outside the forwarder, a gateway prices a forwarded call by its path too.
         .layer(MethodPathLayer {
             max_body_size: TEN_MB_SIZE_BYTES as usize,
-        });
+        })
+        .layer(option_layer(forward));
     let server = ServerBuilder::default()
         .set_config(
             ServerConfig::builder()
@@ -404,6 +404,13 @@ mod tests {
         .unwrap();
         routes.refresh(&db).await.unwrap();
         assert_eq!(call("ringStatus").await["result"], "ring rpc");
+        let mismatched = client
+            .post(format!("http://{addr}/v1/spr/{}", GetMerkleProofs::NAME))
+            .json(&serde_json::json!({"jsonrpc":"2.0", "method":"ringStatus", "id":7}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(mismatched.status(), reqwest::StatusCode::BAD_REQUEST);
         assert_eq!(call(GetMerkleProofs::NAME).await["error"]["code"], -32602);
         assert!(call("liveness").await["result"].is_null());
         assert_eq!(call("announceUpstream").await["error"]["code"], -32601);

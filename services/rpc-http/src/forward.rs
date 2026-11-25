@@ -13,7 +13,7 @@ use std::{
 
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::{
-    body::Bytes,
+    body::{Body, Bytes, Frame, SizeHint},
     header::{HeaderName, CONTENT_TYPE, RETRY_AFTER},
     http::request::Parts,
     Method, StatusCode,
@@ -24,6 +24,7 @@ use jsonrpsee::{
     types::error::ErrorCode,
 };
 use thiserror::Error;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tower::{Layer, Service};
 
 use super::{error_response, Call};
@@ -36,10 +37,14 @@ static REQUEST_HEADERS: [HeaderName; 3] = [
     HeaderName::from_static("x-api-key"),
     HeaderName::from_static("x-forwarded-for"),
 ];
-static RESPONSE_HEADERS: [HeaderName; 2] = [CONTENT_TYPE, RETRY_AFTER];
+static RESPONSE_HEADERS: [HeaderName; 3] = [
+    CONTENT_TYPE,
+    RETRY_AFTER,
+    HeaderName::from_static("x-helius-metering-units"),
+];
 
 /// An http(s) base without query or fragment, request paths append to it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct UpstreamUrl(Arc<str>);
 
 #[derive(Debug, Error)]
@@ -68,14 +73,35 @@ impl FromStr for UpstreamUrl {
 }
 
 impl UpstreamUrl {
+    /// Carries the credentials, never for a log.
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// `None` when the normalized URL leaves the base.
+    fn destination(&self, path: &str) -> Option<url::Url> {
+        let url = url::Url::parse(&format!("{}{path}", self.0)).ok()?;
+        url.as_str()
+            .starts_with(&format!("{}/", self.0))
+            .then_some(url)
+    }
 }
 
+/// Prints no credentials.
 impl fmt::Display for UpstreamUrl {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+        let (scheme, rest) = self.0.split_once("://").unwrap_or_default();
+        let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+        let host = authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, host)| host);
+        write!(formatter, "{scheme}://{host}{path}")
+    }
+}
+
+impl fmt::Debug for UpstreamUrl {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, formatter)
     }
 }
 
@@ -88,6 +114,8 @@ pub trait Resolve: Send + Sync + 'static {
 pub struct ForwardLimits {
     pub request_bytes: usize,
     pub timeout: Duration,
+    /// Requests in the layer at once, local and forwarded.
+    pub concurrent: usize,
 }
 
 pub struct ForwardLayer<Resolver> {
@@ -105,6 +133,7 @@ impl<Resolver> ForwardLayer<Resolver> {
                     .redirect(reqwest::redirect::Policy::none())
                     .retry(reqwest::retry::never())
                     .build()?,
+                admitted: Arc::new(Semaphore::new(limits.concurrent)),
                 limits,
             }),
         })
@@ -165,6 +194,15 @@ where
         let mut inner = std::mem::replace(&mut self.inner, ready);
         let forwarder = self.forwarder.clone();
         Box::pin(async move {
+            // The server counts a call only after this layer, a forwarded call never reaches it.
+            let Ok(admitted) = forwarder.admitted.clone().try_acquire_owned() else {
+                return Ok(error_response(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    None,
+                    ErrorCode::ServerIsBusy,
+                    ErrorCode::ServerIsBusy.message(),
+                ));
+            };
             let (parts, body) = request.into_parts();
             let Ok(collected) = Limited::new(body, forwarder.limits.request_bytes)
                 .collect()
@@ -187,7 +225,12 @@ where
                     .upstream(call.as_ref().map(|call| call.method.as_ref()))
             };
             match upstream {
-                Some(upstream) => Ok(forwarder.forward(upstream, parts, body).await),
+                Some(upstream) => Ok(forwarder.forward(upstream, parts, body).await.map(|body| {
+                    HttpBody::new(Admitted {
+                        body,
+                        _admitted: admitted,
+                    })
+                })),
                 None => inner
                     .call(HttpRequest::from_parts(
                         parts,
@@ -200,9 +243,36 @@ where
     }
 }
 
+/// A forwarded body keeps its place in the limit until it ends or drops.
+struct Admitted {
+    body: HttpBody,
+    _admitted: OwnedSemaphorePermit,
+}
+
+impl Body for Admitted {
+    type Data = <HttpBody as Body>::Data;
+    type Error = <HttpBody as Body>::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        Pin::new(&mut self.body).poll_frame(context)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.body.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.body.size_hint()
+    }
+}
+
 struct Forwarder<Resolver> {
     resolver: Resolver,
     http: reqwest::Client,
+    admitted: Arc<Semaphore>,
     limits: ForwardLimits,
 }
 
@@ -224,7 +294,16 @@ impl<Resolver> Forwarder<Resolver> {
                 "forwarding loop",
             );
         }
-        match self.send(&upstream, parts, body, hops + 1).await {
+        let path = parts.uri.path_and_query().map_or("/", |path| path.as_str());
+        let Some(destination) = upstream.destination(path) else {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                None,
+                ErrorCode::InvalidRequest,
+                "the request path leaves the upstream",
+            );
+        };
+        match self.send(destination, parts, body, hops + 1).await {
             Ok(response) => response,
             Err(error) => {
                 log::warn!("upstream {upstream} did not answer ({error})");
@@ -240,15 +319,14 @@ impl<Resolver> Forwarder<Resolver> {
 
     async fn send(
         &self,
-        upstream: &UpstreamUrl,
+        destination: url::Url,
         parts: Parts,
         body: Bytes,
         hops: u8,
     ) -> Result<HttpResponse, reqwest::Error> {
-        let path = parts.uri.path_and_query().map_or("/", |path| path.as_str());
         let mut request = self
             .http
-            .request(parts.method, format!("{upstream}{path}"))
+            .request(parts.method, destination)
             .header(&HOPS, u16::from(hops))
             .body(body);
         for name in &REQUEST_HEADERS {
@@ -285,6 +363,7 @@ mod tests {
     const LIMITS: ForwardLimits = ForwardLimits {
         request_bytes: 1024,
         timeout: Duration::from_secs(5),
+        concurrent: 8,
     };
 
     struct Only(&'static str, UpstreamUrl);
@@ -298,6 +377,8 @@ mod tests {
     #[derive(Clone)]
     struct ReceivedHops(Option<String>);
 
+    static UNITS: HeaderName = HeaderName::from_static("x-helius-metering-units");
+
     /// Answers `ringStatus` with the hop count it received.
     async fn upstream() -> (UpstreamUrl, ServerHandle) {
         let mut module = RpcModule::new(());
@@ -309,17 +390,22 @@ mod tests {
             })
             .unwrap();
         let server = ServerBuilder::default()
-            .set_http_middleware(tower::ServiceBuilder::new().map_request(
-                |mut request: HttpRequest| {
-                    let hops = request
-                        .headers()
-                        .get(&HOPS)
-                        .and_then(|hops| hops.to_str().ok());
-                    let hops = ReceivedHops(hops.map(str::to_owned));
-                    request.extensions_mut().insert(hops);
-                    request
-                },
-            ))
+            .set_http_middleware(
+                tower::ServiceBuilder::new()
+                    .map_request(|mut request: HttpRequest| {
+                        let hops = request
+                            .headers()
+                            .get(&HOPS)
+                            .and_then(|hops| hops.to_str().ok());
+                        let hops = ReceivedHops(hops.map(str::to_owned));
+                        request.extensions_mut().insert(hops);
+                        request
+                    })
+                    .map_response(|mut response: HttpResponse| {
+                        response.headers_mut().insert(&UNITS, 3.into());
+                        response
+                    }),
+            )
             .build(SocketAddr::from(([127, 0, 0, 1], 0)))
             .await
             .unwrap();
@@ -330,7 +416,14 @@ mod tests {
     fn service(
         url: UpstreamUrl,
     ) -> impl Service<HttpRequest, Response = HttpResponse, Error = BoxError> + Clone {
-        ForwardLayer::new(Only("ringStatus", url), LIMITS)
+        limited(url, LIMITS)
+    }
+
+    fn limited(
+        url: UpstreamUrl,
+        limits: ForwardLimits,
+    ) -> impl Service<HttpRequest, Response = HttpResponse, Error = BoxError> + Clone {
+        ForwardLayer::new(Only("ringStatus", url), limits)
             .unwrap()
             .layer(service_fn(|_request: HttpRequest| async {
                 Ok::<_, BoxError>(HttpResponse::new(HttpBody::from("local")))
@@ -377,6 +470,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_forwarded_answer_keeps_its_metering_units() {
+        let (url, server) = upstream().await;
+        let request = call("ringStatus").body(HttpBody::from(
+            r#"{"jsonrpc":"2.0","id":1,"method":"ringStatus"}"#,
+        ));
+        let response = service(url).oneshot(request.unwrap()).await.unwrap();
+        assert_eq!(response.headers()[&UNITS], "3");
+        server.stop().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_call_above_the_concurrency_limit_is_refused_local_or_forwarded() {
+        let (url, server) = upstream().await;
+        let limits = ForwardLimits {
+            concurrent: 0,
+            ..LIMITS
+        };
+        for method in ["ringStatus", "getMerkleProofs"] {
+            let (status, body) = answer(limited(url.clone(), limits), call(method)).await;
+            assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{method}");
+            assert!(body.contains("-32009"), "{body}");
+        }
+        server.stop().unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_open_forwarded_body_keeps_its_place_in_the_limit() {
+        let (url, server) = upstream().await;
+        let limits = ForwardLimits {
+            concurrent: 1,
+            ..LIMITS
+        };
+        let service = limited(url, limits);
+        let request = call("ringStatus").body(HttpBody::from(
+            r#"{"jsonrpc":"2.0","id":1,"method":"ringStatus"}"#,
+        ));
+        let open = service.clone().oneshot(request.unwrap()).await.unwrap();
+        assert_eq!(open.status(), StatusCode::OK);
+        assert!(open.body().size_hint().exact().is_some());
+        let (status, _) = answer(service.clone(), call("ringStatus")).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        drop(open);
+        let (status, _) = answer(service, call("ringStatus")).await;
+        assert_eq!(status, StatusCode::OK);
+        server.stop().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_request_path_cannot_leave_the_approved_base() {
+        let (url, server) = upstream().await;
+        let service = service(format!("{}/base", url.as_str()).parse().unwrap());
+        for path in [
+            "/../ringStatus",
+            "/%2e%2e/ringStatus",
+            "/v1/../../ringStatus",
+        ] {
+            let request = HttpRequest::post(path)
+                .header(CONTENT_TYPE, "application/json")
+                .extension(r#"{"jsonrpc":"2.0","id":1,"method":"ringStatus"}"#.to_owned());
+            let (status, _) = answer(service.clone(), request).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{path}");
+        }
+        let (status, _) = answer(service, call("ringStatus")).await;
+        assert_eq!(status, StatusCode::OK);
+        server.stop().unwrap();
+    }
+
+    #[tokio::test]
     async fn a_call_at_the_hop_limit_is_refused_before_it_leaves() {
         let (url, server) = upstream().await;
         for hops in ["2", "200", "not a count"] {
@@ -398,6 +559,14 @@ mod tests {
         let (status, body) = answer(service(url), call("ringStatus")).await;
         assert_eq!(status, StatusCode::BAD_GATEWAY);
         assert!(body.contains("-32603"), "{body}");
+    }
+
+    #[test]
+    fn an_upstream_url_prints_without_its_credentials() {
+        let url: UpstreamUrl = "http://user:secret@ring.internal:8785/v1/".parse().unwrap();
+        assert_eq!(url.as_str(), "http://user:secret@ring.internal:8785/v1");
+        assert_eq!(format!("{url}"), "http://ring.internal:8785/v1");
+        assert_eq!(format!("{url:?}"), "http://ring.internal:8785/v1");
     }
 
     #[test]
