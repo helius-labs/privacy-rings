@@ -784,7 +784,10 @@ describe("wallet sync", () => {
       data: transactionItems([]),
       paginationToken: null,
     });
-    const getShieldedTransactionsByNullifiers = vi.fn(empty);
+    const getShieldedTransactionsByNullifiers = vi.fn(
+      async (_request: RequestWithControls & { readonly nullifiers: readonly Bytes32[] }) =>
+        empty(),
+    );
     await syncWallet({
       wallet,
       keys: LocalShieldedKeys.fromKeypair(keypair),
