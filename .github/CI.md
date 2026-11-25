@@ -23,6 +23,10 @@ CLI starts the loopback enclave. The test sends to an unfunded recipient,
 registers them with the sender as fee payer, and recovers and sweeps the
 earlier note.
 
+The decryption service TypeScript checks include the original Turnkey example
+and the separate Fireblocks example. Local checks simulate Fireblocks signing;
+live Fireblocks signing requires workspace credentials.
+
 1. [Protocol operations](workflows/protocol-ops.yml)
 
     **Triggered by:** PR/main changes to:
