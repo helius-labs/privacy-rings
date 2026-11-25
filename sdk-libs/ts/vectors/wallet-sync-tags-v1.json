@@ -2,7 +2,7 @@
   "version": 1,
   "defaults": {
     "pageLimit": 1000,
-    "queryChunk": 64,
+    "queryChunk": 1000,
     "waitForIndexer": false
   },
   "secrets": {

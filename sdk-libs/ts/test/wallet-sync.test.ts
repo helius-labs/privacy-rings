@@ -758,6 +758,68 @@ describe("wallet sync", () => {
     expect(calls()[0]?.[0]?.paginationToken).toBeUndefined();
   });
 
+  it("sends a full Photon page of unspent nullifiers in one request", async () => {
+    const keypair = ShieldedKeypair.generate();
+    const wallet = new Wallet({ identity: keypair.shieldedAddress() });
+    const id = (index: number, mark: number): Bytes32 => {
+      const value = bytes(mark);
+      value[0] = index & 0xff;
+      value[1] = index >> 8;
+      return value;
+    };
+    const utxos = Array.from({ length: 1000 }, (_, index) => ({
+      utxo: new Utxo({
+        owner: keypair.signingPublicKey(),
+        asset: SOL_MINT,
+        amount: BigInt(index + 1),
+        blinding: bytes(2),
+      }),
+      outputContext: { hash: id(index, 3), tree: TREE, leafIndex: BigInt(index) },
+      nullifier: id(index, 4),
+      spent: false as const,
+    }));
+    wallet._replace({ ...wallet._state(), utxos });
+    const empty = async () => ({
+      context: { blockTime: 1n, slot: 4n },
+      data: transactionItems([]),
+      paginationToken: null,
+    });
+    const getShieldedTransactionsByNullifiers = vi.fn(
+      async (_request: RequestWithControls & { readonly nullifiers: readonly Bytes32[] }) =>
+        empty(),
+    );
+    await syncWallet({
+      wallet,
+      keys: LocalShieldedKeys.fromKeypair(keypair),
+      client: syncReads({
+        getShieldedTransactionsByTags: vi.fn(empty),
+        getEncryptedUtxosByTags: vi.fn(async () => ({
+          context: { blockTime: 1n, slot: 4n },
+          data: outputItems([]),
+          paginationToken: null,
+        })),
+        getShieldedTransactionsByNullifiers,
+      }),
+    });
+    expect(getShieldedTransactionsByNullifiers).toHaveBeenCalledTimes(1);
+    expect(getShieldedTransactionsByNullifiers.mock.calls[0]?.[0].nullifiers).toHaveLength(1000);
+  });
+
+  it("refuses a query chunk larger than Photon accepts", async () => {
+    const keypair = ShieldedKeypair.generate();
+    await expect(
+      syncWallet({
+        wallet: new Wallet({ identity: keypair.shieldedAddress() }),
+        keys: LocalShieldedKeys.fromKeypair(keypair),
+        client: syncReads(),
+        config: { queryChunk: 1001 },
+      }),
+    ).rejects.toMatchObject({
+      code: "WALLET_SYNC",
+      causeCode: "WALLET_INVALID_SYNC_CONFIG",
+    });
+  });
+
   it("does not resume a newly learned tag from another tag's checkpoint", async () => {
     // The trap the per-tag checkpoints exist for. Tags come from a counter plus a
     // window, so one can be learned after others have advanced far past the

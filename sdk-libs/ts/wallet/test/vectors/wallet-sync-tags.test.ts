@@ -131,7 +131,7 @@ describe("wallet sync stable-tag vectors", () => {
 
     expect(fixture.defaults).toEqual({
       pageLimit: 1000,
-      queryChunk: 64,
+      queryChunk: 1000,
       waitForIndexer: false,
     });
     expect(recorded.shielded).toHaveLength(1);
