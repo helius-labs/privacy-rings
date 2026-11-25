@@ -1,6 +1,6 @@
 //! A wallet's spendable UTXOs and its history, read from the indexer.
 //!
-//! Stateless: [`UtxoScan::fetch`] reads the transactions tagged for the
+//! [`UtxoScan::fetch`] reads the transactions tagged for the
 //! wallet and decrypts them, then reads the transactions that spent the UTXOs
 //! it found, until a round finds nothing new. A merge, or a spend another
 //! client made, can carry none of the wallet's tags; only the nullifier rounds
@@ -9,6 +9,13 @@
 //! costs round trips for what is new, not for everything found so far. The
 //! [`UtxoScanResult`] it returns holds the spendable UTXOs and the history, the
 //! transactions read and the spent UTXOs as well.
+//!
+//! A scan reads the wallet's whole history unless it resumes: pass the last
+//! result to [`UtxoScan::resume`] and the tagged reads ask only for what the
+//! indexer persisted after that result's [`ScanCheckpoint`]. The resumed result
+//! equals a full scan's. Notes the checkpoint's registry could not resolve are
+//! the exception: once this scan can read them, their spends are read in full,
+//! including outputs reached through those spends.
 //!
 //! It reads UTXOs only in the assets of the [`AssetRegistry`] it is given and
 //! reports the others as unknown; [`fetch_asset_id`] reads the id the pool
@@ -32,7 +39,7 @@ use spr_interface::{
 use spr_keypair::X25519Pubkey;
 use spr_transaction::{
     verify_owned, AssetRegistry, DecryptionResult, History, Mint, OwnedUtxos, ShieldedKeys,
-    SpendableDecryptionResult, SOL_ASSET_ID, SOL_MINT,
+    SpendableDecryptionResult, WalletUtxo, SOL_ASSET_ID, SOL_MINT,
 };
 
 use crate::{
@@ -52,6 +59,8 @@ const PAGE_LIMIT: u32 = 1_000;
 pub struct UtxoScanResult {
     /// The registry used to decrypt this scan, including mappings learned by
     /// asset discovery. Reuse it on the next scan to avoid another lookup.
+    /// The checkpoint keeps its own copy of that registry: editing this field
+    /// does not change which decryption a resumed scan reuses.
     pub asset_registry: AssetRegistry,
     /// The UTXOs not spent, and the balances they add up to.
     pub spendable: SpendableDecryptionResult,
@@ -59,7 +68,33 @@ pub struct UtxoScanResult {
     /// not, and the tags they were read by. [`History::entries`] classifies
     /// them.
     pub history: History,
+    /// Where this scan read through. Pass the result to [`UtxoScan::resume`]
+    /// to read only what is newer; `None` makes the next scan a full read.
+    pub checkpoint: Option<ScanCheckpoint>,
 }
+
+/// The slot a scan read the indexer through, with what it had decrypted by
+/// then, so a resumed scan neither reads nor decrypts the same transactions
+/// again. Opaque; it belongs to the result that produced it.
+#[derive(Clone, Debug)]
+pub struct ScanCheckpoint {
+    /// The tags the scan read. A different set (a viewing key added or
+    /// dropped) resumes nothing: those tags have not been read at all.
+    tags: Vec<[u8; 32]>,
+    /// The lowest indexer slot any page of the scan reported. Everything at
+    /// or before it was persisted when the scan read it.
+    slot: u64,
+    /// The registry `decrypted` was produced with, discoveries included.
+    /// Private, so editing [`UtxoScanResult::asset_registry`] cannot make a
+    /// later scan reuse a decryption that omitted assets this registry lacks.
+    registry: AssetRegistry,
+    decrypted: DecryptionResult,
+    seen: HashSet<TransactionKey>,
+}
+
+/// A transaction's identity across pages: its signature and event, and the
+/// leaf of a proofless deposit, which arrives one output at a time.
+type TransactionKey = (Signature, Option<u16>, Option<u64>);
 
 /// One read of a wallet's UTXOs and history: configure it, then
 /// [`fetch`](Self::fetch). It holds no connection and no state between reads.
@@ -68,6 +103,7 @@ pub struct UtxoScan<'a, K: ?Sized> {
     assets: &'a AssetRegistry,
     indexer_config: Option<IndexerRpcConfig>,
     discover_assets: bool,
+    previous: Option<&'a UtxoScanResult>,
 }
 
 impl<'a, K: ShieldedKeys + ?Sized> UtxoScan<'a, K> {
@@ -77,6 +113,7 @@ impl<'a, K: ShieldedKeys + ?Sized> UtxoScan<'a, K> {
             assets,
             indexer_config: None,
             discover_assets: false,
+            previous: None,
         }
     }
 
@@ -113,12 +150,35 @@ impl<'a, K: ShieldedKeys + ?Sized> UtxoScan<'a, K> {
         self
     }
 
+    /// Continue from `previous`, a result of the same keys: read what the
+    /// indexer persisted after `previous.checkpoint`, and decrypt only that.
+    ///
+    /// The tagged streams resume at the checkpoint. Every UTXO the previous
+    /// scan already resolved has its nullifier read again from the checkpoint
+    /// on, so a spend another client made since is found. A UTXO that scan
+    /// could not resolve is decrypted again when this scan's registry, or
+    /// asset discovery, can read it, and its spends are read with no slot
+    /// bound — including outputs those spends created, which may themselves
+    /// have been spent before the checkpoint. The checkpoint records the
+    /// registry it decrypted with. A different registry rebuilds decryption
+    /// from the transactions already read; editing `previous.asset_registry`
+    /// does not. Without a checkpoint, or when the tags differ from the ones
+    /// `previous` read, this is a full scan. The result is the one a full scan
+    /// would return; pass the asset registry `previous` carries so discovered
+    /// assets stay known.
+    #[must_use]
+    pub fn resume(mut self, previous: &'a UtxoScanResult) -> Self {
+        self.previous = Some(previous);
+        self
+    }
+
     /// Reads the transactions tagged with the owner tag, which confidential
     /// outputs carry, and with each held viewing key's tag, which deposits
     /// carry, then the transactions that spent what they hold. Anonymous
     /// transfer and ring deposit payloads are unsupported.
     pub fn fetch<I: Rpc + ?Sized>(&self, indexer: &I) -> Result<UtxoScanResult, ClientError> {
         let fetched = self.fetch_rounds(indexer)?;
+        let registry = fetched.asset_registry.clone();
         Ok(UtxoScanResult {
             asset_registry: fetched.asset_registry,
             spendable: fetched.spendable,
@@ -127,8 +187,15 @@ impl<'a, K: ShieldedKeys + ?Sized> UtxoScan<'a, K> {
                 transactions: fetched.transactions,
                 unknown_asset_ids: fetched.owned.unknown_asset_ids,
                 unknown_mints: fetched.owned.unknown_mints,
-                view_tags: fetched.tags.into_iter().collect(),
+                view_tags: fetched.tags.iter().copied().collect(),
             },
+            checkpoint: Some(ScanCheckpoint {
+                tags: fetched.tags,
+                slot: fetched.scanned_through,
+                registry,
+                decrypted: fetched.decrypted,
+                seen: fetched.seen,
+            }),
         })
     }
 
@@ -139,15 +206,61 @@ impl<'a, K: ShieldedKeys + ?Sized> UtxoScan<'a, K> {
         let mut tags = vec![address.signing_pubkey.confidential_view_tag()?];
         tags.extend(self.keys.viewing_public_keys().iter().map(X25519Pubkey::u));
 
+        // Resume only a result that read these same tags. The registry the
+        // decryption used lives in the checkpoint; `asset_registry` on the
+        // result is public and a caller can edit it.
+        let resumed = self.previous.and_then(|previous| {
+            previous
+                .checkpoint
+                .as_ref()
+                .filter(|checkpoint| checkpoint.tags == tags)
+                .map(|checkpoint| (previous, checkpoint))
+        });
+        let filters = resumed.map_or_else(HistoryFilters::default, |(_, checkpoint)| {
+            HistoryFilters::after_slot(checkpoint.slot)
+        });
+        let registry_matches = resumed.is_some_and(|(_, checkpoint)| checkpoint.registry == assets);
+        // Nullifiers the previous scan already followed through its checkpoint.
+        // A note that scan could not resolve is not among them.
+        let previously_checked: HashSet<[u8; 32]> = match resumed {
+            Some((_, checkpoint)) => verify_owned(self.keys, &checkpoint.decrypted)?
+                .utxos
+                .into_iter()
+                .map(|utxo| utxo.nullifier)
+                .collect(),
+            None => HashSet::new(),
+        };
+        let checkpoint_slot = resumed.map(|(_, checkpoint)| checkpoint.slot);
+        let (mut seen, mut transactions, mut decrypted) = match resumed {
+            Some((previous, checkpoint)) => (
+                checkpoint.seen.clone(),
+                previous.history.transactions.clone(),
+                if registry_matches {
+                    checkpoint.decrypted.clone()
+                } else {
+                    DecryptionResult::default()
+                },
+            ),
+            None => (HashSet::new(), Vec::new(), DecryptionResult::default()),
+        };
+        // The cached transactions were decrypted with another registry, so
+        // the outputs it omitted have to be decoded before the new batch.
+        if resumed.is_some() && !registry_matches {
+            decrypted.extend(self.keys, &transactions, &assets)?;
+        }
+
         // The output tree the last page read named; every page reports it.
         let mut output_tree_id = None;
-        let mut seen = HashSet::new();
-        let mut batch = self.unseen(
-            &mut seen,
-            tagged_transactions(indexer, &tags, self.indexer_config, &mut output_tree_id)?,
-        );
-        let mut transactions = Vec::new();
-        let mut decrypted = DecryptionResult::default();
+        // The lowest indexer slot any page reported: what this scan covers.
+        let mut scanned_through = u64::MAX;
+        let mut reads = Reads {
+            config: self.indexer_config,
+            filters,
+            output_tree_id: &mut output_tree_id,
+            scanned_through: &mut scanned_through,
+        };
+        let mut batch = self.unseen(&mut seen, tagged_transactions(indexer, &tags, &mut reads)?);
+        // Each nullifier is queried once; the slot filter is chosen then.
         let mut queried = HashSet::new();
         loop {
             decrypted.extend(self.keys, &batch, &assets)?;
@@ -173,30 +286,49 @@ impl<'a, K: ShieldedKeys + ?Sized> UtxoScan<'a, K> {
             }
             let owned = verify_owned(self.keys, &decrypted)?;
             let spendable = owned.spendable();
-            // The spends of a UTXO queried in an earlier round are fetched.
-            let nullifiers: Vec<_> = spendable
-                .utxos()
-                .map(|utxo| utxo.nullifier)
-                .filter(|nullifier| queried.insert(*nullifier))
-                .collect();
-            batch = self.unseen(
-                &mut seen,
-                spending_transactions(
-                    indexer,
-                    &nullifiers,
-                    self.indexer_config,
-                    &mut output_tree_id,
-                )?,
+            // Notes already resolved are read from the checkpoint on. A note
+            // the previous scan left unresolved may have been spent earlier,
+            // and so may an output reached through that spend: those
+            // nullifiers are read with no slot bound.
+            let (historical, incremental) = unqueried_nullifiers(
+                spendable.utxos(),
+                &mut queried,
+                &previously_checked,
+                checkpoint_slot,
             );
+            let mut spent = Vec::new();
+            if !historical.is_empty() {
+                spent.extend(spending_transactions(
+                    indexer,
+                    &historical,
+                    &mut reads,
+                    HistoryFilters::default(),
+                )?);
+            }
+            if !incremental.is_empty() {
+                let filters = reads.filters;
+                spent.extend(spending_transactions(
+                    indexer,
+                    &incremental,
+                    &mut reads,
+                    filters,
+                )?);
+            }
+            batch = self.unseen(&mut seen, spent);
             if batch.is_empty() {
+                let scanned_through = *reads.scanned_through;
+                let latest_tree_id = *reads.output_tree_id;
                 return Ok(Fetched {
                     asset_registry: assets,
                     tags,
                     transactions,
                     owned,
                     spendable: spendable
-                        .with_latest_tree_id(output_tree_id)
+                        .with_latest_tree_id(latest_tree_id)
                         .with_transaction_keys(self.keys)?,
+                    decrypted,
+                    seen,
+                    scanned_through,
                 });
             }
         }
@@ -207,7 +339,7 @@ impl<'a, K: ShieldedKeys + ?Sized> UtxoScan<'a, K> {
     /// its identity.
     fn unseen(
         &self,
-        seen: &mut HashSet<(Signature, Option<u16>, Option<u64>)>,
+        seen: &mut HashSet<TransactionKey>,
         transactions: Vec<ShieldedTransaction>,
     ) -> Vec<ShieldedTransaction> {
         transactions
@@ -222,6 +354,34 @@ impl<'a, K: ShieldedKeys + ?Sized> UtxoScan<'a, K> {
             })
             .collect()
     }
+}
+
+/// Nullifiers `utxos` still has to follow. `historical` existed at the
+/// checkpoint and the previous scan never followed them, so a spend of one
+/// can sit at or before that slot. `incremental` is covered by the scan's
+/// slot filter: the previous scan already followed it, or the note itself
+/// was created after the checkpoint.
+fn unqueried_nullifiers<'a>(
+    utxos: impl Iterator<Item = &'a WalletUtxo>,
+    queried: &mut HashSet<[u8; 32]>,
+    previously_checked: &HashSet<[u8; 32]>,
+    checkpoint_slot: Option<u64>,
+) -> (Vec<[u8; 32]>, Vec<[u8; 32]>) {
+    let mut historical = Vec::new();
+    let mut incremental = Vec::new();
+    for utxo in utxos {
+        if !queried.insert(utxo.nullifier) {
+            continue;
+        }
+        let unresolved_at_checkpoint = checkpoint_slot.is_some_and(|slot| utxo.slot <= slot)
+            && !previously_checked.contains(&utxo.nullifier);
+        if unresolved_at_checkpoint {
+            historical.push(utxo.nullifier);
+        } else {
+            incremental.push(utxo.nullifier);
+        }
+    }
+    (historical, incremental)
 }
 
 fn has_unknown_assets(decrypted: &DecryptionResult) -> bool {
@@ -297,17 +457,20 @@ struct Fetched {
     /// The final round's [`verify_owned`], spent UTXOs included.
     owned: OwnedUtxos,
     spendable: SpendableDecryptionResult,
+    /// Everything decrypted, for the next scan to extend.
+    decrypted: DecryptionResult,
+    seen: HashSet<TransactionKey>,
+    scanned_through: u64,
 }
 
 /// The transactions tagged with any of `tags`. Deposits come from the
 /// encrypted-output stream, one transaction per output: a deposit transaction
 /// can shield several outputs. Each page read sets `output_tree_id` to the
-/// output tree it names.
+/// output tree it names and lowers `scanned_through` to the slot it was read at.
 fn tagged_transactions<I: Rpc + ?Sized>(
     indexer: &I,
     tags: &[[u8; 32]],
-    config: Option<IndexerRpcConfig>,
-    output_tree_id: &mut Option<u16>,
+    reads: &mut Reads<'_>,
 ) -> Result<Vec<ShieldedTransaction>, ClientError> {
     let mut transactions = Vec::new();
     let mut token = None;
@@ -316,13 +479,13 @@ fn tagged_transactions<I: Rpc + ?Sized>(
             tags.to_vec(),
             token,
             Some(PAGE_LIMIT),
-            HistoryFilters::default(),
-            config,
+            reads.filters,
+            reads.config,
         )?;
         let next = page
             .continuation(token)
             .map_err(|_| ClientError::IndexerCursorNotAdvanced)?;
-        *output_tree_id = page.output_tree_id;
+        reads.page(page.output_tree_id, page.context.slot);
         transactions.extend(
             page.data
                 .into_iter()
@@ -340,13 +503,13 @@ fn tagged_transactions<I: Rpc + ?Sized>(
             tags.to_vec(),
             token,
             Some(PAGE_LIMIT),
-            HistoryFilters::default(),
-            config,
+            reads.filters,
+            reads.config,
         )?;
         let next = page
             .continuation(token)
             .map_err(|_| ClientError::IndexerCursorNotAdvanced)?;
-        *output_tree_id = page.output_tree_id;
+        reads.page(page.output_tree_id, page.context.slot);
         transactions.extend(
             page.data
                 .into_iter()
@@ -366,8 +529,8 @@ fn tagged_transactions<I: Rpc + ?Sized>(
 fn spending_transactions<I: Rpc + ?Sized>(
     indexer: &I,
     nullifiers: &[[u8; 32]],
-    config: Option<IndexerRpcConfig>,
-    output_tree_id: &mut Option<u16>,
+    reads: &mut Reads<'_>,
+    filters: HistoryFilters,
 ) -> Result<Vec<ShieldedTransaction>, ClientError> {
     let mut transactions = Vec::new();
     for chunk in nullifiers.chunks(PAGE_LIMIT as usize) {
@@ -377,13 +540,13 @@ fn spending_transactions<I: Rpc + ?Sized>(
                 chunk.to_vec(),
                 token,
                 Some(PAGE_LIMIT),
-                HistoryFilters::default(),
-                config,
+                filters,
+                reads.config,
             )?;
             let next = page
                 .continuation(token)
                 .map_err(|_| ClientError::IndexerCursorNotAdvanced)?;
-            *output_tree_id = page.output_tree_id;
+            reads.page(page.output_tree_id, page.context.slot);
             transactions.extend(page.data.into_iter().flat_map(|item| item.events));
             match next {
                 Some(next) => token = Some(next),
@@ -392,4 +555,21 @@ fn spending_transactions<I: Rpc + ?Sized>(
         }
     }
     Ok(transactions)
+}
+
+/// How one scan reads the indexer, and what its pages reported.
+struct Reads<'a> {
+    config: Option<IndexerRpcConfig>,
+    /// The checkpoint a resumed scan reads from; empty for a full scan.
+    filters: HistoryFilters,
+    output_tree_id: &'a mut Option<u16>,
+    scanned_through: &'a mut u64,
+}
+
+impl Reads<'_> {
+    /// Records a page: the output tree it names and the slot it was read at.
+    fn page(&mut self, output_tree_id: Option<u16>, slot: u64) {
+        *self.output_tree_id = output_tree_id;
+        *self.scanned_through = (*self.scanned_through).min(slot);
+    }
 }

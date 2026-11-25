@@ -193,6 +193,22 @@ let scan = UtxoScan::new(&keys, &assets)
 assets = scan.asset_registry;
 ```
 
+A scan reads the wallet's whole history. To read only what is new, keep the
+last result and resume from it. Tagged reads then ask the indexer for slots
+after the result's checkpoint, and the outcome equals a full scan's. Pass the
+result's asset registry: the checkpoint remembers the registry it decrypted
+with, so a larger one rebuilds decryption of the transactions already read.
+Notes that registry newly makes readable have their earlier spends read in
+full, including outputs reached through those spends. Editing the result's
+`asset_registry` does not change the checkpoint.
+
+```rust
+let next = UtxoScan::new(&keys, &scan.asset_registry)
+    .with_indexer_config(IndexerRpcConfig::at_slot(confirmed_slot))
+    .resume(&scan)
+    .fetch(&client)?;
+```
+
 An unknown asset triggers one filtered `getProgramAccounts` read of the
 pool's SPL registrations, validated by owner, layout and mint PDA. The lookup
 requires the greater of `require_slot` and every transaction slot fetched so
