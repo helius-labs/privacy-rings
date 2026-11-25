@@ -66,6 +66,8 @@ impl TxIndex {
                 match scheme {
                     EncryptedScheme::Confidential
                     | EncryptedScheme::RingConfidential
+                    | EncryptedScheme::ServiceConfidential
+                    | EncryptedScheme::ServiceRingConfidential
                     | EncryptedScheme::Proofless
                     | EncryptedScheme::PlaintextTransfer
                     | EncryptedScheme::Merge => {
@@ -491,10 +493,9 @@ impl SyncCtx<'_> {
             let Some((&scheme_byte, body)) = blob.split_first() else {
                 continue;
             };
-            if !matches!(
-                EncryptedScheme::from_byte(scheme_byte),
-                Ok(EncryptedScheme::Confidential | EncryptedScheme::RingConfidential)
-            ) {
+            if !EncryptedScheme::from_byte(scheme_byte)
+                .is_ok_and(|scheme| scheme.opens_confidential_note())
+            {
                 continue;
             }
             let encrypted_slot_index = position as u32;
@@ -690,7 +691,7 @@ impl SyncCtx<'_> {
                     return Ok(());
                 };
                 match scheme {
-                    EncryptedScheme::Confidential | EncryptedScheme::RingConfidential => {
+                    scheme if scheme.opens_confidential_note() => {
                         let Ok(plaintext) = Confidential::decode(body, &cx) else {
                             self.report.undecryptable_candidates += 1;
                             return Ok(());

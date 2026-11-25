@@ -4,7 +4,7 @@ use spr_hasher::{
     Hasher, Poseidon,
 };
 use spr_interface::{state::cache::CACHE_CAPACITY, tree_slot::tree_id_field};
-use spr_keypair::{random_blinding, shielded::ShieldedAddress};
+use spr_keypair::{random_blinding, shielded::ShieldedAddress, X25519Pubkey};
 
 use super::{dummy_utxo_hash, owner_utxo_hash, program_id_proof_input_hash, Blinding, UTXO_DOMAIN};
 use crate::{
@@ -78,6 +78,19 @@ pub struct SppProofOutputUtxo {
     )]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub owner_address: Option<ShieldedAddress>,
+    /// Recipient viewing key of the decryption service. When set, the note is
+    /// encrypted to this key and published as scheme byte 9, or 10 when the
+    /// output names a ring program.
+    #[cfg_attr(
+        feature = "serde",
+        serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "spr_keypair::serde_helpers::bytes"
+        )
+    )]
+    #[cfg_attr(feature = "tsify", tsify(optional, type = "Uint8Array"))]
+    pub service_viewing_pubkey: Option<[u8; 33]>,
     #[cfg_attr(
         feature = "serde",
         serde(
@@ -131,6 +144,13 @@ impl SppProofOutputUtxo {
     ) -> Self {
         self = self.with_ring_data_hash(ring_program_id, ring_data_hash);
         self.set_data_record(DataRecord::RingData(ring_data));
+        self
+    }
+
+    /// Encrypt this note to the decryption service instead of the owner's
+    /// viewing key. The owner tag stays the owner's.
+    pub fn with_service_viewing_key(mut self, key: X25519Pubkey) -> Self {
+        self.service_viewing_pubkey = Some(*key.as_bytes());
         self
     }
 

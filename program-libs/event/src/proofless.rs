@@ -109,11 +109,17 @@ pub const CONFIDENTIAL_ENCRYPTED_SCHEME_TAG: u8 = 3;
 pub const ANONYMOUS_RECIPIENT_ENCRYPTED_SCHEME_TAG: u8 = 1;
 pub const ANONYMOUS_SENDER_ENCRYPTED_SCHEME_TAG: u8 = 2;
 pub const RING_CONFIDENTIAL_ENCRYPTED_SCHEME_TAG: u8 = 4;
+/// Confidential note encrypted to the decryption-service viewing key.
+pub const SERVICE_CONFIDENTIAL_ENCRYPTED_SCHEME_TAG: u8 = 9;
+/// Service-confidential note that names a ring program. It does not publish
+/// the owner, matching [`RING_CONFIDENTIAL_ENCRYPTED_SCHEME_TAG`].
+pub const SERVICE_RING_CONFIDENTIAL_ENCRYPTED_SCHEME_TAG: u8 = 10;
 
 /// Returns whether `data` is a structurally valid encrypted output whose first
 /// payload byte selects the confidential encryption scheme.
 pub fn is_confidential_encrypted_output(data: &[u8]) -> bool {
     confidential_encrypted_output_body(data).is_some()
+        || encrypted_output_body(data, SERVICE_CONFIDENTIAL_ENCRYPTED_SCHEME_TAG).is_some()
 }
 
 pub fn confidential_encrypted_output_body(data: &[u8]) -> Option<&[u8]> {

@@ -3,7 +3,8 @@
 use spr_event::{
     encode_output_data, is_confidential_encrypted_output, ring_confidential_encrypted_output_body,
     OutputDataEncoding, ProoflessOutput, CONFIDENTIAL_ENCRYPTED_SCHEME_TAG,
-    RING_CONFIDENTIAL_ENCRYPTED_SCHEME_TAG,
+    RING_CONFIDENTIAL_ENCRYPTED_SCHEME_TAG, SERVICE_CONFIDENTIAL_ENCRYPTED_SCHEME_TAG,
+    SERVICE_RING_CONFIDENTIAL_ENCRYPTED_SCHEME_TAG,
 };
 use spr_event_parser::decode_output_data;
 
@@ -54,6 +55,19 @@ fn ring_confidential_marker_has_a_distinct_owner_policy() {
         Some(&[9][..])
     );
     assert!(!is_confidential_encrypted_output(&marked));
+
+    let service = borsh::to_vec(&OutputDataEncoding::Encrypted(vec![
+        SERVICE_CONFIDENTIAL_ENCRYPTED_SCHEME_TAG,
+        9,
+    ]))
+    .unwrap();
+    assert!(is_confidential_encrypted_output(&service));
+    let service_ring = borsh::to_vec(&OutputDataEncoding::Encrypted(vec![
+        SERVICE_RING_CONFIDENTIAL_ENCRYPTED_SCHEME_TAG,
+        9,
+    ]))
+    .unwrap();
+    assert!(!is_confidential_encrypted_output(&service_ring));
 }
 
 fn minimal() -> ProoflessOutput {

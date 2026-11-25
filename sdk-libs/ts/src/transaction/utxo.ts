@@ -15,6 +15,7 @@ import { randomBlinding } from "../keypair/bytes.js";
 import { zeroKeyNullifier, type NullifierKey } from "../keypair/nullifier-key.js";
 import { ShieldedPublicKey } from "../keypair/public-key.js";
 import type { ShieldedAddress, ShieldedKeypair } from "../keypair/shielded.js";
+import type { X25519PublicKey } from "../keypair/x25519.js";
 
 import { Data, type DataRecord } from "./data.js";
 import { Mint } from "./asset.js";
@@ -683,6 +684,11 @@ function noncanonicalDummyField(input: ProofInputUtxo): string | undefined {
 
 export interface ProofOutputUtxo {
   readonly ownerAddress?: ShieldedAddress;
+  /**
+   * Decryption-service viewing key. When set, the note is encrypted to this
+   * key and published as scheme byte 9, or 10 when it names a ring program.
+   */
+  readonly serviceViewingPublicKey?: X25519PublicKey;
   readonly asset: Address;
   /** Registry-validated address/id pair for encryption without a registry lookup. */
   readonly mint?: Mint;
@@ -721,6 +727,7 @@ export interface ProofOutputUtxo {
 
 export interface ProofOutputInit {
   readonly ownerAddress?: ShieldedAddress;
+  readonly serviceViewingPublicKey?: X25519PublicKey;
   readonly asset: Address;
   readonly mint?: Mint;
   readonly amount: bigint;

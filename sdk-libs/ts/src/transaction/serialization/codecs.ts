@@ -54,6 +54,10 @@ export const EncryptedScheme = Object.freeze({
   merge: 6,
   plaintextTransfer: 7,
   ringDeposit: 8,
+  /** Confidential note encrypted to the decryption-service viewing key. */
+  serviceConfidential: 9,
+  /** Service-confidential note that names a ring program. */
+  serviceRingConfidential: 10,
 } as const);
 export type EncryptedScheme = (typeof EncryptedScheme)[keyof typeof EncryptedScheme];
 export type OutputDataEncoding = "plaintext" | "encrypted" | "verifiable";
@@ -72,6 +76,8 @@ export function encryptedSchemeFromByte(byte: number): EncryptedScheme {
     case EncryptedScheme.merge:
     case EncryptedScheme.plaintextTransfer:
     case EncryptedScheme.ringDeposit:
+    case EncryptedScheme.serviceConfidential:
+    case EncryptedScheme.serviceRingConfidential:
       return byte;
     default:
       throw new TransactionError("TRANSACTION_BAD_DISCRIMINATOR", { byte });
@@ -81,6 +87,16 @@ export function encryptedSchemeFromByte(byte: number): EncryptedScheme {
 /** The wire byte for a scheme, the counterpart of Rust `EncryptedScheme::as_byte`. */
 export function encryptedSchemeToByte(scheme: EncryptedScheme): number {
   return encryptedSchemeFromByte(scheme);
+}
+
+/** A recipient note opened with the embedded X25519 key. */
+export function opensConfidentialNote(scheme: EncryptedScheme): boolean {
+  return (
+    scheme === EncryptedScheme.confidential ||
+    scheme === EncryptedScheme.ringConfidential ||
+    scheme === EncryptedScheme.serviceConfidential ||
+    scheme === EncryptedScheme.serviceRingConfidential
+  );
 }
 
 /**

@@ -1717,15 +1717,21 @@ export function encodeConfidentialSlots(
         assetId: String(mint.assetId),
       });
     }
+    const serviceKey = output.serviceViewingPublicKey;
+    const ring = output.ringProgramId !== undefined;
     return {
       viewTag: address.signingPublicKey.confidentialViewTag(),
       data: encodeOutputData(
-        output.ringProgramId === undefined
-          ? EncryptedScheme.confidential
-          : EncryptedScheme.ringConfidential,
+        serviceKey === undefined
+          ? ring
+            ? EncryptedScheme.ringConfidential
+            : EncryptedScheme.confidential
+          : ring
+            ? EncryptedScheme.serviceRingConfidential
+            : EncryptedScheme.serviceConfidential,
         encryptConfidential(
           tx,
-          address.viewingPublicKey,
+          serviceKey ?? address.viewingPublicKey,
           {
             assetId: mint.assetId,
             amount: output.amount,

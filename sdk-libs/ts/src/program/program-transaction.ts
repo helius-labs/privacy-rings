@@ -6,6 +6,7 @@ import type { Address, Bytes32, OwnerTag } from "../interface/types.js";
 import { randomBytes, type Bytes34 } from "../keypair/bytes.js";
 import { SHIELDED_PUBLIC_KEY_LENGTH } from "../keypair/constants.js";
 import { ShieldedPublicKey } from "../keypair/public-key.js";
+import { X25519PublicKey } from "../keypair/x25519.js";
 import {
   SHIELDED_ADDRESS_LENGTH,
   ShieldedAddress,
@@ -231,6 +232,7 @@ const OUTPUT_KEYS = [
   "ringDataHash",
   "dataHash",
   "ownerAddress",
+  "serviceViewingPublicKey",
   "ownerTag",
   "data",
   "cacheSlot",
@@ -601,6 +603,9 @@ function proofOutput(value: unknown, path: string, assets: AssetRegistry): Proof
     })),
     ...optional(entry, "ownerAddress", path, (item, field) => ({
       ownerAddress: shieldedAddress(item, field),
+    })),
+    ...optional(entry, "serviceViewingPublicKey", path, (item, field) => ({
+      serviceViewingPublicKey: X25519PublicKey.fromBytes(fixedBytes(item, 33, field)),
     })),
     ...optional(entry, "ownerTag", path, (item, field) => ({
       ownerTag: fixedBytes<Bytes32>(item, 32, field),
