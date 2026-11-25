@@ -70,7 +70,10 @@ export interface SyncClient extends Pick<
 }
 
 export interface SyncWalletConfig {
-  /** Stable tags and nullifiers per indexer request. Defaults to 64. */
+  /**
+   * Stable tags and nullifiers per indexer request. Defaults to 1000, which is
+   * the most Photon accepts in one call, and a larger value is refused.
+   */
   readonly queryChunk?: number;
   /**
    * Solana transactions requested per indexer page, halved for the rest of the
@@ -524,7 +527,7 @@ async function runWalletSync(
   context?: RequestContext,
 ): Promise<SyncReport> {
   try {
-    const chunkSize = positiveInteger(input.config?.queryChunk ?? 64, "queryChunk");
+    const chunkSize = positiveInteger(input.config?.queryChunk ?? 1_000, "queryChunk", 1_000);
     const pageLimit = {
       value: positiveInteger(input.config?.pageLimit ?? 1_000, "pageLimit", 1_000),
     };

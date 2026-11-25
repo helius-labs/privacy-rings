@@ -446,7 +446,8 @@ mod tests {
     use sea_orm::{Database, EntityTrait, Set};
     use sea_orm_migration::MigratorTrait;
     use spr_indexer_api::{
-        GetRingsByNullifiersRequest, HistoryFilters, Limit, PaginationToken, Positioned, SlotFilter,
+        GetRingsByNullifiersRequest, GetRingsByTagsRequest, HistoryFilters, Limit, PaginationToken,
+        Positioned, SlotFilter, PAGE_LIMIT,
     };
 
     const OUTPUT_TREE: [u8; 32] = [8; 32];
@@ -1001,6 +1002,89 @@ mod tests {
             .await
             .unwrap();
         assert!(response.data.is_empty());
+    }
+
+    fn indexed_hash(index: u64) -> Hash {
+        let mut bytes = [0u8; 32];
+        bytes[..8].copy_from_slice(&index.to_le_bytes());
+        Hash::from(bytes)
+    }
+
+    /// The wallet sync sends this many tags or nullifiers in one call. The
+    /// bound has to hold in the query, not only in the length check: each key
+    /// is a bound parameter.
+    #[tokio::test]
+    async fn one_thousand_keys_is_one_query_and_one_more_is_rejected() {
+        let db = setup().await;
+        let mut nullifiers: Vec<Hash> = (1..=PAGE_LIMIT).map(indexed_hash).collect();
+        nullifiers[0] = hash(3);
+        let page = get_shielded_transactions_by_nullifiers(
+            &db,
+            GetRingsByNullifiersRequest {
+                nullifiers,
+                limit: Some(Limit::new(PAGE_LIMIT).unwrap()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            page.data.len(),
+            1,
+            "the seeded nullifier is in the full page"
+        );
+
+        let tags: Vec<Hash> = (1..=PAGE_LIMIT).map(indexed_hash).collect();
+        let tag_request = GetRingsByTagsRequest {
+            tags: tags.clone(),
+            limit: Some(Limit::new(PAGE_LIMIT).unwrap()),
+            ..Default::default()
+        };
+        assert!(get_shielded_transactions_by_tags(&db, tag_request.clone())
+            .await
+            .unwrap()
+            .data
+            .is_empty());
+        assert!(get_encrypted_utxos_by_tags(&db, tag_request)
+            .await
+            .unwrap()
+            .data
+            .is_empty());
+
+        let too_many: Vec<Hash> = (1..=PAGE_LIMIT + 1).map(indexed_hash).collect();
+        assert!(matches!(
+            get_shielded_transactions_by_nullifiers(
+                &db,
+                GetRingsByNullifiersRequest {
+                    nullifiers: too_many.clone(),
+                    ..Default::default()
+                },
+            )
+            .await,
+            Err(PhotonApiError::ValidationError(_))
+        ));
+        assert!(matches!(
+            get_shielded_transactions_by_tags(
+                &db,
+                GetRingsByTagsRequest {
+                    tags: too_many.clone(),
+                    ..Default::default()
+                },
+            )
+            .await,
+            Err(PhotonApiError::ValidationError(_))
+        ));
+        assert!(matches!(
+            get_encrypted_utxos_by_tags(
+                &db,
+                GetRingsByTagsRequest {
+                    tags: too_many,
+                    ..Default::default()
+                },
+            )
+            .await,
+            Err(PhotonApiError::ValidationError(_))
+        ));
     }
 
     fn nullifiers_request(nullifier: u8, limit: u64) -> GetRingsByNullifiersRequest {
