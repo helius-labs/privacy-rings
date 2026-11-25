@@ -13,7 +13,7 @@ export function checkedAddress(value: Address, field: string): void {
 }
 
 /** The runtime clamps a larger request instead of failing, so the ceiling is enforced here. */
-const MAX_COMPUTE_UNIT_LIMIT = 1_400_000;
+export const MAX_COMPUTE_UNIT_LIMIT = 1_400_000;
 
 /**
  * @internal The budget a legacy transaction received per instruction. A

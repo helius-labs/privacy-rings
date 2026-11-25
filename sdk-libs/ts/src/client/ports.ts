@@ -1,5 +1,5 @@
 import type { X25519PublicKey } from "../keypair/x25519.js";
-import type { Address, Commitment, Signature } from "@solana/kit";
+import type { Address, Blockhash, Commitment, SendableTransaction, Signature } from "@solana/kit";
 
 import { equalBytes } from "../interface/bytes.js";
 import type {
@@ -61,6 +61,79 @@ export interface ChainReader {
   ): Promise<readonly (RpcAccount | undefined)[]>;
   getBalance(address: Address, context?: RequestContext): Promise<bigint>;
 }
+
+/** An account read that reports its Solana context even when the account is absent. */
+export interface AccountContextReader {
+  getAccountWithContext(
+    address: Address,
+    minContextSlot: bigint,
+    context?: RequestContext,
+  ): Promise<Readonly<{ account: RpcAccount | undefined; slot: bigint }>>;
+}
+
+/** A verified service that publishes shielded addresses for Solana owners. */
+export interface DecryptionRecipientProvider {
+  /** Full base58 Solana genesis hash bound to the service keys. */
+  readonly genesisHash: string;
+  address(owner: Address, context?: RequestContext): Promise<ShieldedAddress>;
+  /**
+   * Confirms `expected` is still the payment address for `owner`.
+   * A provider that tracks a published policy checks that policy instead of
+   * downloading the keys again.
+   */
+  confirmAddress?(
+    owner: Address,
+    expected: ShieldedAddress,
+    context?: RequestContext,
+  ): Promise<void>;
+}
+
+export interface GenesisHashReader {
+  getGenesisHash(context?: RequestContext): Promise<string>;
+}
+
+/** The payment's own client identifies the chain before a service lookup. */
+export type RecipientLookup<Client> =
+  | Readonly<{ client?: Client; decryptionService?: undefined }>
+  | Readonly<{
+      client: Client & GenesisHashReader & AccountContextReader;
+      decryptionService: DecryptionRecipientProvider;
+    }>;
+
+export interface TransactionBroadcaster {
+  /** The validity of the exact hash and the Solana RPC slot that answered. */
+  getBlockhashValidity(
+    blockhash: Blockhash,
+    context?: RequestContext,
+  ): Promise<Readonly<{ slot: bigint; valid: boolean }>>;
+  broadcastTransaction(
+    transaction: Transaction & SendableTransaction,
+    context?: RequestContext & Readonly<{ minContextSlot?: bigint }>,
+  ): Promise<Signature>;
+}
+
+export type PaymentLookup<Client, Persistence = never> =
+  | Readonly<{ decryptionService?: undefined; persistence?: undefined }>
+  | Readonly<{
+      client: Client & GenesisHashReader & AccountContextReader & TransactionBroadcaster;
+      decryptionService: DecryptionRecipientProvider;
+      persistence?: Persistence;
+    }>;
+
+/** A sign-only callback and an SDK-owned submission to the payment RPC. */
+export interface PreparedPayment {
+  send(
+    sign: (transaction: Transaction, signal: AbortSignal) => Promise<Transaction>,
+    context?: RequestContext,
+  ): Promise<Signature>;
+  /** Drops an unused payment and persists that release when a snapshot is open. */
+  cancel(): Promise<void>;
+}
+
+export type PaymentBuildResult<Input> =
+  Input extends Readonly<{ decryptionService: DecryptionRecipientProvider }>
+    ? PreparedPayment
+    : Transaction;
 
 export interface BlockhashProvider {
   getLatestBlockhash(context?: RequestContext): Promise<LatestBlockhash>;

@@ -1,4 +1,4 @@
-import { getBase64Decoder } from "@solana/kit";
+import { getBase64Decoder, isBlockhash, type Blockhash } from "@solana/kit";
 
 import { bytesKey } from "../../interface/bytes.js";
 import { wireDecoder } from "../../interface/decode.js";
@@ -96,7 +96,7 @@ export interface SerializedNoteReservation {
  * must still encrypt it at rest.
  */
 export interface SerializedWalletState {
-  readonly version: 5;
+  readonly version: 6;
   readonly identity: Readonly<{
     signingPublicKey: string;
     nullifierPublicKey: string;
@@ -117,6 +117,9 @@ export interface SerializedWalletState {
     attempts: number;
     signature: Signature;
     lastValidBlockHeight: string;
+    genesisHash?: Address;
+    blockhash?: Blockhash;
+    blockhashValidAtSlot?: string;
   }>[];
 }
 
@@ -124,7 +127,7 @@ export function serializeWallet(wallet: Wallet): string {
   if (!(wallet instanceof Wallet)) fail("wallet");
   const state = wallet._state();
   const snapshot: SerializedWalletState = {
-    version: 5,
+    version: 6,
     identity: {
       signingPublicKey: encode(wallet.identity.signingPublicKey.toBytes()),
       nullifierPublicKey: encode(wallet.identity.nullifierPublicKey),
@@ -151,6 +154,11 @@ export function serializeWallet(wallet: Wallet): string {
       attempts: pending.attempts,
       signature: pending.signature,
       lastValidBlockHeight: pending.lastValidBlockHeight.toString(),
+      ...(pending.genesisHash === undefined ? {} : { genesisHash: pending.genesisHash }),
+      ...(pending.blockhash === undefined ? {} : { blockhash: pending.blockhash }),
+      ...(pending.blockhashValidAtSlot === undefined
+        ? {}
+        : { blockhashValidAtSlot: pending.blockhashValidAtSlot.toString() }),
     })),
     reservations: wallet
       ._reservationEntries()
@@ -187,7 +195,8 @@ export function deserializeWallet(serialized: string): Wallet {
 function hydrate(value: unknown): Wallet {
   const snapshot = record(value, "wallet");
   const version = snapshot["version"];
-  if (version !== 2 && version !== 3 && version !== 4 && version !== 5) fail("version");
+  if (version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6)
+    fail("version");
   const identityValue = record(snapshot["identity"], "identity");
   const identity = ShieldedAddress.fromPublicKeys(
     ShieldedPublicKey.fromBytes(
@@ -244,7 +253,7 @@ function hydrate(value: unknown): Wallet {
   });
   // Versions before 5 predate slot checkpoints, their first sync rescans
   // history once.
-  if (version === 5) {
+  if (version >= 5) {
     hydrateCheckpoints(wallet, snapshot["syncCheckpoints"]);
     wallet._forgetNullifierCheckpoints(nullifiers);
   }
@@ -270,6 +279,20 @@ function hydrate(value: unknown): Wallet {
         attempts > 3
       )
         fail(`${path}.attempts`);
+      const genesisHash =
+        version < 6 || item["genesisHash"] === undefined
+          ? undefined
+          : address(item["genesisHash"], `${path}.genesisHash`);
+      const blockhash = version < 6 ? undefined : item["blockhash"];
+      const validAtSlot = version < 6 ? undefined : item["blockhashValidAtSlot"];
+      if ((blockhash === undefined) !== (validAtSlot === undefined))
+        fail(`${path}.blockhashValidAtSlot`);
+      if (
+        blockhash !== undefined &&
+        (genesisHash === undefined || typeof blockhash !== "string" || !isBlockhash(blockhash))
+      ) {
+        fail(`${path}.blockhash`);
+      }
       const pending: PendingWalletSubmission = {
         id,
         intentHash: bytes(item["intentHash"], 32, `${path}.intentHash`) as Bytes32,
@@ -282,6 +305,11 @@ function hydrate(value: unknown): Wallet {
           item["lastValidBlockHeight"],
           `${path}.lastValidBlockHeight`,
         ),
+        ...(genesisHash === undefined ? {} : { genesisHash }),
+        ...(blockhash === undefined ? {} : { blockhash }),
+        ...(validAtSlot === undefined
+          ? {}
+          : { blockhashValidAtSlot: unsigned(validAtSlot, `${path}.blockhashValidAtSlot`) }),
       };
       const known = new Map(
         wallet.utxos().map((entry) => [bytesKey(entry.outputContext.hash), entry]),

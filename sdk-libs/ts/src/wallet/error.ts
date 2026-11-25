@@ -41,6 +41,10 @@ export const WALLET_ERROR_CODES = [
   "WALLET_MULTIPLE_INPUT_TREES",
   "WALLET_NO_INPUTS",
   "WALLET_NOTE_RESERVED",
+  "WALLET_PAYMENT_ALREADY_USED",
+  "WALLET_PAYMENT_BLOCKHASH",
+  "WALLET_PAYMENT_SIGNATURES",
+  "WALLET_SUBMIT_PAYMENT",
   "WALLET_NOTHING_TO_MERGE",
   "WALLET_PDA_DERIVATION",
   "WALLET_PERSIST",
@@ -48,6 +52,10 @@ export const WALLET_ERROR_CODES = [
   "WALLET_REGISTERED_KEYPAIR_MISMATCH",
   "WALLET_RECIPIENT_CLIENT_REQUIRED",
   "WALLET_RECIPIENT_NOT_REGISTERED",
+  "WALLET_DECRYPTION_NETWORK_MISMATCH",
+  "WALLET_DECRYPTION_RECIPIENT_MISMATCH",
+  "WALLET_RECIPIENT_LOOKUP_ABORTED",
+  "WALLET_RECIPIENT_CONTEXT_STALE",
   "WALLET_SELECTED_BALANCE_OVERFLOW",
   "WALLET_SPL_INTERFACE_CREATION_RESTRICTED",
   "WALLET_SPLIT_INPUT_HAS_DATA",
@@ -120,7 +128,7 @@ export function wrapWalletError(
   cause: unknown,
   details?: Readonly<Record<string, unknown>>,
 ): WalletError {
-  if (cause instanceof WalletError && cause.code === code) return cause;
+  if (cause instanceof WalletError && cause.code === code && details === undefined) return cause;
   const chain = extractCauseCodes(cause);
   return new WalletError(code, {
     ...(chain.length === 0 ? {} : { causeCode: chain[0], causeCodes: chain }),

@@ -1,6 +1,13 @@
 import { compileUnsignedTransaction } from "../flows/compile.js";
 import { DEFAULT_COMPUTE_UNIT_LIMIT, checkedAddress } from "../flows/internal.js";
-import type { BlockhashProvider, ChainReader, TreeContext } from "../client/ports.js";
+import type {
+  BlockhashProvider,
+  ChainReader,
+  PaymentBuildResult,
+  PaymentLookup,
+  PreparedPayment,
+  TreeContext,
+} from "../client/ports.js";
 import type {
   Address,
   AssetDeposit,
@@ -26,7 +33,8 @@ import { SOL_MINT } from "../transaction/asset.js";
 import { resolveDepositSettlement } from "../flows/settlement.js";
 
 import { WalletError, wrapWalletError } from "./error.js";
-import { resolveShieldedRecipient } from "./registry.js";
+import { prepareServicePayment } from "./payment.js";
+import { paymentRecipientResolver } from "./registry.js";
 
 /** @internal */
 export interface DepositParams {
@@ -125,7 +133,7 @@ export async function createDeposit(params: DepositParams): Promise<Deposit> {
 
 export type DepositClient = TreeContext & BlockhashProvider & Pick<ChainReader, "getAccount">;
 
-export interface DepositTransactionParams {
+export type DepositTransactionParams = PaymentLookup<DepositClient> & {
   readonly client: DepositClient;
   readonly feePayer: Address;
   readonly depositor?: Address;
@@ -145,7 +153,7 @@ export interface DepositTransactionParams {
   readonly createSplInterface?: boolean;
   /** Placed verbatim before every other instruction, in order. */
   readonly setupInstructions?: readonly Instruction[];
-}
+};
 
 /**
  * Whether a deposit of `mint` must first create its SPL interface. Throws when
@@ -191,20 +199,19 @@ function checkedSetupInstruction(instruction: Instruction, index: number): void 
   );
 }
 
-export async function buildDepositTransaction(
-  input: DepositTransactionParams,
+export function buildDepositTransaction<Input extends DepositTransactionParams>(
+  input: Input,
   context?: RequestContext,
-): Promise<Transaction> {
+): Promise<PaymentBuildResult<Input>>;
+export async function buildDepositTransaction(
+  parameters: DepositTransactionParams,
+  context?: RequestContext,
+): Promise<Transaction | PreparedPayment> {
   try {
+    const input = { ...parameters };
     input.setupInstructions?.forEach(checkedSetupInstruction);
-    const recipient = await resolveShieldedRecipient(
-      { rpc: input.client, recipient: input.recipient },
-      (unregistered) =>
-        new WalletError("WALLET_RECIPIENT_NOT_REGISTERED", {
-          details: { recipient: unregistered },
-        }),
-      context,
-    );
+    const { resolve, revalidate, confirm } = paymentRecipientResolver(input, context);
+    const { address: recipient } = await resolve(input.recipient);
     const depositor = input.depositor ?? input.feePayer;
     const tree = input.tree ?? input.client.tree;
     const asset = input.asset ?? SOL_MINT;
@@ -236,7 +243,7 @@ export async function buildDepositTransaction(
       await deposit.instruction(tree, depositor),
     ];
     const lifetime = await input.client.getLatestBlockhash(context);
-    return compileUnsignedTransaction({
+    const transaction = compileUnsignedTransaction({
       feePayer: input.feePayer,
       lifetime,
       computeUnitLimit: DEFAULT_COMPUTE_UNIT_LIMIT,
@@ -245,6 +252,10 @@ export async function buildDepositTransaction(
         : { setupInstructions: input.setupInstructions }),
       instructions,
     });
+    if (input.decryptionService === undefined) return transaction;
+    await revalidate();
+    await confirm();
+    return prepareServicePayment(transaction, input.client, revalidate, confirm);
   } catch (cause) {
     throw wrapWalletError("WALLET_BUILD_DEPOSIT", cause);
   }

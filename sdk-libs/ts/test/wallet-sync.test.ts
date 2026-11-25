@@ -2025,13 +2025,35 @@ describe("wallet sync", () => {
       new Uint8Array(16) as Bytes16,
     );
 
-    expect(slots.map((slot) => readOutputData(slot.data).scheme)).toEqual([
+    const frames = slots.flatMap((slot) => (slot === undefined ? [] : [readOutputData(slot.data)]));
+    expect(frames.map((frame) => frame.scheme)).toEqual([
       EncryptedScheme.serviceConfidential,
       EncryptedScheme.serviceRingConfidential,
     ]);
-    for (const slot of slots) {
-      expect(readOutputData(slot.data).body.subarray(0, 33)).toEqual(service.toBytes());
+    for (const frame of frames) {
+      expect(frame.body.subarray(0, 33)).toEqual(service.toBytes());
     }
+  });
+
+  it("stamps a service send as scheme nine", () => {
+    const sender = ShieldedKeypair.generate();
+    const recipient = ShieldedKeypair.generate().shieldedAddress();
+    const utxo = new Utxo({
+      owner: sender.signingPublicKey(),
+      asset: SOL_MINT,
+      amount: 10n,
+      blinding: bytes(4),
+    });
+    const transfer = new ConfidentialTransfer(
+      sender.shieldedAddress(),
+      [ProofInputUtxo.fromKeypair(utxo, sender)],
+      sender.shieldedAddress().solanaAddress(),
+    );
+    transfer.send(recipient, SOL_MINT, 4n, true);
+    const output = transfer
+      .prepare()
+      .outputs.find((slot) => slot.ownerAddress?.toBytes().toString() === recipient.toBytes().toString());
+    expect(output?.serviceViewingPublicKey?.toBytes()).toEqual(recipient.viewingPublicKey.toBytes());
   });
 
   it("records an outbound ring confidential transfer and keeps ring change", async () => {

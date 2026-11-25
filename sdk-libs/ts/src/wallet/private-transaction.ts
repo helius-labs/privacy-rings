@@ -208,7 +208,7 @@ async function authorizeWithInputs(
     const transfer = new ConfidentialTransfer(address, inputs, transaction.payer());
     if (action.kind === "transfer") {
       for (const payment of action.payments) {
-        transfer.send(payment.recipient, action.asset, payment.amount);
+        transfer.send(payment.recipient, action.asset, payment.amount, payment.service === true);
       }
     } else {
       transfer.withdraw(action.asset, action.amount, action.target);
