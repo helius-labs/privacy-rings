@@ -82,7 +82,7 @@ impl Announcer {
         sign: &impl Fn(&[u8]) -> Signature,
     ) -> Result<bool, AnnounceError> {
         let announcement = UpstreamAnnouncement {
-            url: self.url.to_string(),
+            url: self.url.as_str().to_owned(),
             methods: self.methods.clone(),
             timestamp: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -94,7 +94,11 @@ impl Announcer {
             announcement,
         };
         let answer: Answer = http
-            .post(format!("{}/{}", self.registry, AnnounceUpstream::NAME))
+            .post(format!(
+                "{}/{}",
+                self.registry.as_str(),
+                AnnounceUpstream::NAME
+            ))
             .timeout(INTERVAL)
             .json(&serde_json::json!({
                 "jsonrpc": "2.0",
@@ -103,9 +107,11 @@ impl Announcer {
                 "params": request,
             }))
             .send()
-            .await?
+            .await
+            .map_err(reqwest::Error::without_url)?
             .json()
-            .await?;
+            .await
+            .map_err(reqwest::Error::without_url)?;
         match (answer.result, answer.error) {
             (Some(result), _) => Ok(result.approved),
             (None, error) => Err(AnnounceError::Refused(

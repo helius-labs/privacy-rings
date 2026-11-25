@@ -16,7 +16,8 @@ use jsonrpsee::{
 };
 use sea_orm::{
     sea_query::{Expr, Func, OnConflict, Query, SimpleExpr},
-    ColumnTrait, DatabaseConnection, DbErr, EntityTrait, QueryFilter, QueryOrder, Set,
+    ColumnTrait, ConnectionTrait, DatabaseBackend, DatabaseConnection, DbErr, EntityName,
+    EntityTrait, QueryFilter, QueryOrder, Set, TransactionTrait,
 };
 use solana_pubkey::Pubkey;
 use spr_indexer_api::{
@@ -116,18 +117,29 @@ impl Announced {
     /// Whether an operator approved the announced URL.
     pub async fn record(self, db: &DatabaseConnection) -> Result<bool, UpstreamError> {
         let pubkey = self.pubkey.to_bytes().to_vec();
+        let methods = serde_json::to_string(&self.methods)?;
         let row = ActiveModel {
             pubkey: Set(pubkey.clone()),
-            url: Set(self.url.to_string()),
-            methods: Set(serde_json::to_string(&self.methods)?),
+            url: Set(self.url.as_str().to_owned()),
+            methods: Set(methods.clone()),
             announced_at: Set(self.timestamp),
             approved_url: Set(None),
+            approved_methods: Set(None),
             approval_order: Set(None),
         };
         let written = Entity::insert(row)
             .on_conflict(
                 OnConflict::column(Column::Pubkey)
                     .update_columns([Column::Url, Column::Methods, Column::AnnouncedAt])
+                    // Only the approved URL changes the methods it serves.
+                    .value(
+                        Column::ApprovedMethods,
+                        Expr::case(
+                            Expr::col((Entity, Column::ApprovedUrl)).eq(self.url.as_str()),
+                            Expr::value(methods),
+                        )
+                        .finally(Expr::col((Entity, Column::ApprovedMethods))),
+                    )
                     // A replayed announcement cannot roll the methods back.
                     .action_and_where(Expr::col((Entity, Column::AnnouncedAt)).lt(self.timestamp))
                     .to_owned(),
@@ -170,8 +182,18 @@ impl Approve {
             )
             .from(Entity)
             .to_owned();
+        let transaction = db.begin().await?;
+        // Two first approvals must not read one maximum, SQLite has one writer.
+        if transaction.get_database_backend() == DatabaseBackend::Postgres {
+            let lock = format!(
+                "LOCK TABLE {} IN SHARE ROW EXCLUSIVE MODE",
+                Entity.table_name()
+            );
+            transaction.execute_unprepared(&lock).await?;
+        }
         let approved = Entity::update_many()
             .col_expr(Column::ApprovedUrl, Expr::value(self.url.as_str()))
+            .col_expr(Column::ApprovedMethods, Expr::col(Column::Methods).into())
             // The first approval keeps its place among upstreams naming one method.
             .col_expr(
                 Column::ApprovalOrder,
@@ -183,8 +205,9 @@ impl Approve {
             )
             .filter(Column::Pubkey.eq(self.pubkey.to_bytes().to_vec()))
             .filter(Column::Url.eq(self.url.as_str()))
-            .exec(db)
+            .exec(&transaction)
             .await?;
+        transaction.commit().await?;
         match approved.rows_affected {
             0 => Err(UpstreamError::NotAnnounced),
             _ => Ok(()),
@@ -238,11 +261,11 @@ impl Routes {
             .await?;
         let mut routes = HashMap::new();
         for row in approved {
-            let Some(url) = row.approved_url else {
+            let (Some(url), Some(methods)) = (row.approved_url, row.approved_methods) else {
                 continue;
             };
             let url: UpstreamUrl = url.parse()?;
-            for method in serde_json::from_str::<Vec<String>>(&row.methods)? {
+            for method in serde_json::from_str::<Vec<String>>(&methods)? {
                 routes.entry(method).or_insert_with(|| url.clone());
             }
         }
@@ -459,6 +482,83 @@ pub(crate) mod tests {
             revoke(&db, pubkey(&first)).await,
             Err(UpstreamError::Unknown)
         ));
+    }
+
+    #[tokio::test]
+    async fn a_replacement_announcement_leaves_the_approved_url_its_own_methods() {
+        let db = database().await;
+        let key = key(1);
+        let announce = |url: &str, methods: &[&str], timestamp| {
+            Announced::verify(signed(&key, url, methods, timestamp), timestamp).unwrap()
+        };
+        let approve = |url: &str| Approve {
+            pubkey: pubkey(&key),
+            url: url.parse().unwrap(),
+        };
+        let routes = Routes::default();
+        let routed = |method: &str| routes.get(method).map(|url| url.to_string());
+
+        announce("http://old", &["ringStatus", "submitRelay"], NOW)
+            .record(&db)
+            .await
+            .unwrap();
+        approve("http://old").record(&db).await.unwrap();
+        announce("http://new", &["ringDeposits"], NOW + 1)
+            .record(&db)
+            .await
+            .unwrap();
+        routes.refresh(&db).await.unwrap();
+        assert_eq!(routed("submitRelay").as_deref(), Some("http://old"));
+        assert_eq!(routed("ringDeposits"), None);
+
+        announce("http://old", &["ringStatus"], NOW + 2)
+            .record(&db)
+            .await
+            .unwrap();
+        routes.refresh(&db).await.unwrap();
+        assert_eq!(routed("ringStatus").as_deref(), Some("http://old"));
+        assert_eq!(routed("submitRelay"), None);
+
+        announce("http://new", &["ringDeposits"], NOW + 3)
+            .record(&db)
+            .await
+            .unwrap();
+        approve("http://new").record(&db).await.unwrap();
+        routes.refresh(&db).await.unwrap();
+        assert_eq!(routed("ringDeposits").as_deref(), Some("http://new"));
+        assert_eq!(routed("ringStatus"), None);
+    }
+
+    /// Runs on PostgreSQL when `PHOTON_TEST_POSTGRES_URL` names a migrated database.
+    #[tokio::test]
+    async fn concurrent_first_approvals_take_distinct_orders() {
+        let db = match std::env::var("PHOTON_TEST_POSTGRES_URL") {
+            Ok(url) => Database::connect(url).await.unwrap(),
+            Err(_) => database().await,
+        };
+        let keys: Vec<_> = (100..116).map(key).collect();
+        for key in &keys {
+            let _leftover = revoke(&db, pubkey(key)).await;
+            Announced::verify(signed(key, "http://ring", &["ringStatus"], NOW), NOW)
+                .unwrap()
+                .record(&db)
+                .await
+                .unwrap();
+        }
+        let approvals = keys.iter().map(|key| {
+            Approve {
+                pubkey: pubkey(key),
+                url: "http://ring".parse().unwrap(),
+            }
+            .record(&db)
+        });
+        let approvals = futures::future::join_all(approvals).await;
+        for key in &keys {
+            revoke(&db, pubkey(key)).await.unwrap();
+        }
+        for approval in approvals {
+            approval.unwrap();
+        }
     }
 
     #[tokio::test]

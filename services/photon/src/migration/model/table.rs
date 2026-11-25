@@ -133,5 +133,6 @@ pub enum RpcUpstreams {
     Methods,
     AnnouncedAt,
     ApprovedUrl,
+    ApprovedMethods,
     ApprovalOrder,
 }

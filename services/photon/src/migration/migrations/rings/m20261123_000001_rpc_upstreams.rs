@@ -28,6 +28,7 @@ impl MigrationTrait for Migration {
                             .not_null(),
                     )
                     .col(ColumnDef::new(RpcUpstreams::ApprovedUrl).text())
+                    .col(ColumnDef::new(RpcUpstreams::ApprovedMethods).text())
                     .col(
                         ColumnDef::new(RpcUpstreams::ApprovalOrder)
                             .big_integer()

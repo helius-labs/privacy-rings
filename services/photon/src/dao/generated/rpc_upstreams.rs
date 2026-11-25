@@ -17,6 +17,9 @@ pub struct Model {
     pub announced_at: i64,
     #[sea_orm(column_type = "Text", nullable)]
     pub approved_url: Option<String>,
+    /// JSON array of the method names the approved URL announced last.
+    #[sea_orm(column_type = "Text", nullable)]
+    pub approved_methods: Option<String>,
     #[sea_orm(unique)]
     pub approval_order: Option<i64>,
 }
