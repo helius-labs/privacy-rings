@@ -42,6 +42,8 @@ const MAX_CABUNDLE = 8;
 const MAX_DEPTH = 16;
 /** Seconds a certificate's notBefore may lead the local clock. */
 const NOT_BEFORE_SKEW_SECS = 300;
+/** How old a document may be, by its own `timestamp`, when it is checked. */
+const MAX_DOCUMENT_AGE_SECS = 300;
 const CBOR: DecodeOptions = Object.freeze({
   useMaps: true,
   rejectDuplicateMapKeys: true,
@@ -75,6 +77,8 @@ type CoseSign1 = Readonly<{
 }>;
 
 type NitroDocument = Readonly<{
+  /** Milliseconds since the Unix epoch, when the NSM signed the document. */
+  timestamp: number;
   digest: string;
   pcrs: ReadonlyMap<number, Uint8Array>;
   certificate: Uint8Array;
@@ -153,6 +157,7 @@ function verifyAwsNitro(
   const leafKey = chainedLeafKey(document, anchors, claims.nowSecs);
   const signed = encodeCbor(["Signature1", protectedHeader, new Uint8Array(0), payload]);
   if (!ecdsaP384(signature, signed, leafKey, "compact")) throw refused("signature");
+  fresh(document.timestamp, claims.nowSecs);
 
   if (document.digest !== "SHA384") throw refused("digest");
   const pcr0 = pcr(document, 0);
@@ -192,6 +197,13 @@ function coseSign1(bytes: Uint8Array): CoseSign1 {
   });
 }
 
+/** Refuses a document signed more than the skew ahead of `nowSecs`, or more than the max age before it. */
+function fresh(timestampMs: number, nowSecs: number): void {
+  const signedSecs = Math.floor(timestampMs / 1000);
+  if (signedSecs > nowSecs + NOT_BEFORE_SKEW_SECS) throw refused("timestamp");
+  if (nowSecs - signedSecs > MAX_DOCUMENT_AGE_SECS) throw refused("timestamp");
+}
+
 function documentOf(payload: Uint8Array): NitroDocument {
   const document = map(cbor(payload));
   if (document.size > MAX_DOCUMENT_ENTRIES) throw malformed();
@@ -224,6 +236,7 @@ function documentOf(payload: Uint8Array): NitroDocument {
     pcrs.set(index, byteString(value));
   }
   return Object.freeze({
+    timestamp,
     digest,
     pcrs,
     certificate: byteString(document.get("certificate")),

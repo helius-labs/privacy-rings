@@ -50,6 +50,7 @@ Fixed
 - `syncWallet` misclassified authored spends containing unknown output schemes as withdrawals or splits, and now omits their history rows.
 - `syncWallet` failed with `TRANSACTION_KEYS_UNRESOLVED` when a reserved or unknown output scheme accompanied a confidential note, and now stores the note.
 - `ProverClient` requests with a trailing slash remain decryptable when the gateway trims it; update the prover with the SDK.
+- AWS Nitro attestation accepted a validly signed document of any age; it now refuses one whose `timestamp` is over 300 seconds old or over 300 seconds ahead of the clock, with check `timestamp`.
 
 ## 0.8.0-alpha — 2026-11-03
 

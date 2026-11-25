@@ -82,7 +82,9 @@ function file(
       version,
       expires_at: expiresAt,
       freshness: { public_keys: [publicKey(5)], threshold: 1, max_lifetime_secs: 3 * 86_400 },
-      policy: { ...policy, max_age_secs: 300 },
+      // Short enough that a test can attest several times within 300 s of the live
+      // document's signing time, which is as old as its timestamp may be.
+      policy: { ...policy, max_age_secs: 60 },
     }),
   );
   const freshness = utf8ToBytes(
@@ -216,7 +218,7 @@ describe("a prover client under a signed policy", () => {
     ]);
     await health();
     for (let step = 1; step <= 3; step++) {
-      now.mockReturnValue((capturedAt + 301 * step) * 1000);
+      now.mockReturnValue((capturedAt + 61 * step) * 1000);
       await health();
     }
     expect(paths).toEqual([
@@ -265,14 +267,14 @@ describe("a prover client under a signed policy", () => {
 
   it("keeps a release in force past its old freshness once the freshness is renewed", async () => {
     const { paths, now, health } = client([
-      served(file(2, [1, 2], undefined, { freshUntil: capturedAt + 400 })),
-      served(file(2, [1, 3], undefined, { issuedAt: capturedAt + 300 })),
-      served(file(2, [1, 2], undefined, { freshUntil: capturedAt + 400 })),
+      served(file(2, [1, 2], undefined, { freshUntil: capturedAt + 80 })),
+      served(file(2, [1, 3], undefined, { issuedAt: capturedAt + 60 })),
+      served(file(2, [1, 2], undefined, { freshUntil: capturedAt + 80 })),
     ]);
     await health();
-    now.mockReturnValue((capturedAt + 301) * 1000);
+    now.mockReturnValue((capturedAt + 61) * 1000);
     await health();
-    now.mockReturnValue((capturedAt + 602) * 1000);
+    now.mockReturnValue((capturedAt + 122) * 1000);
     await health();
     expect(paths).toEqual([
       "/policy.json",

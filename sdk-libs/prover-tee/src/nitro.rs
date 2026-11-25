@@ -31,6 +31,8 @@ use super::{
 /// AWS Nitro Enclaves root G1, SHA-256 of the DER pinned in a test.
 const AWS_NITRO_ROOT_G1: &[u8] = include_bytes!("nitro/aws_nitro_enclaves_root_g1.der");
 const NOT_BEFORE_SKEW_SECS: u64 = 300;
+/// How old a document may be, by its own `timestamp`, when it is checked.
+const MAX_DOCUMENT_AGE_SECS: u64 = 300;
 const MAX_DOCUMENT_FIELDS: usize = 16;
 const MAX_PCRS: usize = 32;
 const MAX_CABUNDLE: usize = 8;
@@ -75,6 +77,8 @@ pub struct NitroEvidence {
 
 struct AttestationDocument {
     digest: String,
+    /// Milliseconds since the Unix epoch, when the NSM signed the document.
+    timestamp: u64,
     pcrs: BTreeMap<usize, Vec<u8>>,
     certificate: Vec<u8>,
     cabundle: Vec<Vec<u8>>,
@@ -130,6 +134,7 @@ impl TeePlatform for Nitro {
         signer
             .verify(&sign1.tbs_data(b""), &signature)
             .map_err(|_| invalid("the COSE signature does not verify"))?;
+        document.fresh(now_secs)?;
         if document.digest != "SHA384" {
             return Err(invalid(format!("digest {} is not SHA384", document.digest)));
         }
@@ -196,13 +201,16 @@ impl AttestationDocument {
         if fields.text("module_id")?.is_empty() {
             return Err(invalid("module_id is empty"));
         }
-        match fields.take("timestamp")? {
-            Value::Integer(timestamp)
-                if u64::try_from(timestamp).is_ok_and(|timestamp| timestamp <= MAX_INTEGER) => {}
-            _ => return Err(invalid("timestamp is not an integer up to 2^53 minus 1")),
+        let timestamp = match fields.take("timestamp")? {
+            Value::Integer(timestamp) => u64::try_from(timestamp)
+                .ok()
+                .filter(|timestamp| *timestamp <= MAX_INTEGER),
+            _ => None,
         }
+        .ok_or_else(|| invalid("timestamp is not an integer up to 2^53 minus 1"))?;
         let document = Self {
             digest: fields.text("digest")?,
+            timestamp,
             pcrs: pcrs(fields.take("pcrs")?)?,
             certificate: fields.bytes("certificate")?,
             cabundle: cabundle(fields.take("cabundle")?)?,
@@ -219,6 +227,19 @@ impl AttestationDocument {
             return Err(invalid(REPEATED_KEY));
         }
         Ok(document)
+    }
+
+    /// Refuses a document signed over `MAX_DOCUMENT_AGE_SECS` before `now_secs`,
+    /// or over `NOT_BEFORE_SKEW_SECS` after it.
+    fn fresh(&self, now_secs: u64) -> Result<(), TeeError> {
+        let signed_secs = self.timestamp / 1000;
+        if signed_secs > now_secs.saturating_add(NOT_BEFORE_SKEW_SECS) {
+            return Err(invalid("timestamp is in the future"));
+        }
+        if now_secs.saturating_sub(signed_secs) > MAX_DOCUMENT_AGE_SECS {
+            return Err(invalid("timestamp is over 300 seconds old"));
+        }
+        Ok(())
     }
 
     /// The leaf key once `cabundle`, read root first, chains `certificate` to `root`.
