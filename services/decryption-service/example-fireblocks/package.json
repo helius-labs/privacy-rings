@@ -1,15 +1,16 @@
 {
-  "name": "spr-tvc-typescript-client-example",
+  "name": "spr-fireblocks-typescript-client-example",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Turnkey-signed receive and claim with the attested decryption service",
+  "description": "Fireblocks-signed receive and claim with the attested decryption service",
   "scripts": {
     "example": "tsx index.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts"
   },
   "dependencies": {
+    "@fireblocks/ts-sdk": "37.0.0",
     "@heliuslabs/spr": "link:../../../sdk-libs/ts",
     "@solana/kit": "^8.3.0",
     "@turnkey/sdk-server": "^8.3.0",

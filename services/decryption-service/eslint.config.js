@@ -14,6 +14,7 @@ export default [
     files: [
       "sdk/**/*.{ts,tsx}",
       "example/**/*.{ts,tsx}",
+      "example-fireblocks/**/*.{ts,tsx}",
       "xtask/*.ts",
     ],
     languageOptions: {
@@ -55,7 +56,7 @@ export default [
     },
   },
   {
-    files: ["example/turnkey.ts", "xtask/release-api.ts"],
+    files: ["example/turnkey.ts", "example-fireblocks/turnkey.ts", "xtask/release-api.ts"],
     rules: {
       "no-restricted-imports": "off",
     },

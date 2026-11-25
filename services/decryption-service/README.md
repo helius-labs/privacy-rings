@@ -10,7 +10,7 @@ owner tag.
 | --- | --- |
 | [Security specification](enclave/SPEC.md) | Data flow, key custody, and trust assumptions |
 | [Decryption enclave](enclave) · [Wire protocol](protocol) | Implementation and exact cryptographic inputs |
-| [TypeScript client](sdk) · [Turnkey example](example) | Connect, send, claim, and sweep |
+| [TypeScript client](sdk) · [Turnkey example](example) · [Fireblocks example](example-fireblocks) | Connect, send, claim, and sweep |
 | [Test invariants](tests/README.md) · [Release runbook](xtask/README.md) | Audit coverage and deployment |
 
 From `services/decryption-service`, run `just ci` for Rust and TypeScript

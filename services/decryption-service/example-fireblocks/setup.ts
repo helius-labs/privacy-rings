@@ -1,6 +1,7 @@
 import "dotenv/config";
 
 import { readFile } from "node:fs/promises";
+import { Fireblocks } from "@fireblocks/ts-sdk";
 import {
   assertIsFullySignedTransaction,
   assertIsTransactionWithinSizeLimit,
@@ -28,7 +29,8 @@ import type { AssetBalance } from "@heliuslabs/spr/transaction";
 import { createDecryptionService, type Network } from "@heliuslabs/spr-decryption-service";
 import { createLocalDecryptionService } from "@heliuslabs/spr-decryption-service/testing";
 
-import { turnkeyClient, turnkeySigner, type OwnerSigner } from "./turnkey.js";
+import { turnkeyClient, type OwnerSigner } from "./turnkey.js";
+import { fireblocksSigner } from "./fireblocks.js";
 
 type Client = Awaited<ReturnType<typeof createSprClient>>;
 type ConfirmedTransaction = { readonly signature: Signature; readonly slot: bigint };
@@ -91,9 +93,15 @@ export async function setup() {
     };
   }
 
-  const signer = turnkeySigner(
-    turnkeyClient(env("TURNKEY_ORGANIZATION_ID"), env("TURNKEY_API_PUBLIC_KEY"), env("TURNKEY_API_PRIVATE_KEY")),
-    env("TURNKEY_SOLANA_ADDRESS"),
+  const fireblocks = new Fireblocks({
+    apiKey: env("FIREBLOCKS_API_KEY"),
+    secretKey: await readFile(env("FIREBLOCKS_API_SECRET_PATH"), "utf8"),
+    basePath: env("FIREBLOCKS_BASE_PATH"),
+  });
+  const signer = fireblocksSigner(
+    fireblocks.transactions,
+    env("FIREBLOCKS_VAULT_ACCOUNT_ID"),
+    env("FIREBLOCKS_SOLANA_ADDRESS"),
   );
   const tvcOrganization = env("TVC_ORG_ID");
   const tvc = turnkeyClient(tvcOrganization, env("TVC_API_KEY_PUBLIC"), env("TVC_API_KEY_PRIVATE"));
@@ -106,13 +114,23 @@ export async function setup() {
   return { zolana, sender: signer, recipient: signer, service };
 }
 
-/** Derive wallet-local privacy keys from a Turnkey or local signer. */
+/** Derive wallet-local privacy keys only from a repeatable owner signature. */
 export async function localWalletKeys(owner: OwnerSigner, proofService: Client["proofService"]) {
   const publicKey = new Uint8Array(getAddressEncoder().encode(owner.address)) as Bytes32;
-  const [signatures] = await owner.signMessages([createSignableMessage(ed25519DerivationMessage(publicKey))]);
+  const message = createSignableMessage(ed25519DerivationMessage(publicKey));
+  const [signatures] = await owner.signMessages([message]);
   const derivationSeed = signatures?.[owner.address];
   if (!derivationSeed) throw new Error("the owner did not sign the derivation message");
   try {
+    const [repeated] = await owner.signMessages([message]);
+    const repeatedSeed = repeated?.[owner.address];
+    try {
+      if (!repeatedSeed || !Buffer.from(derivationSeed).equals(Buffer.from(repeatedSeed))) {
+        throw new Error("the wallet returned different derivation signatures; this example requires repeatable signatures or stored privacy key material");
+      }
+    } finally {
+      repeatedSeed?.fill(0);
+    }
     return LocalKeys.fromDerivationSeed({ solanaPublicKey: owner.address, derivationSeed }, proofService);
   } finally {
     derivationSeed.fill(0);

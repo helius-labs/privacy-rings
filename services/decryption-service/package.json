@@ -11,12 +11,12 @@
   },
   "scripts": {
     "build:ts": "pnpm --filter @heliuslabs/spr-decryption-service build",
-    "lint:ts": "eslint sdk example xtask eslint.config.js --max-warnings 0",
+    "lint:ts": "eslint sdk example example-fireblocks xtask eslint.config.js --max-warnings 0",
     "test:ts": "pnpm --filter @heliuslabs/spr-decryption-service test",
     "typecheck:ts": "pnpm --filter @heliuslabs/spr-decryption-service typecheck",
     "ci:ts": "pnpm lint:ts && pnpm typecheck:ts && pnpm test:ts && pnpm build:ts && tsc -p xtask && pnpm typecheck:examples && pnpm test:examples",
-    "typecheck:examples": "pnpm --filter spr-tvc-typescript-client-example typecheck",
-    "test:examples": "pnpm --filter spr-tvc-typescript-client-example test"
+    "typecheck:examples": "pnpm --filter '*typescript-client-example' typecheck",
+    "test:examples": "pnpm --filter '*typescript-client-example' test"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

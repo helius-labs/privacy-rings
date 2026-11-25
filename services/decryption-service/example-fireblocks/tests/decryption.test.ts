@@ -12,22 +12,32 @@ import {
   type IndexedShieldedTransaction,
 } from "@heliuslabs/spr/transaction";
 import { createLocalDecryptionService } from "@heliuslabs/spr-decryption-service/testing";
-import { address, generateKeyPairSigner, type Signature } from "@solana/kit";
+import { address, createSignableMessage, generateKeyPairSigner, type Signature } from "@solana/kit";
+import { fireblocksSigner } from "../fireblocks.js";
 
 const endpoint = process.env["DECRYPTION_SERVICE_LOCAL_ENDPOINT"];
 
-test("the direct service opens signed batches and the SDK checks commitments", { skip: !endpoint }, async () => {
+test("the direct service opens Fireblocks-signed batches and the SDK checks commitments", { skip: !endpoint }, async () => {
   await initializePoseidon();
   const service = createLocalDecryptionService({ network: "devnet", endpoint: new URL(endpoint!) });
   const signer = await generateKeyPairSigner();
   const approvals: string[] = [];
-  const owner = {
-    address: signer.address,
-    signMessages: async (messages: Parameters<typeof signer.signMessages>[0]) => {
-      approvals.push(Buffer.from(messages[0]!.content).toString("hex"));
-      return signer.signMessages(messages);
+  let fullSig: string | undefined;
+  const owner = fireblocksSigner({
+    async createTransaction({ transactionRequest }) {
+      const hex = transactionRequest?.extraParameters?.rawMessageData?.messages?.[0]?.content;
+      assert.equal(typeof hex, "string");
+      approvals.push(hex);
+      const [signed] = await signer.signMessages([createSignableMessage(new Uint8Array(Buffer.from(hex, "hex")))]);
+      const signature = signed?.[signer.address];
+      assert.ok(signature);
+      fullSig = Buffer.from(signature).toString("hex");
+      return { data: { id: String(approvals.length) } };
     },
-  };
+    async getTransaction() {
+      return { data: { status: "COMPLETED", signedMessages: [{ signature: { fullSig } }] } };
+    },
+  }, "7", signer.address);
   const unavailableProof = () => { throw new Error("this test only decrypts"); };
   const keys = await service.open(owner, { prove: unavailableProof, proveMerge: unavailableProof });
   const sender = ViewingKey.generate();

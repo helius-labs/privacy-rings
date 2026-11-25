@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 
-import { setup } from "../setup.js";
+import { generateKeyPairSigner } from "@solana/kit";
+import { initializePoseidon } from "@heliuslabs/spr";
+
+import { localWalletKeys, setup } from "../setup.js";
 
 const MAINNET = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 const DEVNET = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
@@ -19,6 +22,34 @@ function setEnv(t: TestContext, values: Record<string, string | undefined>): voi
   }
 }
 
+test("local privacy keys require a repeatable derivation signature before any deposit", async () => {
+  await initializePoseidon();
+  const owner = await generateKeyPairSigner();
+  const other = await generateKeyPairSigner();
+  const proofService = {
+    async prove() { assert.fail("derivation does not prove a spend"); },
+    async proveMerge() { assert.fail("derivation does not prove a merge"); },
+    async proveIndexed() { assert.fail("derivation does not prove indexed inputs"); },
+  };
+  const keys = await localWalletKeys(owner, proofService);
+  keys.destroy();
+
+  let calls = 0;
+  const changingOwner = {
+    ...owner,
+    async signMessages(messages: Parameters<typeof owner.signMessages>[0]) {
+      calls++;
+      if (calls === 1) return owner.signMessages(messages);
+      const [signed] = await other.signMessages(messages);
+      const signature = signed?.[other.address];
+      assert.ok(signature);
+      return [{ [owner.address]: signature }];
+    },
+  };
+  await assert.rejects(localWalletKeys(changingOwner, proofService), /different derivation signatures/);
+  assert.equal(calls, 2);
+});
+
 test("the demonstration refuses mainnet before contacting any service", async (t) => {
   setEnv(t, { SPR_NETWORK: "mainnet" });
   const fetch = t.mock.method(globalThis, "fetch", () => assert.fail("unexpected network request"));
@@ -30,7 +61,7 @@ const cases = [
   { name: "rejects mainnet genesis on hosted devnet", genesis: MAINNET, local: false, error: /requires a Solana devnet or localnet RPC/ },
   { name: "rejects unexpected genesis on hosted devnet", genesis: LOCALNET, local: false, error: /requires a Solana devnet or localnet RPC/ },
   { name: "rejects mainnet genesis on loopback", genesis: MAINNET, local: true, error: /requires a Solana devnet or localnet RPC/ },
-  { name: "accepts hosted devnet genesis before loading Turnkey credentials", genesis: DEVNET, local: false, error: /set TURNKEY_ORGANIZATION_ID/ },
+  { name: "accepts hosted devnet genesis before loading Fireblocks credentials", genesis: DEVNET, local: false, error: /set FIREBLOCKS_API_KEY/ },
   { name: "accepts localnet genesis before loading the local keypair", genesis: LOCALNET, local: true, error: /set TVC_SOLANA_KEYPAIR_PATH/ },
 ];
 
@@ -44,7 +75,7 @@ for (const { name, genesis, local, error } of cases) {
       ZOLANA_INDEXER_URL: "http://127.0.0.1:8080/",
       ZOLANA_PROVER_URL: "http://127.0.0.1:8081/",
       DECRYPTION_SERVICE_LOCAL_ENDPOINT: local ? "http://127.0.0.1:8082/" : undefined,
-      TURNKEY_ORGANIZATION_ID: undefined,
+      FIREBLOCKS_API_KEY: undefined,
       TVC_SOLANA_KEYPAIR_PATH: undefined,
     });
     const fetch = t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
