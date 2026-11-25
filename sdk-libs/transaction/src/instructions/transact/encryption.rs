@@ -2,7 +2,9 @@ use borsh::BorshDeserialize;
 use solana_address::Address;
 use spr_event::{MessageData, OutputDataEncoding};
 use spr_interface::instruction::instruction_data::transact::{OwnerTag, TransactOutput};
-use spr_keypair::{constants::SALT_LEN, random_salt, PublicKey, ShieldedAddress, ViewingKey};
+use spr_keypair::{
+    constants::SALT_LEN, random_salt, PublicKey, ShieldedAddress, ViewingKey, X25519Pubkey,
+};
 
 use super::{sender_owner_tag, ConfidentialTransaction, FinalizedTransaction};
 use crate::{
@@ -249,15 +251,22 @@ impl FinalizedTransaction {
                     ring_program_id: output.ring_program_id,
                     data: output.data.clone(),
                 };
+                let service_key = output
+                    .service_viewing_pubkey
+                    .map(X25519Pubkey::from_bytes)
+                    .transpose()
+                    .map_err(|_| TransactionError::UnknownViewingKey)?;
                 let cx = ConfidentialEncode {
                     tx: tx_viewing_key.clone(),
-                    recipient_pubkey: address.viewing_pubkey,
+                    recipient_pubkey: service_key.unwrap_or(address.viewing_pubkey),
                     salt,
                     slot_index: slot_index as u32,
                 };
-                encoder
-                    .encode_slot(&plaintext, owner_tag.resolved, &cx)
-                    .map(Some)
+                let mut message = encoder.encode_slot(&plaintext, owner_tag.resolved, &cx)?;
+                if service_key.is_some() {
+                    stamp_service_scheme(&mut message.data, plaintext.ring_program_id.is_some())?;
+                }
+                Ok(Some(message))
             })
             .collect::<Result<Vec<_>, TransactionError>>()?;
         let dummy_len = if self
@@ -323,6 +332,23 @@ impl FinalizedTransaction {
             cache_accounts: Default::default(),
         })
     }
+}
+
+fn stamp_service_scheme(data: &mut Vec<u8>, ring: bool) -> Result<(), TransactionError> {
+    let scheme = if ring {
+        EncryptedScheme::ServiceRingConfidential
+    } else {
+        EncryptedScheme::ServiceConfidential
+    };
+    let OutputDataEncoding::Encrypted(mut blob) = OutputDataEncoding::try_from_slice(data)
+        .map_err(|error| TransactionError::Deserialize(error.to_string()))?
+    else {
+        return Err(TransactionError::BadDiscriminator(scheme.as_byte()));
+    };
+    *blob.first_mut().ok_or(TransactionError::MissingOutput)? = scheme.as_byte();
+    *data = borsh::to_vec(&OutputDataEncoding::Encrypted(blob))
+        .map_err(|error| TransactionError::Deserialize(error.to_string()))?;
+    Ok(())
 }
 
 fn dummy_ciphertext_len<E: OutputEncoder>(

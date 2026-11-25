@@ -1,6 +1,7 @@
 use solana_address::Address;
 use spr_interface::N_PUBLIC_SLOTS;
 use spr_keypair::shielded::ShieldedAddress;
+use spr_keypair::X25519Pubkey;
 
 use super::{inputs::pad_inputs, shape::is_transact_shape, ConfidentialTransaction};
 use crate::{
@@ -17,6 +18,22 @@ pub struct Recipient {
 impl ConfidentialTransaction {
     pub fn outputs(&self) -> &[SppProofOutputUtxo] {
         &self.outputs
+    }
+
+    /// Encrypt output `index` to the decryption service. The owner tag stays
+    /// the owner's. A ring output is published as scheme byte 10; any other
+    /// output as byte 9.
+    pub fn encrypt_to_service(
+        &mut self,
+        index: usize,
+        key: X25519Pubkey,
+    ) -> Result<&mut Self, TransactionError> {
+        let output = self
+            .outputs
+            .get_mut(index)
+            .ok_or(TransactionError::MissingOutput)?;
+        output.service_viewing_pubkey = Some(*key.as_bytes());
+        Ok(self)
     }
 
     pub fn output_tree_id(&self) -> u16 {

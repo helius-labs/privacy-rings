@@ -786,7 +786,8 @@ mod tests {
     use solana_address::Address;
     use spr_event::{
         OutputDataEncoding, CONFIDENTIAL_ENCRYPTED_SCHEME_TAG,
-        RING_CONFIDENTIAL_ENCRYPTED_SCHEME_TAG,
+        RING_CONFIDENTIAL_ENCRYPTED_SCHEME_TAG, SERVICE_CONFIDENTIAL_ENCRYPTED_SCHEME_TAG,
+        SERVICE_RING_CONFIDENTIAL_ENCRYPTED_SCHEME_TAG,
     };
     use spr_interface::{
         instruction::{OwnerTag, TransactOutput},
@@ -1504,6 +1505,8 @@ mod tests {
     fn ring_output_marker_masks_the_published_owner() {
         let default_tag = [1u8; 32];
         let ring_tag = [2u8; 32];
+        let service_tag = [3u8; 32];
+        let service_ring_tag = [4u8; 32];
         let output = |scheme, tag| TransactOutput {
             utxo_hash: [0u8; 32],
             owner_tag: OwnerTag::Inline(tag),
@@ -1522,17 +1525,23 @@ mod tests {
             outputs: vec![
                 output(CONFIDENTIAL_ENCRYPTED_SCHEME_TAG, default_tag),
                 output(RING_CONFIDENTIAL_ENCRYPTED_SCHEME_TAG, ring_tag),
+                output(SERVICE_CONFIDENTIAL_ENCRYPTED_SCHEME_TAG, service_tag),
+                output(
+                    SERVICE_RING_CONFIDENTIAL_ENCRYPTED_SCHEME_TAG,
+                    service_ring_tag,
+                ),
             ],
-            resolved_owner_tags: vec![default_tag, ring_tag],
+            resolved_owner_tags: vec![default_tag, ring_tag, service_tag, service_ring_tag],
             messages: Vec::new(),
         };
 
         assert_eq!(
-            confidential_marked_output_owner_pk_hashes(&external_data, 3)
+            confidential_marked_output_owner_pk_hashes(&external_data, 4)
                 .expect("published owners"),
             vec![
                 solana_owner_identity(&default_tag).expect("owner hash"),
                 [0u8; 32],
+                solana_owner_identity(&service_tag).expect("service owner hash"),
                 [0u8; 32],
             ]
         );

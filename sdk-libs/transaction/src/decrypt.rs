@@ -419,7 +419,7 @@ fn decode_slot<K: ShieldedKeys + ?Sized>(
                 return decode_merge(shielded_keys, address, tx, slot, &blob, owner_cx, true);
             }
             let (ciphertext, viewing_pubkeys) = match scheme {
-                EncryptedScheme::Confidential | EncryptedScheme::RingConfidential => {
+                scheme if scheme.opens_confidential_note() => {
                     let Ok(viewing_pubkey) = Confidential::embedded_viewing_pk(body) else {
                         return Ok(None);
                     };
@@ -455,7 +455,7 @@ fn decode_slot<K: ShieldedKeys + ?Sized>(
             };
             for bytes in plaintexts {
                 let utxos = match scheme {
-                    EncryptedScheme::Confidential | EncryptedScheme::RingConfidential => {
+                    scheme if scheme.opens_confidential_note() => {
                         let Ok(plaintext) = Confidential::deserialize(&bytes) else {
                             continue;
                         };

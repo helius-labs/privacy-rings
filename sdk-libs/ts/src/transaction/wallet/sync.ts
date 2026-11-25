@@ -22,6 +22,7 @@ import {
   decryptConfidentialAsSender,
   prooflessUtxo,
   plaintextTransferUtxos,
+  opensConfidentialNote,
   readOutputData,
   readOutputFrame,
   splitBundleUtxos,
@@ -159,6 +160,8 @@ const WALLET_SCHEMES: ReadonlySet<number> = new Set([
   EncryptedScheme.proofless,
   EncryptedScheme.confidential,
   EncryptedScheme.ringConfidential,
+  EncryptedScheme.serviceConfidential,
+  EncryptedScheme.serviceRingConfidential,
   EncryptedScheme.split,
   EncryptedScheme.merge,
   EncryptedScheme.plaintextTransfer,
@@ -620,11 +623,7 @@ class SyncPass {
     tx.outputSlots.forEach((slot, position) => {
       try {
         const frame = readOutputData(slot.payload);
-        if (
-          frame.encoding !== "encrypted" ||
-          (frame.scheme !== EncryptedScheme.confidential &&
-            frame.scheme !== EncryptedScheme.ringConfidential)
-        ) {
+        if (frame.encoding !== "encrypted" || !opensConfidentialNote(frame.scheme)) {
           return;
         }
         const plaintext = decryptConfidentialAsSender(txKey, frame.body, salt, position);
@@ -766,11 +765,7 @@ class SyncPass {
       return;
     }
 
-    if (
-      frame.encoding === "encrypted" &&
-      (frame.scheme === EncryptedScheme.confidential ||
-        frame.scheme === EncryptedScheme.ringConfidential)
-    ) {
+    if (frame.encoding === "encrypted" && opensConfidentialNote(frame.scheme)) {
       let utxo: Utxo;
       let ciphertext: Uint8Array;
       try {

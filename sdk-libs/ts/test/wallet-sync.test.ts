@@ -2000,6 +2000,40 @@ describe("wallet sync", () => {
     );
   });
 
+  it("encrypts a service output to the service viewing key", () => {
+    const recipient = ShieldedKeypair.generate();
+    const service = ViewingKey.generate().publicKey();
+    const wallet = new Wallet({ identity: recipient.shieldedAddress() });
+    const slots = encodeConfidentialSlots(
+      [
+        createProofOutput({
+          ownerAddress: recipient.shieldedAddress(),
+          asset: SOL_MINT,
+          amount: 1n,
+          serviceViewingPublicKey: service,
+        }),
+        createProofOutput({
+          ownerAddress: recipient.shieldedAddress(),
+          asset: SOL_MINT,
+          amount: 1n,
+          ringProgramId: OWNER,
+          serviceViewingPublicKey: service,
+        }),
+      ],
+      wallet.registry,
+      recipient.viewingKey(),
+      new Uint8Array(16) as Bytes16,
+    );
+
+    expect(slots.map((slot) => readOutputData(slot.data).scheme)).toEqual([
+      EncryptedScheme.serviceConfidential,
+      EncryptedScheme.serviceRingConfidential,
+    ]);
+    for (const slot of slots) {
+      expect(readOutputData(slot.data).body.subarray(0, 33)).toEqual(service.toBytes());
+    }
+  });
+
   it("records an outbound ring confidential transfer and keeps ring change", async () => {
     const sender = ShieldedKeypair.generate();
     const recipient = ShieldedKeypair.generate();
@@ -2227,8 +2261,6 @@ describe("wallet sync", () => {
       EncryptedScheme.anonymousRecipient,
       EncryptedScheme.anonymousSender,
       EncryptedScheme.ringDeposit,
-      9,
-      10,
       11,
       12,
       255,
@@ -2331,6 +2363,8 @@ describe("wallet sync", () => {
       EncryptedScheme.split,
       EncryptedScheme.merge,
       EncryptedScheme.plaintextTransfer,
+      EncryptedScheme.serviceConfidential,
+      EncryptedScheme.serviceRingConfidential,
     ])("records the spend for wallet scheme byte %i", async (schemeByte) => {
       await expect(syncAuthoredSpend([encryptedFrame(schemeByte)])).resolves.toEqual(spendRow);
     });

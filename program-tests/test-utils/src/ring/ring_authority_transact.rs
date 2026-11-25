@@ -230,6 +230,7 @@ impl RingHarness {
             ring_program_id: Some(ring),
             ring_data_hash: None,
             data_hash: None,
+            service_viewing_pubkey: None,
             owner_tag: None,
             data: Data::default(),
             cache_slot: None,

@@ -34,6 +34,7 @@ fn output() -> SppProofOutputUtxo {
         ring_data_hash: Some(field(6)),
         data_hash: Some(field(7)),
         owner_address: Some(keypair(7).shielded_address().unwrap()),
+        service_viewing_pubkey: None,
         owner_tag: Some([8; 32]),
         data: Data::default(),
         cache_slot: None,

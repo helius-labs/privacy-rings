@@ -1993,6 +1993,60 @@ fn padding_independent_private_tx_hash_skips_padding_and_external_data() {
 }
 
 #[test]
+fn a_service_viewing_key_publishes_scheme_nine_and_encrypts_to_that_key() {
+    let owner = keypair(1);
+    let receiver = keypair(2).shielded_address().unwrap();
+    let service = ViewingKey::new().pubkey();
+    let mut tx = ConfidentialTransaction::new(
+        vec![wallet_utxo(&owner, Mint::SOL, 50, 9, 1)],
+        payer(&owner),
+    )
+    .unwrap();
+    tx.transfer_sol(&receiver, 20).unwrap();
+    let ring_receiver = keypair(3).shielded_address().unwrap();
+    tx.transfer_with_ring(
+        &ring_receiver,
+        Mint::SOL,
+        5,
+        Some(Address::new_from_array([9; 32])),
+    )
+    .unwrap();
+    for recipient in [receiver, ring_receiver] {
+        let index = tx
+            .outputs()
+            .iter()
+            .position(|output| output.owner_address == Some(recipient))
+            .unwrap();
+        tx.encrypt_to_service(index, service).unwrap();
+    }
+    let proof = tx.encrypt(&owner).unwrap();
+    for (recipient, expected) in [
+        (receiver, EncryptedScheme::ServiceConfidential),
+        (ring_receiver, EncryptedScheme::ServiceRingConfidential),
+    ] {
+        let published = proof
+            .external_data
+            .outputs
+            .iter()
+            .zip(&proof.output_utxos)
+            .find(|(_, output)| output.owner_address == Some(recipient))
+            .unwrap()
+            .0
+            .data
+            .as_ref()
+            .unwrap();
+        let OutputDataEncoding::Encrypted(blob) =
+            OutputDataEncoding::try_from_slice(published).unwrap()
+        else {
+            panic!("encrypted output");
+        };
+        let (scheme, body) = blob.split_first().unwrap();
+        assert_eq!(*scheme, expected.as_byte());
+        assert_eq!(Confidential::embedded_viewing_pk(body).unwrap(), service);
+    }
+}
+
+#[test]
 fn finalized_transaction_encrypts_like_the_one_shot_path() {
     let owner = keypair(1);
     let sender = owner.shielded_address().unwrap();
