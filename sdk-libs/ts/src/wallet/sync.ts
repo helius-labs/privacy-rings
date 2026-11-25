@@ -6,7 +6,12 @@ import {
   type Base64EncodedBytes,
 } from "@solana/kit";
 
-import { runKitRpc } from "../client/kit.js";
+import {
+  readBlockhashValidity,
+  readFinalizedEpochInfo,
+  readSignatureHistory,
+  runKitRpc,
+} from "../client/kit.js";
 import { initializePoseidon } from "../hasher/index.js";
 import type { IndexerReader, KitRpcAccess } from "../client/ports.js";
 import { ClientError } from "../client/error.js";
@@ -16,6 +21,7 @@ import {
   type IndexerRpcConfig,
 } from "../client/retry.js";
 import { bytesKey } from "../interface/bytes.js";
+import { wireDecoder } from "../interface/decode.js";
 import { decodeSplAssetRegistry } from "../interface/accounts.js";
 import { SHIELDED_POOL_PROGRAM_ID } from "../interface/program.js";
 import { StateDiscriminator } from "../interface/state.js";
@@ -25,6 +31,7 @@ import type {
   HistoryFilters,
   PaginationToken,
   RequestContext,
+  Signature,
 } from "../interface/types.js";
 import { TransactionError } from "../transaction/error.js";
 import type { IndexedShieldedTransaction } from "../transaction/instructions/transact.js";
@@ -56,7 +63,7 @@ const addressEncoder = getAddressEncoder();
 const base64Decoder = getBase64Decoder();
 const base64Encoder = getBase64Encoder();
 
-/** Kit access is required only when the wallet holds a mint the registry cannot resolve. */
+/** Kit access resolves unknown mints and checks pending payment expiry. */
 export interface SyncClient extends Pick<
   IndexerReader,
   | "getEncryptedUtxosByTags"
@@ -533,7 +540,12 @@ async function runWalletSync(
     const decryptConfig = { syncedAt: BigInt(Math.floor(Date.now() / 1_000)) };
     const validatedPoll = Object.freeze({ ...poll, numRetries: Math.max(poll.numRetries, 1) });
     const ungated: IndexerRpcConfig = Object.freeze({ poll: validatedPoll });
-    const requireSlot = input.config?.requireSlot ?? clientConfig?.requireSlot;
+    const expired = await expiredPendingPayments(input.wallet, input.client, context);
+    const configuredSlot = input.config?.requireSlot ?? clientConfig?.requireSlot;
+    const requireSlot =
+      expired !== undefined && expired.slot > (configuredSlot ?? 0n)
+        ? expired.slot
+        : configuredSlot;
     // Freshness is established ONCE per sync, on the first indexer request, not on
     // every request. Applying it per request meant paying the wait per tag chunk,
     // per collector, per page.
@@ -546,6 +558,17 @@ async function runWalletSync(
       return gate;
     };
     const session = beginSyncSession(input.wallet);
+    const settlementScans = new Map<string, bigint | undefined>();
+    if (expired !== undefined) {
+      const hashes = new Set(
+        expired.submissions.flatMap(({ utxoHashes }) => utxoHashes.map(bytesKey)),
+      );
+      for (const entry of session.staging.utxos()) {
+        if (hashes.has(bytesKey(entry.outputContext.hash))) {
+          settlementScans.set(bytesKey(entry.nullifier), undefined);
+        }
+      }
+    }
     const transactions = new Map<string, IndexedShieldedTransaction>();
     const deposits = new Map<string, IndexedShieldedTransaction>();
     const tags = walletQueryTags(session.staging, keys);
@@ -581,9 +604,11 @@ async function runWalletSync(
     }
 
     const scanNullifiers = async (nullifiers: readonly Bytes32[]): Promise<void> => {
-      const groups = groupByCheckpoint(nullifiers, (nullifier) =>
-        sessionCheckpoint(session, "nullifiers", bytesKey(nullifier)),
-      );
+      const groups = groupByCheckpoint(nullifiers, (nullifier) => {
+        const key = bytesKey(nullifier);
+        // Recheck the full history for an input that may be released.
+        return settlementScans.has(key) ? undefined : sessionCheckpoint(session, "nullifiers", key);
+      });
 
       for (const group of groups) {
         for (let offset = 0; offset < group.keys.length; offset += chunkSize) {
@@ -600,6 +625,10 @@ async function runWalletSync(
             context,
           );
           advanceSessionCheckpoints(session, "nullifiers", chunk, checkpoint);
+          for (const nullifier of chunk) {
+            const key = bytesKey(nullifier);
+            if (settlementScans.has(key)) settlementScans.set(key, checkpoint);
+          }
         }
       }
     };
@@ -685,11 +714,107 @@ async function runWalletSync(
         details: { unknownAssetIds: report.unknownAssetIds.map(String) },
       });
     }
-    input.wallet._commitSync(sealSyncDelta(session), session.baseRevision);
+    const settledIds =
+      expired === undefined ? [] : settlementIds(session, expired, settlementScans);
+    if (
+      expired !== undefined &&
+      (await pendingPaymentGenesis(expired.rpc, context)) !== expired.genesis
+    )
+      throw new WalletError("WALLET_DECRYPTION_NETWORK_MISMATCH");
+    context?.signal?.throwIfAborted();
+    input.wallet._commitSync(sealSyncDelta(session), session.baseRevision, settledIds);
     return report;
   } catch (cause) {
     throw wrapWalletError("WALLET_SYNC", cause);
   }
+}
+
+function settlementIds(
+  session: WalletSyncSession,
+  expired: NonNullable<Awaited<ReturnType<typeof expiredPendingPayments>>>,
+  scans: ReadonlyMap<string, bigint | undefined>,
+): string[] {
+  const byHash = new Map(
+    session.staging.utxos().map((entry) => [bytesKey(entry.outputContext.hash), entry]),
+  );
+  return expired.submissions
+    .filter(({ signature, utxoHashes }) =>
+      utxoHashes.every((hash) => {
+        const entry = byHash.get(bytesKey(hash));
+        if (entry === undefined) return false;
+        const checkpoint = scans.get(bytesKey(entry.nullifier));
+        return (
+          entry.spent ||
+          (!expired.mayHaveLanded.has(signature) &&
+            checkpoint !== undefined &&
+            checkpoint >= expired.slot)
+        );
+      }),
+    )
+    .map(({ id }) => id);
+}
+
+async function pendingPaymentGenesis(rpc: KitRpcAccess["solanaRpc"], context?: RequestContext) {
+  const result = await runKitRpc("getGenesisHash", context, (abortSignal) =>
+    rpc.getGenesisHash().send({ abortSignal }),
+  );
+  return wireDecoder(() => new WalletError("WALLET_DECRYPTION_NETWORK_MISMATCH")).address(
+    result,
+    "getGenesisHash",
+  );
+}
+
+async function expiredPendingPayments(
+  wallet: Wallet,
+  client: SyncClient,
+  context?: RequestContext,
+) {
+  const pending = wallet
+    .pendingSubmissions()
+    .filter(({ genesisHash }) => genesisHash !== undefined);
+  if (pending.length === 0) return undefined;
+  const rpc = client.solanaRpc;
+  if (rpc === undefined) {
+    throw new WalletError("WALLET_INVALID_SYNC_CONFIG", { details: { field: "solanaRpc" } });
+  }
+  const genesis = await pendingPaymentGenesis(rpc, context);
+  if (pending.some((entry) => entry.genesisHash !== genesis)) {
+    throw new WalletError("WALLET_DECRYPTION_NETWORK_MISMATCH");
+  }
+  const { absoluteSlot, blockHeight } = await readFinalizedEpochInfo(rpc, context);
+  const submissions: typeof pending = [];
+  let settlementSlot = absoluteSlot;
+  for (const entry of pending) {
+    const { blockhash, blockhashValidAtSlot, lastValidBlockHeight } = entry;
+    // Restored reservations without the signed lifetime stay held until a spend is indexed.
+    if (
+      blockhash === undefined ||
+      blockhashValidAtSlot === undefined ||
+      blockHeight <= lastValidBlockHeight ||
+      absoluteSlot < blockhashValidAtSlot
+    )
+      continue;
+    const { slot, valid } = await readBlockhashValidity(
+      rpc,
+      blockhash,
+      { commitment: "finalized", minContextSlot: absoluteSlot },
+      context,
+    );
+    if (valid) continue;
+    if (slot > settlementSlot) settlementSlot = slot;
+    submissions.push(entry);
+  }
+  if (submissions.length === 0) return undefined;
+  const mayHaveLanded = new Set<Signature>();
+  // Solana limits signature status requests to 256 signatures.
+  for (let offset = 0; offset < submissions.length; offset += 256) {
+    const signatures = submissions.slice(offset, offset + 256).map(({ signature }) => signature);
+    const results = await readSignatureHistory(rpc, signatures, settlementSlot, context);
+    signatures.forEach((signature, index) => {
+      if (results[index]) mayHaveLanded.add(signature);
+    });
+  }
+  return { rpc, genesis, slot: settlementSlot, submissions, mayHaveLanded };
 }
 
 async function backfillSessionRegistry(

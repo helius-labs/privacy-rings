@@ -80,6 +80,7 @@ export class KeyMemo {
   }
 
   async resolve(context?: RequestContext): Promise<void> {
+    context?.signal?.throwIfAborted();
     const decrypts = [...this.#pendingDecrypt.entries()];
     const derives = [...this.#pendingDerive.entries()];
     const transactionKeys = [...this.#pendingTransactionKeys.entries()];
@@ -114,19 +115,15 @@ export class KeyMemo {
             ),
           ),
     ]);
+    const decrypted = settled[0].status === "fulfilled" ? settled[0].value : [];
     const derivations = settled[1].status === "fulfilled" ? settled[1].value : [];
     const minted = settled[2].status === "fulfilled" ? settled[2].value : [];
-    const plaintexts: Uint8Array[] = [];
     try {
-      decodeBatch(
+      context?.signal?.throwIfAborted();
+      const plaintexts = decodeBatch(
         fulfilled(settled[0]),
         decrypts.length,
-        (value) => {
-          if (!(value instanceof Uint8Array)) return undefined;
-          const plaintext = copy(value);
-          plaintexts.push(plaintext);
-          return plaintext;
-        },
+        (value) => (value instanceof Uint8Array ? value : undefined),
         batchMismatch,
       );
       const derived = deriveAnswers(fulfilled(settled[1]), derives.length, batchMismatch);
@@ -149,7 +146,7 @@ export class KeyMemo {
       });
     } catch (cause) {
       destroyTransactionKeys(minted);
-      wipeByteAnswers(plaintexts);
+      wipeByteAnswers(decrypted);
       wipeByteAnswers(derivations);
       throw cause;
     }

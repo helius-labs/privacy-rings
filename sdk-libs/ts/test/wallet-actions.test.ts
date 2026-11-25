@@ -3,9 +3,11 @@ import {
   assertIsFullySignedTransaction,
   generateKeyPairSigner,
   getAddressEncoder,
+  getSignatureFromTransaction,
   signTransactionWithSigners,
   type Address,
   type Blockhash,
+  type Transaction,
 } from "@solana/kit";
 import { describe, expect, it, vi } from "vitest";
 
@@ -19,8 +21,9 @@ import {
   type AuthorizedPrivateTransaction,
   type ProofDataSource,
   type ProofService,
+  type TransactionBroadcaster,
 } from "../src/client/ports.js";
-import type { DepositClient, PrivateTransactionClient } from "../src/wallet/index.js";
+import type { DepositClient } from "../src/wallet/index.js";
 import {
   SPL_TOKEN_2022_PROGRAM_ID,
   type Bytes32,
@@ -29,9 +32,9 @@ import {
 } from "../src/interface/index.js";
 import {
   NullifierKey,
+  ShieldedAddress,
   ShieldedKeypair,
   SigningKey,
-  type ShieldedAddress,
   type ViewingKey,
 } from "../src/keypair/index.js";
 import {
@@ -41,6 +44,7 @@ import {
   Utxo,
   Wallet,
   decryptToBalances,
+  deserializeWallet,
   serializeWallet,
   type ShieldedKeys,
 } from "../src/transaction/index.js";
@@ -59,7 +63,9 @@ import {
 } from "../src/interface/pda/index.js";
 import { ownerSignerAddresses } from "../src/client/prover/assembly.js";
 import { buildDepositTransaction, createDeposit } from "../src/wallet/deposit.js";
-import { depositClient, privateTransactionClient } from "./helpers/clients.js";
+import { loadPersistedWallet } from "../src/wallet/persisted.js";
+import { walletSnapshotCipher } from "../src/wallet/snapshot-cipher.js";
+import { depositClient, privateTransactionClient, registryReads } from "./helpers/clients.js";
 import { emptyTransaction } from "./helpers/transactions.js";
 import { approveIntent, type ApprovalRequest } from "../src/transaction/wallet/intent.js";
 import { MAX_SPEND_INPUTS } from "../src/flows/select.js";
@@ -179,18 +185,26 @@ function latestBlockhashClient(feeTree = TREE): DepositClient {
   });
 }
 
-function capturePrivateBuild(): Readonly<{
-  client: PrivateTransactionClient;
+function capturePrivateBuild(transaction = TRANSACTION): Readonly<{
+  client: ReturnType<typeof privateTransactionClient> & TransactionBroadcaster;
   assemble: ReturnType<typeof vi.fn>;
 }> {
   const assemble = vi.fn(
-    async (_input: Readonly<{ authorized: AuthorizedPrivateTransaction }>) => TRANSACTION,
+    async (_input: Readonly<{ authorized: AuthorizedPrivateTransaction }>) => transaction,
   );
   return {
-    client: privateTransactionClient({
-      getAccount: vi.fn(async () => undefined),
-      assembleAuthorizedPrivateTransaction: assemble,
-    }),
+    client: {
+      ...privateTransactionClient({
+        getAccount: vi.fn(async () => undefined),
+        assembleAuthorizedPrivateTransaction: assemble,
+      }),
+      async broadcastTransaction() {
+        throw new Error("unexpected RPC broadcast");
+      },
+      async getBlockhashValidity() {
+        return { slot: 1n, valid: true };
+      },
+    },
     assemble,
   };
 }
@@ -340,6 +354,322 @@ describe("private transaction construction", () => {
       kind: "shielded",
       address: recipient,
     });
+  });
+
+  const genesisHash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
+  const otherGenesis = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
+  it("uses verified service keys after a successful registry miss", async () => {
+    const recipient = ShieldedKeypair.generate().shieldedAddress();
+    const address = vi.fn(async () => recipient);
+    const context = { signal: new AbortController().signal };
+    const created = await createTransfer(
+      {
+        client: { ...registryReads(), getGenesisHash: async () => genesisHash },
+        decryptionService: { address, genesisHash },
+        wallet: fundedWallet(ShieldedKeypair.generate(), [100n]),
+        payer: PAYER,
+        recipient: recipient.solanaAddress(),
+        asset: SOL_MINT,
+        amount: 10n,
+      },
+      context,
+    );
+    expect(created.recipient.address).toBe(recipient);
+    expect(address).toHaveBeenCalledWith(recipient.solanaAddress(), context);
+  });
+
+  it("uses the registered wallet before invoking a decryption provider", async () => {
+    const recipient = ShieldedKeypair.generate().shieldedAddress();
+    const owner = recipient.solanaAddress();
+    const pda = await internalUserRecordPda(owner);
+    const record = Uint8Array.of(
+      1,
+      ...getAddressEncoder().encode(owner),
+      pda.bump,
+      ...recipient.nullifierPublicKey,
+      ...recipient.viewingPublicKey.toBytes(),
+      0,
+    );
+    const address = vi.fn(async () => ShieldedKeypair.generate().shieldedAddress());
+    const getGenesisHash = vi.fn(async () => otherGenesis);
+    const result = await createTransfer({
+      wallet: fundedWallet(ShieldedKeypair.generate(), [100n]),
+      client: {
+        ...registryReads(async () => ({
+          owner: USER_REGISTRY_PROGRAM_ID,
+          data: record,
+          lamports: 1n,
+        })),
+        getGenesisHash,
+      },
+      decryptionService: { address, genesisHash },
+      recipient: owner,
+      payer: PAYER,
+      asset: SOL_MINT,
+      amount: 10n,
+    });
+    expect(result.recipient.kind).toBe("registered");
+    expect(result.recipient.address.toBytes()).toEqual(recipient.toBytes());
+    expect(address).not.toHaveBeenCalled();
+    expect(getGenesisHash).not.toHaveBeenCalled();
+  });
+
+  it("keeps a verified miss's context for the registry read after service lookup", async () => {
+    const recipient = ShieldedKeypair.generate().shieldedAddress();
+    const serviceAddress = vi.fn(async () => recipient);
+    const getAccountWithContext = vi
+      .fn()
+      .mockResolvedValueOnce({ account: undefined, slot: 10n })
+      .mockResolvedValueOnce({ account: undefined, slot: 9n });
+    const wallet = fundedWallet(ShieldedKeypair.generate(), [100n]);
+    const before = serializeWallet(wallet);
+    await expect(
+      createTransfer({
+        client: {
+          ...registryReads(),
+          getAccountWithContext,
+          getGenesisHash: async () => genesisHash,
+        },
+        decryptionService: { address: serviceAddress, genesisHash },
+        wallet,
+        recipient: recipient.solanaAddress(),
+        payer: PAYER,
+        asset: SOL_MINT,
+        amount: 10n,
+      }),
+    ).rejects.toMatchObject({ causeCode: "WALLET_RECIPIENT_CONTEXT_STALE" });
+    expect(getAccountWithContext.mock.calls.map((args) => args[1])).toEqual([0n, 10n]);
+    expect(serviceAddress).toHaveBeenCalledOnce();
+    expect(serializeWallet(wallet)).toEqual(before);
+  });
+
+  it("leaves spend state intact on registry failure or a mismatched service address", async () => {
+    const wallet = fundedWallet(ShieldedKeypair.generate(), [100n]);
+    const before = serializeWallet(wallet);
+    const address = vi.fn(async () => ShieldedKeypair.generate().shieldedAddress());
+    const input = {
+      decryptionService: { address, genesisHash },
+      wallet,
+      payer: PAYER,
+      recipient: RECIPIENT,
+      asset: SOL_MINT,
+      amount: 10n,
+    };
+    await expect(
+      createTransfer({
+        ...input,
+        client: {
+          ...registryReads(async () => {
+            throw new Error("RPC unavailable");
+          }),
+          getGenesisHash: async () => genesisHash,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "WALLET_CREATE_TRANSFER" });
+    expect(address).not.toHaveBeenCalled();
+    await expect(
+      createTransfer({
+        ...input,
+        client: { ...registryReads(), getGenesisHash: async () => genesisHash },
+      }),
+    ).rejects.toMatchObject({
+      code: "WALLET_CREATE_TRANSFER",
+      causeCode: "WALLET_DECRYPTION_RECIPIENT_MISMATCH",
+    });
+    expect(serializeWallet(wallet)).toEqual(before);
+  });
+
+  it("uses a registration that appears during one shared lookup for a batch recipient", async () => {
+    const registered = ShieldedKeypair.generate().shieldedAddress();
+    const owner = registered.solanaAddress();
+    const serviceKeys = ShieldedKeypair.generate().shieldedAddress();
+    const fallback = ShieldedAddress.fromPublicKeys(
+      registered.signingPublicKey,
+      serviceKeys.nullifierPublicKey,
+      serviceKeys.viewingPublicKey,
+    );
+    const pda = await internalUserRecordPda(owner);
+    const record = {
+      owner: USER_REGISTRY_PROGRAM_ID,
+      lamports: 1n,
+      data: Uint8Array.of(
+        1,
+        ...getAddressEncoder().encode(owner),
+        pda.bump,
+        ...registered.nullifierPublicKey,
+        ...registered.viewingPublicKey.toBytes(),
+        0,
+      ),
+    };
+    let published = false;
+    const getAccount = vi.fn(async () => (published ? record : undefined));
+    const address = vi.fn(async () => {
+      published = true;
+      return fallback;
+    });
+    const result = await createMultiTransfer({
+      client: { ...registryReads(getAccount), getGenesisHash: async () => genesisHash },
+      decryptionService: { address, genesisHash },
+      wallet: fundedWallet(ShieldedKeypair.generate(), [100n]),
+      payer: PAYER,
+      asset: SOL_MINT,
+      payments: [5n, 10n].map((amount) => ({ recipient: owner, amount })),
+    });
+    expect(result.recipients.map((recipient) => recipient.kind)).toEqual([
+      "registered",
+      "registered",
+    ]);
+    expect(result.recipients.map(({ address }) => address.toBytes())).toEqual([
+      registered.toBytes(),
+      registered.toBytes(),
+    ]);
+    expect(getAccount).toHaveBeenCalledTimes(2);
+    expect(address).toHaveBeenCalledOnce();
+  });
+
+  it("rejects explicit keys that would override another output's resolved keys for the same owner", async () => {
+    const recipient = ShieldedKeypair.generate().shieldedAddress();
+    const other = ShieldedKeypair.generate().shieldedAddress();
+    const conflicting = ShieldedAddress.fromPublicKeys(
+      recipient.signingPublicKey,
+      recipient.nullifierPublicKey,
+      other.viewingPublicKey,
+    );
+    const wallet = fundedWallet(ShieldedKeypair.generate(), [100n]);
+    const before = serializeWallet(wallet);
+    await expect(
+      createMultiTransfer({
+        client: {
+          ...registryReads(async () => undefined),
+          getGenesisHash: async () => genesisHash,
+        },
+        decryptionService: { address: async () => recipient, genesisHash },
+        wallet,
+        payer: PAYER,
+        asset: SOL_MINT,
+        payments: [
+          { recipient: recipient.solanaAddress(), amount: 5n },
+          { recipient: conflicting, amount: 10n },
+        ],
+      }),
+    ).rejects.toMatchObject({ causeCode: "WALLET_DECRYPTION_RECIPIENT_MISMATCH" });
+    expect(serializeWallet(wallet)).toEqual(before);
+  });
+
+  it("reserves nothing when the final registry read fails after resolving valid service keys", async () => {
+    const recipient = ShieldedKeypair.generate().shieldedAddress();
+    const wallet = fundedWallet(ShieldedKeypair.generate(), [100n]);
+    const before = serializeWallet(wallet);
+    const getAccount = vi
+      .fn(async () => undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("RPC unavailable"));
+    const address = vi.fn(async () => recipient);
+    await expect(
+      createTransfer({
+        client: { ...registryReads(getAccount), getGenesisHash: async () => genesisHash },
+        decryptionService: { address, genesisHash },
+        wallet,
+        payer: PAYER,
+        recipient: recipient.solanaAddress(),
+        asset: SOL_MINT,
+        amount: 10n,
+      }),
+    ).rejects.toMatchObject({
+      code: "WALLET_CREATE_TRANSFER",
+      causeCode: "WALLET_FETCH_USER_RECORD",
+    });
+    expect(getAccount).toHaveBeenCalledTimes(2);
+    expect(address).toHaveBeenCalledOnce();
+    expect(serializeWallet(wallet)).toEqual(before);
+  });
+
+  it("keeps the reservation state unchanged when registry or service lookup is cancelled", async () => {
+    const recipient = ShieldedKeypair.generate().shieldedAddress();
+    const wallet = fundedWallet(ShieldedKeypair.generate(), [100n]);
+    const before = serializeWallet(wallet);
+    for (const cancelAt of ["registry", "network", "service"] as const) {
+      const controller = new AbortController();
+      const getAccount = vi.fn(async () => {
+        if (cancelAt === "registry") controller.abort();
+        return undefined;
+      });
+      const getGenesisHash = vi.fn(async () => {
+        if (cancelAt === "network") controller.abort();
+        return genesisHash;
+      });
+      const address = vi.fn(async () => {
+        controller.abort();
+        return recipient;
+      });
+      await expect(
+        createTransfer(
+          {
+            client: { ...registryReads(getAccount), getGenesisHash },
+            decryptionService: { address, genesisHash },
+            wallet,
+            payer: PAYER,
+            recipient: recipient.solanaAddress(),
+            asset: SOL_MINT,
+            amount: 10n,
+          },
+          { signal: controller.signal },
+        ),
+      ).rejects.toMatchObject({
+        code: "WALLET_CREATE_TRANSFER",
+        causeCode: "WALLET_RECIPIENT_LOOKUP_ABORTED",
+      });
+      expect(address).toHaveBeenCalledTimes(cancelAt === "service" ? 1 : 0);
+      expect(serializeWallet(wallet)).toEqual(before);
+    }
+  });
+
+  it("refuses a mismatched or invalid genesis without reserving any inputs", async () => {
+    const wallet = fundedWallet(ShieldedKeypair.generate(), [100n]);
+    const before = serializeWallet(wallet);
+    const recipient = ShieldedKeypair.generate().shieldedAddress();
+    const address = vi.fn(async () => recipient);
+    for (const hash of [otherGenesis, "invalid"]) {
+      await expect(
+        createTransfer({
+          client: { ...registryReads(), getGenesisHash: async () => hash },
+          decryptionService: { address, genesisHash },
+          wallet,
+          payer: PAYER,
+          recipient: recipient.solanaAddress(),
+          asset: SOL_MINT,
+          amount: 10n,
+        }),
+      ).rejects.toMatchObject({
+        code: "WALLET_CREATE_TRANSFER",
+        causeCode: "WALLET_DECRYPTION_NETWORK_MISMATCH",
+      });
+    }
+    expect(address).not.toHaveBeenCalled();
+    expect(serializeWallet(wallet)).toEqual(before);
+  });
+
+  it("reads genesis once for a batch of unregistered recipients", async () => {
+    const first = ShieldedKeypair.generate().shieldedAddress();
+    const second = ShieldedKeypair.generate().shieldedAddress();
+    const getGenesisHash = vi.fn(async () => genesisHash);
+    const address = vi.fn(async (owner: Address) =>
+      owner === first.solanaAddress() ? first : second,
+    );
+    const created = await createMultiTransfer({
+      client: { ...registryReads(), getGenesisHash },
+      decryptionService: { address, genesisHash },
+      wallet: fundedWallet(ShieldedKeypair.generate(), [100n]),
+      payer: PAYER,
+      asset: SOL_MINT,
+      payments: [first, second].map((recipient) => ({
+        recipient: recipient.solanaAddress(),
+        amount: 5n,
+      })),
+    });
+    expect(created.recipients.map(({ address }) => address)).toEqual([first, second]);
+    expect(getGenesisHash).toHaveBeenCalledOnce();
+    expect(address).toHaveBeenCalledTimes(2);
   });
 
   it("keeps split and merge conservation in their internal intent models", async () => {
@@ -811,6 +1141,393 @@ describe("unsigned public transaction builders", () => {
     expect(assemble).toHaveBeenCalledTimes(1);
     expect(wallet.balance(SOL_MINT).amount).toBe(100n);
     expect(wallet.utxos()[0]?.spent).toBe(false);
+  });
+
+  it.each(["single", "multi"] as const)(
+    "checks a service recipient again after assembling a %s transfer and releases inputs on failure",
+    async (kind) => {
+      const keypair = spendingKeypair();
+      const wallet = fundedWallet(keypair, [100n]);
+      const recipient = ShieldedKeypair.generate().shieldedAddress();
+      const replacement = ShieldedKeypair.generate().shieldedAddress();
+      const changed = ShieldedAddress.fromPublicKeys(
+        recipient.signingPublicKey,
+        replacement.nullifierPublicKey,
+        replacement.viewingPublicKey,
+      );
+      const { client, assemble } = capturePrivateBuild();
+      const genesisHash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
+      const address = vi
+        .fn(async () => recipient)
+        .mockResolvedValueOnce(recipient)
+        .mockResolvedValueOnce(changed);
+      const input = {
+        client: { ...client, getGenesisHash: async () => genesisHash },
+        wallet,
+        keys: localKeys(keypair),
+        feePayer: keypair.shieldedAddress().solanaAddress(),
+        decryptionService: { address, genesisHash },
+      };
+      const payment = { recipient: recipient.solanaAddress(), amount: 25n };
+      const build = () =>
+        kind === "single"
+          ? buildTransferTransaction({ ...input, ...payment })
+          : buildMultiTransferTransaction({ ...input, payments: [payment, payment] });
+      await expect(build()).rejects.toMatchObject({
+        causeCode: "WALLET_DECRYPTION_RECIPIENT_MISMATCH",
+      });
+      expect(assemble).toHaveBeenCalledOnce();
+      expect(address).toHaveBeenCalledTimes(2);
+      await expect(build()).resolves.toBeDefined();
+    },
+  );
+
+  it("releases reserved inputs when a service recipient registers different keys during proving", async () => {
+    const keypair = spendingKeypair();
+    const wallet = fundedWallet(keypair, [100n]);
+    const recipient = ShieldedKeypair.generate().shieldedAddress();
+    const owner = recipient.solanaAddress();
+    const registered = ShieldedKeypair.generate().shieldedAddress();
+    const pda = await internalUserRecordPda(owner);
+    const record = {
+      owner: USER_REGISTRY_PROGRAM_ID,
+      lamports: 1n,
+      data: Uint8Array.of(
+        1,
+        ...getAddressEncoder().encode(owner),
+        pda.bump,
+        ...registered.nullifierPublicKey,
+        ...registered.viewingPublicKey.toBytes(),
+        0,
+      ),
+    };
+    const { client, assemble } = capturePrivateBuild();
+    const genesisHash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
+    const address = vi.fn(async () => recipient);
+    const before = serializeWallet(wallet);
+    await expect(
+      buildTransferTransaction({
+        client: {
+          ...client,
+          ...registryReads(async () => (assemble.mock.calls.length > 0 ? record : undefined)),
+          getGenesisHash: async () => genesisHash,
+        },
+        wallet,
+        keys: localKeys(keypair),
+        feePayer: keypair.shieldedAddress().solanaAddress(),
+        recipient: owner,
+        amount: 25n,
+        decryptionService: { address, genesisHash },
+      }),
+    ).rejects.toMatchObject({
+      code: "WALLET_BUILD_TRANSFER",
+      causeCode: "WALLET_DECRYPTION_RECIPIENT_MISMATCH",
+    });
+    expect(assemble).toHaveBeenCalledOnce();
+    expect(address).toHaveBeenCalledOnce();
+    expect(serializeWallet(wallet)).toEqual(before);
+  });
+
+  it.each([
+    "recipient changed",
+    "registry changed",
+    "broadcast uncertain",
+    "cancelled",
+    "expired before signing",
+  ] as const)(
+    "keeps spend reservations consistent when a prepared payment is %s",
+    async (outcome) => {
+      const keypair = spendingKeypair();
+      const payer = await generateKeyPairSigner();
+      const wallet = fundedWallet(keypair, [100n]);
+      const recipient = ShieldedKeypair.generate().shieldedAddress();
+      const replacement = ShieldedKeypair.generate().shieldedAddress();
+      const changed = ShieldedAddress.fromPublicKeys(
+        recipient.signingPublicKey,
+        replacement.nullifierPublicKey,
+        replacement.viewingPublicKey,
+      );
+      const { client } = capturePrivateBuild(emptyTransaction(payer.address));
+      const genesisHash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
+      let approved = false;
+      const owner = recipient.solanaAddress();
+      const pda = await internalUserRecordPda(owner);
+      const getAccount = async () =>
+        outcome === "registry changed"
+          ? {
+              owner: USER_REGISTRY_PROGRAM_ID,
+              lamports: 1n,
+              data: Uint8Array.of(
+                1,
+                ...getAddressEncoder().encode(owner),
+                pda.bump,
+                ...recipient.nullifierPublicKey,
+                ...(approved ? changed : recipient).viewingPublicKey.toBytes(),
+                0,
+              ),
+            }
+          : undefined;
+      const address = vi.fn(async () =>
+        approved && outcome === "recipient changed" ? changed : recipient,
+      );
+      const broadcastTransaction = vi.fn(async () => {
+        throw new ClientError("CLIENT_RPC", { details: { method: "sendTransaction" } });
+      });
+      const before = serializeWallet(wallet);
+      const payment = await buildTransferTransaction({
+        client: {
+          ...client,
+          ...registryReads(getAccount),
+          getGenesisHash: async () => genesisHash,
+          getBlockhashValidity: async () => ({
+            slot: 1n,
+            valid: outcome !== "expired before signing",
+          }),
+          broadcastTransaction,
+        },
+        wallet,
+        keys: localKeys(keypair),
+        feePayer: payer.address,
+        recipient: owner,
+        amount: 25n,
+        decryptionService: { address, genesisHash },
+      });
+      const sign = vi.fn(async (transaction: Transaction) => {
+        approved = true;
+        return signTransactionWithSigners([payer], transaction);
+      });
+      expect(serializeWallet(wallet)).not.toEqual(before);
+      if (outcome === "cancelled") payment.cancel();
+      const causeCode =
+        outcome === "cancelled"
+          ? "WALLET_PAYMENT_ALREADY_USED"
+          : outcome === "expired before signing"
+            ? "WALLET_PAYMENT_BLOCKHASH"
+            : outcome === "recipient changed" || outcome === "registry changed"
+              ? "WALLET_DECRYPTION_RECIPIENT_MISMATCH"
+              : "CLIENT_RPC";
+      await expect(payment.send(sign)).rejects.toMatchObject({
+        code: "WALLET_SUBMIT_PAYMENT",
+        causeCode,
+      });
+      payment.cancel();
+      expect(sign).toHaveBeenCalledTimes(
+        outcome === "cancelled" || outcome === "expired before signing" ? 0 : 1,
+      );
+      expect(broadcastTransaction).toHaveBeenCalledTimes(outcome === "broadcast uncertain" ? 1 : 0);
+      if (outcome === "registry changed") expect(address).not.toHaveBeenCalled();
+      if (outcome === "broadcast uncertain") {
+        expect(serializeWallet(wallet)).not.toEqual(before);
+        const restored = deserializeWallet(serializeWallet(wallet));
+        expect(restored.pendingSubmissions()).toMatchObject([
+          {
+            genesisHash,
+            lastValidBlockHeight: 1n,
+            attempts: 1,
+          },
+        ]);
+        expect(restored._activeReservations(BigInt(Date.now()) + 120_000n)).toHaveLength(1);
+        await expect(payment.send(sign)).rejects.toMatchObject({
+          causeCode: "WALLET_PAYMENT_ALREADY_USED",
+        });
+      } else {
+        expect(serializeWallet(wallet)).toEqual(before);
+      }
+    },
+  );
+
+  it.each([
+    "saved",
+    "uncertain send",
+    "save failed",
+    "recipient changed",
+    "recipient changed during the blockhash check",
+    "blockhash expired",
+    "RPC slot regressed",
+    "input spent",
+    "aborted",
+  ] as const)("guards RPC broadcast when payment persistence is %s", async (outcome) => {
+    const keypair = spendingKeypair();
+    const payer = await generateKeyPairSigner();
+    const wallet = fundedWallet(keypair, [100n]);
+    const recipient = ShieldedKeypair.generate().shieldedAddress();
+    const rotated = ShieldedAddress.fromPublicKeys(
+      recipient.signingPublicKey,
+      recipient.nullifierPublicKey,
+      ShieldedKeypair.generate().shieldedAddress().viewingPublicKey,
+    );
+    const { client } = capturePrivateBuild(emptyTransaction(payer.address));
+    const genesisHash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
+    const before = serializeWallet(wallet);
+    const controller = new AbortController();
+    let stored: string | undefined;
+    let finishSave = () => {};
+    const writing = new Promise<void>((resolve) => {
+      finishSave = resolve;
+    });
+    const cipher = walletSnapshotCipher(keypair);
+    const store = {
+      load: async () => stored,
+      save: vi.fn(async (sealed: string, context?: RequestContext) => {
+        expect(context?.signal).toBeDefined();
+        await writing;
+        if (outcome === "save failed") throw new Error("store write failed");
+        stored = sealed;
+      }),
+    };
+    const address = vi.fn(async () => {
+      if (
+        (outcome === "recipient changed" ||
+          outcome === "recipient changed during the blockhash check") &&
+        stored !== undefined
+      ) {
+        return rotated;
+      }
+      return recipient;
+    });
+    const getBlockhashValidity = vi.fn(async () => {
+      if (stored === undefined) return { slot: 10n, valid: true };
+      return {
+        slot: outcome === "RPC slot regressed" ? 9n : 11n,
+        valid: outcome !== "blockhash expired",
+      };
+    });
+    const broadcastTransaction = vi.fn(async (transaction: Transaction) => {
+      const signature = getSignatureFromTransaction(transaction);
+      const restored = await loadPersistedWallet({ store, cipher });
+      expect(restored?.pendingSubmissions()).toMatchObject([
+        { signature, genesisHash, lastValidBlockHeight: 1n, blockhashValidAtSlot: 10n },
+      ]);
+      expect(restored?._activeReservations(BigInt(Date.now()) + 120_000n)).toHaveLength(1);
+      if (outcome === "uncertain send") {
+        throw new ClientError("CLIENT_RPC", { details: { method: "sendTransaction" } });
+      }
+      return signature;
+    });
+    const persistence = { store, cipher, wallet: fundedWallet(keypair, []) };
+    const payment = await buildTransferTransaction({
+      client: {
+        ...client,
+        getBlockhashValidity,
+        broadcastTransaction,
+        getGenesisHash: async () => genesisHash,
+      },
+      wallet,
+      keys: localKeys(keypair),
+      feePayer: payer.address,
+      recipient: recipient.solanaAddress(),
+      amount: 25n,
+      decryptionService: { address, genesisHash },
+      persistence,
+    });
+    const sending = payment.send(
+      (transaction) => signTransactionWithSigners([payer], transaction),
+      { signal: controller.signal },
+    );
+    const failure = {
+      "uncertain send": "CLIENT_RPC",
+      "save failed": "WALLET_PERSIST",
+      "recipient changed": "WALLET_DECRYPTION_RECIPIENT_MISMATCH",
+      "recipient changed during the blockhash check": "WALLET_DECRYPTION_RECIPIENT_MISMATCH",
+      "blockhash expired": "WALLET_PAYMENT_BLOCKHASH",
+      "RPC slot regressed": "WALLET_PAYMENT_BLOCKHASH",
+      "input spent": "WALLET_UNSIGNED_INPUT_UNAVAILABLE",
+      aborted: "CLIENT_ABORTED",
+    };
+    const settled =
+      outcome === "saved"
+        ? expect(sending).resolves.toEqual(expect.any(String))
+        : expect(sending).rejects.toMatchObject({
+            code: "WALLET_SUBMIT_PAYMENT",
+            causeCode: failure[outcome],
+          });
+    try {
+      await vi.waitFor(() => expect(store.save).toHaveBeenCalledOnce());
+      expect(broadcastTransaction).not.toHaveBeenCalled();
+      expect(getBlockhashValidity).toHaveBeenCalledTimes(2);
+      expect(wallet.pendingSubmissions()).toHaveLength(1);
+      if (outcome === "input spent") {
+        wallet._replace({
+          ...wallet._state(),
+          utxos: wallet.utxos().map((entry) => ({ ...entry, spent: true })),
+        });
+      }
+      if (outcome === "aborted") {
+        controller.abort();
+        await settled;
+        expect(broadcastTransaction).not.toHaveBeenCalled();
+      }
+    } finally {
+      finishSave();
+    }
+    await settled;
+    await wallet._withSyncLock(async () => {});
+    const attempted = outcome === "saved" || outcome === "uncertain send";
+    expect(broadcastTransaction).toHaveBeenCalledTimes(attempted ? 1 : 0);
+    if (attempted) {
+      expect(wallet.pendingSubmissions()).toHaveLength(1);
+    } else {
+      expect(wallet.pendingSubmissions()).toEqual([]);
+      if (outcome !== "input spent") expect(serializeWallet(wallet)).toBe(before);
+    }
+    if (outcome === "aborted") {
+      const restored = await loadPersistedWallet({ store, cipher });
+      expect(restored?.pendingSubmissions()).toEqual([]);
+    }
+  });
+
+  it("cannot stage or broadcast a cancelled payment waiting behind the wallet save queue", async () => {
+    const keypair = spendingKeypair();
+    const payer = await generateKeyPairSigner();
+    const wallet = fundedWallet(keypair, [100n]);
+    const recipient = ShieldedKeypair.generate().shieldedAddress();
+    const { client } = capturePrivateBuild(emptyTransaction(payer.address));
+    const genesisHash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
+    const store = { save: vi.fn(async () => {}) };
+    const broadcastTransaction = vi.fn(async (transaction: Transaction) =>
+      getSignatureFromTransaction(transaction),
+    );
+    const payment = await buildTransferTransaction({
+      client: { ...client, broadcastTransaction, getGenesisHash: async () => genesisHash },
+      wallet,
+      keys: localKeys(keypair),
+      feePayer: payer.address,
+      recipient: recipient.solanaAddress(),
+      amount: 25n,
+      decryptionService: { address: async () => recipient, genesisHash },
+      persistence: { store, cipher: walletSnapshotCipher(keypair) },
+    });
+    let finish = () => {};
+    const blocking = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const currentWriter = wallet._withSyncLock(() => blocking);
+    const stage = vi.spyOn(wallet, "_beginSubmission");
+    const sign = vi.fn(async (transaction: Transaction) =>
+      signTransactionWithSigners([payer], transaction),
+    );
+    const controller = new AbortController();
+    const sending = expect(payment.send(sign, { signal: controller.signal })).rejects.toMatchObject(
+      {
+        code: "WALLET_SUBMIT_PAYMENT",
+        causeCode: "CLIENT_ABORTED",
+      },
+    );
+    try {
+      await vi.waitFor(() => expect(sign).toHaveBeenCalledOnce());
+      expect(stage).not.toHaveBeenCalled();
+      controller.abort();
+      await sending;
+    } finally {
+      finish();
+    }
+    await currentWriter;
+    await wallet._withSyncLock(async () => {});
+    expect(stage).not.toHaveBeenCalled();
+    expect(store.save).not.toHaveBeenCalled();
+    expect(broadcastTransaction).not.toHaveBeenCalled();
+    expect(wallet.pendingSubmissions()).toEqual([]);
+    expect(wallet._activeReservations(BigInt(Date.now()))).toEqual([]);
   });
 
   it("applies split defaults without mutating the wallet", async () => {

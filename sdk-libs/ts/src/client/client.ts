@@ -3,11 +3,14 @@ import { prepareTransfer, checkedTransferCache } from "./prover/assembly.js";
 import { checkedContextSlot, proveThroughAuthority } from "./prover/indexed.js";
 import {
   assertIsAddress,
+  assertIsSendableTransaction,
   assertIsSignature,
-  getBase64Encoder,
+  getBase64EncodedWireTransaction,
   type Address,
+  type Blockhash,
   type Commitment,
   type Instruction,
+  type SendableTransaction,
   type Signature,
   type Transaction,
 } from "@solana/kit";
@@ -36,6 +39,7 @@ import { checkAuthorizedBinding, checkTransactData } from "../transaction/wallet
 
 import { compileUnsignedTransaction } from "../flows/compile.js";
 import { checkedComputeUnitLimit, checkedPriorityFee } from "../flows/internal.js";
+import { wireDecoder } from "../interface/decode.js";
 import { ClientError, fromClientCause } from "./error.js";
 import { checkedServiceUrl, hasProofMethods, inputTreeAddress } from "./internal.js";
 import { SprIndexer } from "./indexer.js";
@@ -46,6 +50,7 @@ import {
   type AuthorizedPrivateTransactionMaterial,
   type BlockhashProvider,
   type ChainReader,
+  type AccountContextReader,
   type IndexedProofAuthority,
   type IndexerReader,
   type KitRpcAccess,
@@ -63,6 +68,7 @@ import {
   type ProvenRingTransact,
   type Prover,
   type TransactionAssembler,
+  type TransactionBroadcaster,
   type TransactionConfirmer,
   type TreeContext,
   type RingProvingConfig,
@@ -71,6 +77,7 @@ import {
 } from "./ports.js";
 import {
   createKitClients,
+  readBlockhashValidity,
   runKitRpc,
   type LatestBlockhash,
   type SolanaRpc,
@@ -206,11 +213,13 @@ export type {
 export class SprClient
   implements
     ChainReader,
+    AccountContextReader,
     BlockhashProvider,
     IndexerReader,
     ProofReader,
     Prover,
     TransactionConfirmer,
+    TransactionBroadcaster,
     KitRpcAccess,
     TreeContext,
     TransactionAssembler,
@@ -344,13 +353,40 @@ export class SprClient
   }
 
   async getAccount(address: Address, context?: RequestContext): Promise<RpcAccount | undefined> {
+    return (await this.getAccountWithContext(address, 0n, context)).account;
+  }
+
+  async getAccountWithContext(address: Address, minContextSlot: bigint, context?: RequestContext) {
     checkedAddress(address, "address");
-    const { value } = await runKitRpc("getAccountInfo", context, (abortSignal) =>
+    const method = "getAccountInfo";
+    const invalid = (reason: string) =>
+      new ClientError("CLIENT_INVALID_RPC_RESPONSE", { details: { method, path: reason } });
+    if (
+      typeof minContextSlot !== "bigint" ||
+      minContextSlot < 0n ||
+      minContextSlot > 0xffff_ffff_ffff_ffffn
+    ) {
+      throw new ClientError("CLIENT_INVALID_CONTEXT", {
+        details: { method, field: "minContextSlot" },
+      });
+    }
+    const response: unknown = await runKitRpc(method, context, (abortSignal) =>
       this.solanaRpc
-        .getAccountInfo(address, { commitment: this.commitment, encoding: "base64" })
+        .getAccountInfo(address, {
+          commitment: this.commitment,
+          encoding: "base64",
+          ...(minContextSlot === 0n ? {} : { minContextSlot }),
+        })
         .send({ abortSignal }),
     );
-    return value === null ? undefined : decodeRpcAccount(value, "getAccountInfo");
+    const decode = wireDecoder(invalid);
+    const result = decode.record(response, "result");
+    const slot = decode.record(result["context"], "context")["slot"];
+    if (typeof slot !== "bigint" || slot < minContextSlot || slot > 0xffff_ffff_ffff_ffffn) {
+      throw invalid("context.slot");
+    }
+    const value = result["value"];
+    return { slot, account: value === null ? undefined : decodeRpcAccount(value, method) };
   }
 
   /** Every account of one program, as Rust's `Rpc::get_program_accounts`. */
@@ -409,11 +445,52 @@ export class SprClient
     return value;
   }
 
+  async getGenesisHash(context?: RequestContext): Promise<string> {
+    return runKitRpc("getGenesisHash", context, async (abortSignal) => {
+      const hash: unknown = await this.solanaRpc.getGenesisHash().send({ abortSignal });
+      return wireDecoder(
+        () =>
+          new ClientError("CLIENT_RPC", {
+            details: { method: "getGenesisHash" },
+          }),
+      ).address(hash, "getGenesisHash");
+    });
+  }
+
   async getLatestBlockhash(context?: RequestContext): Promise<LatestBlockhash> {
     const { value } = await runKitRpc("getLatestBlockhash", context, (abortSignal) =>
       this.solanaRpc.getLatestBlockhash({ commitment: this.commitment }).send({ abortSignal }),
     );
     return value;
+  }
+
+  getBlockhashValidity(blockhash: Blockhash, context?: RequestContext) {
+    return readBlockhashValidity(
+      this.solanaRpc,
+      blockhash,
+      { commitment: this.commitment },
+      context,
+    );
+  }
+
+  broadcastTransaction(
+    transaction: Transaction & SendableTransaction,
+    context?: RequestContext & Readonly<{ minContextSlot?: bigint }>,
+  ): Promise<Signature> {
+    return runKitRpc("sendTransaction", context, async (abortSignal) => {
+      assertIsSendableTransaction(transaction);
+      const minContextSlot = context?.minContextSlot;
+      const signature: unknown = await this.solanaRpc
+        .sendTransaction(getBase64EncodedWireTransaction(transaction), {
+          encoding: "base64",
+          preflightCommitment: this.commitment,
+          ...(minContextSlot === undefined ? {} : { minContextSlot }),
+        })
+        .send({ abortSignal });
+      return wireDecoder(
+        () => new ClientError("CLIENT_RPC", { details: { method: "sendTransaction" } }),
+      ).signature(signature, "sendTransaction");
+    });
   }
 
   async getSlot(context?: RequestContext): Promise<bigint> {
@@ -1325,26 +1402,22 @@ function commitmentReached(reached: Commitment | null, required: Commitment): bo
   return COMMITMENT_RANK[reached] >= COMMITMENT_RANK[required];
 }
 
-function decodeRpcAccount(
-  account: Readonly<{
-    owner: Address;
-    lamports: bigint;
-    data: readonly [string, "base64"];
-  }>,
-  method: string,
-): RpcAccount {
-  try {
-    return Object.freeze({
-      owner: account.owner,
-      data: new Uint8Array(getBase64Encoder().encode(account.data[0])),
-      lamports: account.lamports,
-    });
-  } catch (cause) {
-    throw new ClientError("CLIENT_INVALID_RPC_RESPONSE", {
-      details: { method, path: "result.value.data" },
-      cause,
-    });
+function decodeRpcAccount(value: unknown, method: string): RpcAccount {
+  const invalid = (path: string) =>
+    new ClientError("CLIENT_INVALID_RPC_RESPONSE", { details: { method, path } });
+  const decode = wireDecoder(invalid);
+  const account = decode.record(value, "result.value");
+  const data = decode.list(account["data"], "result.value.data");
+  if (data.length !== 2 || data[1] !== "base64") throw invalid("result.value.data");
+  const lamports = account["lamports"];
+  if (typeof lamports !== "bigint" || lamports < 0n || lamports > 0xffff_ffff_ffff_ffffn) {
+    throw invalid("result.value.lamports");
   }
+  return Object.freeze({
+    owner: decode.address(account["owner"], "result.value.owner"),
+    data: decode.base64(data[0], "result.value.data"),
+    lamports,
+  });
 }
 
 /** The one field pair the assembler binds, the rest of `ProvedMerge` stays unclaimed. */

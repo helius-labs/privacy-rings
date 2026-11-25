@@ -513,6 +513,39 @@ describe("SprClient", () => {
     });
   });
 
+  it.each(["aborted", "timed out"] as const)(
+    "stops waiting for an RPC transport that is %s",
+    async (outcome) => {
+      vi.useFakeTimers();
+      try {
+        const controller = new AbortController();
+        let finish!: () => void;
+        const late = new Promise<bigint>((resolve) => {
+          finish = () => resolve(42n);
+        });
+        const read = vi.fn((_signal: AbortSignal) => late);
+        const result = runKitRpc(
+          "getEpochInfo",
+          { signal: controller.signal, timeoutMs: 10 },
+          read,
+        );
+        const rejected = expect(result).rejects.toMatchObject({
+          code: outcome === "aborted" ? "CLIENT_ABORTED" : "CLIENT_TIMEOUT",
+          details: { method: "getEpochInfo" },
+        });
+        if (outcome === "aborted") controller.abort();
+        else await vi.advanceTimersByTimeAsync(10);
+        await rejected;
+        expect(read.mock.calls[0]?.[0].aborted).toBe(true);
+        finish();
+        await rejected;
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it("reads the snapshot slot of a nullifier page that ends the history", async () => {
     // An unspent nullifier matches nothing, the snapshot slot is the checkpoint.
     const fetch = vi.fn<typeof globalThis.fetch>(() =>

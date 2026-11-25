@@ -334,14 +334,12 @@ pub fn fetch_user_record_checked<R: Rpc>(
     rpc: &R,
     owner: Pubkey,
 ) -> Result<UserRecord, ClientError> {
-    let (record_pda, bump) = user_record_pda(&owner);
-    let account = rpc
-        .get_account(Address::new_from_array(record_pda.to_bytes()))?
-        .ok_or(ClientError::UserRegistryRecordNotFound {
+    fetch_user_record_optional_checked(rpc, owner)?.ok_or_else(|| {
+        ClientError::UserRegistryRecordNotFound {
             owner,
-            record: record_pda,
-        })?;
-    parse_user_record_account(owner, record_pda, bump, &account)
+            record: user_record_pda(&owner).0,
+        }
+    })
 }
 
 pub fn fetch_user_record_optional_checked<R: Rpc>(
@@ -349,12 +347,8 @@ pub fn fetch_user_record_optional_checked<R: Rpc>(
     owner: Pubkey,
 ) -> Result<Option<UserRecord>, ClientError> {
     let (record_pda, bump) = user_record_pda(&owner);
-    let Some(account) = rpc.get_account(Address::new_from_array(record_pda.to_bytes()))? else {
-        return Ok(None);
-    };
-    Ok(Some(parse_user_record_account(
-        owner, record_pda, bump, &account,
-    )?))
+    let account = rpc.get_account(Address::new_from_array(record_pda.to_bytes()))?;
+    parse_optional_user_record(owner, record_pda, bump, account.as_ref())
 }
 
 pub async fn fetch_user_record_optional_checked_async<R: AsyncRpc>(
@@ -362,15 +356,10 @@ pub async fn fetch_user_record_optional_checked_async<R: AsyncRpc>(
     owner: Pubkey,
 ) -> Result<Option<UserRecord>, ClientError> {
     let (record_pda, bump) = user_record_pda(&owner);
-    let Some(account) = rpc
+    let account = rpc
         .get_account(Address::new_from_array(record_pda.to_bytes()))
-        .await?
-    else {
-        return Ok(None);
-    };
-    Ok(Some(parse_user_record_account(
-        owner, record_pda, bump, &account,
-    )?))
+        .await?;
+    parse_optional_user_record(owner, record_pda, bump, account.as_ref())
 }
 
 /// Reads the whole registry. A record this version cannot decode is skipped.
@@ -421,12 +410,18 @@ pub fn decode_user_record_account(
     })
 }
 
-fn parse_user_record_account(
+pub(crate) fn parse_optional_user_record(
     owner: Pubkey,
     record_pda: Pubkey,
     bump: u8,
-    account: &solana_account::Account,
-) -> Result<UserRecord, ClientError> {
+    account: Option<&solana_account::Account>,
+) -> Result<Option<UserRecord>, ClientError> {
+    let Some(account) = account else {
+        return Ok(None);
+    };
+    if account.owner == Pubkey::default() && account.data.is_empty() && !account.executable {
+        return Ok(None);
+    }
     let record = decode_user_record_account(account)?;
     if record.owner.to_bytes() != owner.to_bytes() {
         return Err(ClientError::Rpc(format!(
@@ -439,7 +434,7 @@ fn parse_user_record_account(
             record.bump
         )));
     }
-    Ok(record)
+    Ok(Some(record))
 }
 
 pub fn validate_registered_keypair<R: Rpc>(
@@ -478,6 +473,71 @@ pub fn try_resolve_registered_address<R: Rpc>(
     Ok(Some(resolved_address_from_record(owner, &record).map_err(
         |err| ClientError::AddressResolution(err.to_string()),
     )?))
+}
+
+/// Uses the registry record or service keys when both reads around the service lookup find no record.
+pub fn resolve_shielded_recipient<R: Rpc>(
+    rpc: &R,
+    owner: Pubkey,
+    service: impl FnOnce(Pubkey) -> Result<ShieldedAddress, ClientError>,
+) -> Result<ShieldedAddress, ClientError> {
+    resolve_shielded_recipient_with_source(rpc, owner, service).map(|(address, _)| address)
+}
+
+pub(crate) fn resolve_shielded_recipient_with_source<R: Rpc>(
+    rpc: &R,
+    owner: Pubkey,
+    service: impl FnOnce(Pubkey) -> Result<ShieldedAddress, ClientError>,
+) -> Result<(ShieldedAddress, bool), ClientError> {
+    if let Some(record) = try_resolve_registered_address(rpc, owner)? {
+        return Ok((record.address, false));
+    }
+    let service_address = check_service_recipient(owner, service(owner)?)?;
+    Ok(try_resolve_registered_address(rpc, owner)?
+        .map_or((service_address, true), |record| (record.address, false)))
+}
+
+/// Asynchronous variant of [`resolve_shielded_recipient`].
+pub async fn resolve_shielded_recipient_async<R: AsyncRpc, F>(
+    rpc: &R,
+    owner: Pubkey,
+    service: impl FnOnce(Pubkey) -> F,
+) -> Result<ShieldedAddress, ClientError>
+where
+    F: std::future::Future<Output = Result<ShieldedAddress, ClientError>>,
+{
+    resolve_shielded_recipient_with_source_async(rpc, owner, service)
+        .await
+        .map(|(address, _)| address)
+}
+
+pub(crate) async fn resolve_shielded_recipient_with_source_async<R: AsyncRpc, F>(
+    rpc: &R,
+    owner: Pubkey,
+    service: impl FnOnce(Pubkey) -> F,
+) -> Result<(ShieldedAddress, bool), ClientError>
+where
+    F: std::future::Future<Output = Result<ShieldedAddress, ClientError>>,
+{
+    if let Some(record) = try_resolve_registered_address_async(rpc, owner).await? {
+        return Ok((record.address, false));
+    }
+    let service_address = check_service_recipient(owner, service(owner).await?)?;
+    Ok(try_resolve_registered_address_async(rpc, owner)
+        .await?
+        .map_or((service_address, true), |record| (record.address, false)))
+}
+
+fn check_service_recipient(
+    owner: Pubkey,
+    address: ShieldedAddress,
+) -> Result<ShieldedAddress, ClientError> {
+    if address.signing_pubkey.as_ed25519()? != owner.to_bytes() {
+        return Err(ClientError::AddressResolution(
+            "the decryption service returned another owner".into(),
+        ));
+    }
+    Ok(address)
 }
 
 pub async fn try_resolve_registered_address_async<R: AsyncRpc>(
@@ -677,6 +737,42 @@ mod tests {
         let record = fetch_user_record_optional_checked(&rpc, owner).expect("optional fetch");
 
         assert_eq!(record, None);
+    }
+
+    #[tokio::test]
+    async fn prefunded_registry_pda_is_absent_until_initialized() {
+        let owner = Pubkey::new_unique();
+        let pda = user_record_pda(&owner).0;
+        let account = Account {
+            lamports: 1_000_000,
+            ..Account::default()
+        };
+        let address = Address::new_from_array(pda.to_bytes());
+        let mut rpc = MockRpc {
+            account: Some((address, account.clone())),
+        };
+        assert_eq!(
+            fetch_user_record_optional_checked(&rpc, owner).unwrap(),
+            None
+        );
+        assert_eq!(
+            fetch_user_record_optional_checked_async(&rpc, owner)
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(matches!(
+            fetch_user_record_checked(&rpc, owner),
+            Err(ClientError::UserRegistryRecordNotFound { .. })
+        ));
+        rpc.account = Some((
+            address,
+            Account {
+                owner: Pubkey::new_unique(),
+                ..account
+            },
+        ));
+        assert!(fetch_user_record_optional_checked(&rpc, owner).is_err());
     }
 
     #[test]
@@ -901,6 +997,139 @@ mod tests {
 
         let tag = recipient_confidential_view_tag_sync(&rpc, owner).expect("tag");
         assert_eq!(tag, [0u8; 32]);
+    }
+
+    #[test]
+    fn decryption_resolution_uses_only_a_successful_registry_miss() {
+        let keys = ShieldedKeypair::new_ed25519().unwrap();
+        let owner = keys.pubkey();
+        let address = keys.shielded_address().unwrap();
+        let registered = registry_holding(owner, fields(&address));
+        let resolved = resolve_shielded_recipient(&registered, owner, |_| {
+            panic!("the registered owner must use its registry keys")
+        })
+        .unwrap();
+        assert_eq!(resolved, address);
+
+        let missing = MockRpc::default();
+        assert_eq!(
+            resolve_shielded_recipient(&missing, owner, |requested| {
+                assert_eq!(requested, owner);
+                Ok(address)
+            })
+            .unwrap(),
+            address
+        );
+        let wrong_address = ed25519_address(19);
+        assert!(resolve_shielded_recipient(&missing, owner, |_| Ok(wrong_address)).is_err());
+    }
+
+    #[tokio::test]
+    async fn async_decryption_resolution_rejects_malformed_registry_and_wrong_owner() {
+        let keys = ShieldedKeypair::new_ed25519().unwrap();
+        let owner = keys.pubkey();
+        let address = keys.shielded_address().unwrap();
+        let mut registered = registry_holding(owner, fields(&address));
+        assert_eq!(
+            resolve_shielded_recipient_async(&registered, owner, |_| async {
+                panic!("a registered recipient must use its registry keys");
+            })
+            .await
+            .unwrap(),
+            address
+        );
+        registered.account.as_mut().unwrap().1.data.clear();
+        assert!(
+            resolve_shielded_recipient_async(&registered, owner, |_| async {
+                panic!("a malformed record must not use the decryption service");
+            })
+            .await
+            .is_err()
+        );
+
+        let missing = MockRpc::default();
+        assert_eq!(
+            resolve_shielded_recipient_async(&missing, owner, |requested| async move {
+                assert_eq!(requested, owner);
+                Ok(address)
+            })
+            .await
+            .unwrap(),
+            address
+        );
+        assert!(
+            resolve_shielded_recipient_async(&missing, owner, |_| async {
+                Ok(ed25519_address(19))
+            })
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn registration_observed_after_service_lookup_takes_precedence() {
+        use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+
+        struct PublishingRegistry {
+            registered: MockRpc,
+            published: AtomicBool,
+        }
+
+        impl Rpc for PublishingRegistry {
+            fn get_account(&self, address: Address) -> Result<Option<Account>, ClientError> {
+                if self.published.load(Relaxed) {
+                    Rpc::get_account(&self.registered, address)
+                } else {
+                    Ok(None)
+                }
+            }
+
+            fn get_latest_blockhash(&self) -> Result<(solana_hash::Hash, u64), ClientError> {
+                unreachable!()
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl AsyncRpc for PublishingRegistry {
+            async fn get_account(&self, address: Address) -> Result<Option<Account>, ClientError> {
+                Rpc::get_account(self, address)
+            }
+
+            async fn get_latest_blockhash(&self) -> Result<(solana_hash::Hash, u64), ClientError> {
+                unreachable!()
+            }
+        }
+
+        let registered = ed25519_address(4);
+        let owner = Pubkey::new_from_array(registered.signing_pubkey.as_ed25519().unwrap());
+        let service_address = ShieldedAddress {
+            signing_pubkey: registered.signing_pubkey,
+            ..ed25519_address(19)
+        };
+        let rpc = PublishingRegistry {
+            registered: registry_holding(owner, fields(&registered)),
+            published: AtomicBool::new(false),
+        };
+        let publish = |_| {
+            rpc.published.store(true, Relaxed);
+            Ok(service_address)
+        };
+        assert_eq!(
+            resolve_shielded_recipient(&rpc, owner, publish).unwrap(),
+            registered
+        );
+
+        rpc.published.store(false, Relaxed);
+        assert_eq!(
+            resolve_shielded_recipient_async(
+                &rpc,
+                owner,
+                |requested| async move { publish(requested) }
+            )
+            .await
+            .unwrap(),
+            registered
+        );
     }
 
     #[tokio::test]

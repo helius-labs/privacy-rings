@@ -84,6 +84,7 @@ export interface ShieldedKeys {
   address(): ShieldedAddress;
   /** Every viewing key held, the current one first. Sync opens under each. */
   viewingPublicKeys(): readonly X25519PublicKey[];
+  /** Fresh plaintext buffers owned by the caller, which wipes them after use. */
   decrypt(
     requests: readonly DecryptRequest[],
     context?: RequestContext,

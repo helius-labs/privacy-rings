@@ -994,6 +994,8 @@ interface Recipient {
   readonly amount: bigint;
   /** Resolved at `prepare`, mirrors Rust `RecipientRing`, `default` is an exit when the transfer runs in a ring. */
   readonly ring: RecipientRing;
+  /** Encrypt to the decryption-service viewing key carried by `address`. */
+  readonly service?: boolean;
 }
 
 const ZERO_ADDRESS = address("11111111111111111111111111111111");
@@ -1074,8 +1076,8 @@ export class ConfidentialTransfer {
   }
 
   /** The UTXO joins the ring of the transfer, the default ring without one. */
-  send(recipient: ShieldedAddress, asset: Address, amount: bigint): void {
-    this.#push({ address: recipient, asset, amount, ring: "transfer" });
+  send(recipient: ShieldedAddress, asset: Address, amount: bigint, service = false): void {
+    this.#push({ address: recipient, asset, amount, ring: "transfer", service });
   }
 
   /** The UTXO leaves the transfer ring for the default ring. Mirrors Rust `send_default_ring`. */
@@ -1187,6 +1189,7 @@ export class ConfidentialTransfer {
           : recipient.ring === "default"
             ? {}
             : { ringProgramId: recipient.ring.programId }),
+        ...(recipient.service ? { serviceViewingPublicKey: recipient.address.viewingPublicKey } : {}),
       })),
     );
     // The circuit recomputes every output blinding from the first nullifier,
@@ -1678,6 +1681,9 @@ function outputInit(output: ProofOutputUtxo): ProofOutputInit {
     ...(output.dataHash === undefined ? {} : { dataHash: output.dataHash }),
     ...(output.ringDataHash === undefined ? {} : { ringDataHash: output.ringDataHash }),
     ...(output.ringProgramId === undefined ? {} : { ringProgramId: output.ringProgramId }),
+    ...(output.serviceViewingPublicKey === undefined
+      ? {}
+      : { serviceViewingPublicKey: output.serviceViewingPublicKey }),
     ...(output.ownerTag === undefined ? {} : { ownerTag: output.ownerTag }),
     ...(output.compact === true ? { compact: true } : {}),
   };
