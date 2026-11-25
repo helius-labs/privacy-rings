@@ -21,6 +21,7 @@ pub const GET_MERKLE_PROOFS: &str = "getMerkleProofs";
 pub const GET_NON_INCLUSION_PROOFS: &str = "getNonInclusionProofs";
 pub const GET_NULLIFIER_QUEUE_ELEMENTS: &str = "getNullifierQueueElements";
 pub const GET_USER_RECORDS: &str = "getUserRecords";
+pub const ANNOUNCE_UPSTREAM: &str = "announceUpstream";
 /// The most owners one `getUserRecords` request names: the Solana RPC answers
 /// `getMultipleAccounts` for at most this many accounts in one call.
 pub const MAX_USER_RECORD_OWNERS: usize = 100;
@@ -47,6 +48,7 @@ pub mod method {
     pub struct GetNonInclusionProofs;
     pub struct GetNullifierQueueElements;
     pub struct GetUserRecords;
+    pub struct AnnounceUpstream;
 
     impl RpcMethod for GetEncryptedUtxosByTags {
         const NAME: &'static str = GET_ENCRYPTED_UTXOS_BY_TAGS;
@@ -94,6 +96,12 @@ pub mod method {
         const NAME: &'static str = GET_USER_RECORDS;
         type Request = GetUserRecordsRequest;
         type Response = GetUserRecordsResponse;
+    }
+
+    impl RpcMethod for AnnounceUpstream {
+        const NAME: &'static str = ANNOUNCE_UPSTREAM;
+        type Request = AnnounceUpstreamRequest;
+        type Response = AnnounceUpstreamResponse;
     }
 }
 
@@ -1178,9 +1186,67 @@ pub struct GetUserRecordsResponse {
     pub records: Vec<Option<UserRecord>>,
 }
 
+const UPSTREAM_ANNOUNCEMENT_DOMAIN: &[u8] = b"spr-upstream-announcement-v1";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct UpstreamAnnouncement {
+    pub url: String,
+    pub methods: Vec<String>,
+    /// Unix seconds, a later announcement of one key replaces an earlier one.
+    pub timestamp: u64,
+}
+
+impl UpstreamAnnouncement {
+    /// Signed bytes, the domain tag and a length prefix on each field keep the encoding injective.
+    pub fn message(&self) -> Vec<u8> {
+        let mut message = UPSTREAM_ANNOUNCEMENT_DOMAIN.to_vec();
+        message.extend(self.timestamp.to_le_bytes());
+        for field in std::iter::once(&self.url).chain(&self.methods) {
+            message.extend((field.len() as u64).to_le_bytes());
+            message.extend(field.as_bytes());
+        }
+        message
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AnnounceUpstreamRequest {
+    pub pubkey: SerializablePubkey,
+    pub announcement: UpstreamAnnouncement,
+    /// Ed25519 over [`UpstreamAnnouncement::message`].
+    pub signature: SerializableSignature,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct AnnounceUpstreamResponse {
+    /// An operator approved the announced URL for the key.
+    pub approved: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_upstream_announcement_message_separates_its_fields() {
+        let announcement = |url: &str, methods: &[&str]| UpstreamAnnouncement {
+            url: url.to_owned(),
+            methods: methods.iter().map(|method| (*method).to_owned()).collect(),
+            timestamp: 7,
+        };
+        let message = announcement("http://a", &["bc", "d"]).message();
+        assert!(message.starts_with(UPSTREAM_ANNOUNCEMENT_DOMAIN));
+        for moved in [
+            announcement("http://ab", &["c", "d"]),
+            announcement("http://a", &["b", "cd"]),
+            announcement("http://a", &["bcd"]),
+        ] {
+            assert_ne!(moved.message(), message);
+        }
+    }
 
     #[test]
     fn method_markers_have_canonical_names() {

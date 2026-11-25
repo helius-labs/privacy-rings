@@ -6,7 +6,8 @@ use clap::Parser;
 use futures::{pin_mut, StreamExt};
 use jsonrpsee::server::ServerHandle;
 use log::{error, info, warn};
-use photon_indexer::api::{self, service::PhotonApi};
+use photon_indexer::api::{rpc_server::RpcServer, service::PhotonApi};
+use photon_indexer::upstreams::{serve_registry, Routes};
 
 use photon_indexer::common::{
     fetch_block_parent_slot, fetch_current_slot_with_infinite_retry, get_network_start_slot,
@@ -98,6 +99,15 @@ struct Args {
     #[arg(long)]
     snapshot_dir: Option<String>,
 
+    /// Loopback or private address that accepts upstream announcements.
+    #[arg(long)]
+    upstream_registry_bind: Option<std::net::SocketAddr>,
+
+    /// Forward calls Photon does not serve to the upstreams an operator
+    /// approved with `photon-upstreams`.
+    #[arg(long, conflicts_with = "disable_api")]
+    forward_upstreams: bool,
+
     /// R2 bucket name for Rings BlockInfo snapshots.
     #[arg(long)]
     r2_bucket: Option<String>,
@@ -128,6 +138,7 @@ struct ApiServer {
     api: PhotonApi,
     port: u16,
     max_http_connections: u32,
+    upstreams: Option<Arc<Routes>>,
 }
 
 impl ApiServer {
@@ -136,13 +147,19 @@ impl ApiServer {
             api,
             port,
             max_http_connections,
+            upstreams,
         } = self;
         // Before the server accepts anything, so the first proof request finds a
         // populated ring rather than paying for it.
         api.spawn_root_index_refresher();
-        api::rpc_server::run_server(api, port, max_http_connections)
-            .await
-            .context("Failed to start API server")
+        RpcServer {
+            api,
+            max_connections: max_http_connections,
+            upstreams,
+        }
+        .run(port)
+        .await
+        .context("Failed to start API server")
     }
 }
 
@@ -491,10 +508,21 @@ async fn main() -> Result<()> {
                 api,
                 port: args.port,
                 max_http_connections: args.max_http_connections,
+                upstreams: if args.forward_upstreams {
+                    Some(Routes::spawn(db_conn.clone()).await?)
+                } else {
+                    None
+                },
             }
             .start()
             .await?,
         )
+    };
+
+    // Dropping the handle stops the registry.
+    let _registry = match args.upstream_registry_bind {
+        Some(address) => Some(serve_registry(db_conn.clone(), address).await?.1),
+        None => None,
     };
 
     match tokio::signal::ctrl_c().await {

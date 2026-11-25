@@ -124,3 +124,15 @@ pub enum RingsTxNullifiers {
     InputQueueSeq,
     Nullifier,
 }
+
+#[derive(Copy, Clone, Iden)]
+pub enum RpcUpstreams {
+    Table,
+    Pubkey,
+    Url,
+    Methods,
+    AnnouncedAt,
+    ApprovedUrl,
+    ApprovedMethods,
+    ApprovalOrder,
+}

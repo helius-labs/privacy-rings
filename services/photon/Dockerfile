@@ -20,7 +20,8 @@ RUN cargo build --locked --release -p photon-indexer \
     --bin photon \
     --bin photon-migration \
     --bin photon-snapshotter \
-    --bin photon-snapshot-loader
+    --bin photon-snapshot-loader \
+    --bin photon-upstreams
 
 FROM debian:bookworm-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df AS runtime
 
@@ -36,6 +37,7 @@ COPY --from=builder --chmod=0755 /workspace/target/release/photon /usr/local/bin
 COPY --from=builder --chmod=0755 /workspace/target/release/photon-migration /usr/local/bin/photon-migration
 COPY --from=builder --chmod=0755 /workspace/target/release/photon-snapshotter /usr/local/bin/photon-snapshotter
 COPY --from=builder --chmod=0755 /workspace/target/release/photon-snapshot-loader /usr/local/bin/photon-snapshot-loader
+COPY --from=builder --chmod=0755 /workspace/target/release/photon-upstreams /usr/local/bin/photon-upstreams
 COPY LICENSE THIRD_PARTY_NOTICES /usr/share/licenses/zolana/
 
 LABEL org.opencontainers.image.title="Zolana Photon" \

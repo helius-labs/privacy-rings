@@ -122,6 +122,60 @@ block batch until the underlying data or code is fixed. Alert on stale `getIndex
 `block_batch_index_failures`, and errors containing `Cannot reconstruct nullifier batch` or
 `Reconstructed nullifier root mismatch`.
 
+### Forwarding to upstreams
+
+Photon can forward the JSON-RPC methods it does not serve to other services, so
+clients keep one endpoint. Photon never forwards a method it serves, whatever an
+upstream announces.
+
+Roles:
+
+- **Upstream.** A JSON-RPC service with an Ed25519 key. It posts
+  `announceUpstream` to the registry on a timer, signed over its URL, its method
+  names and a timestamp. `spr_rpc_http::announce::Announcer` does this.
+- **Registry.** A Photon started with `--upstream-registry-bind <address>`. It
+  records each announcement in `rpc_upstreams`, and a new key starts as pending.
+  The address must be loopback or private, because any key may write a pending
+  row.
+- **Operator.** Approves an upstream with `photon-upstreams`, against the same
+  database.
+- **Forwarder.** Every Photon started with `--forward-upstreams`. It reads the
+  approved rows every five seconds.
+
+```bash
+export DATABASE_URL=postgres://...
+photon-upstreams list
+photon-upstreams approve <pubkey> <url>
+photon-upstreams revoke <pubkey>
+```
+
+`list` and the logs print a URL without its username and password. `approve`
+takes the full URL.
+
+What approval locks in:
+
+- The URL. `approve` takes the URL the operator read and fails when the key has
+  announced another one since. After the key announces a new URL, Photon
+  keeps the approved URL until the operator approves the new one.
+- Not the methods. The approved key adds and removes methods with its next
+  announcement of the approved URL. The methods it announces for another URL
+  wait for the approval of that URL.
+- Precedence. When two approved upstreams announce one method, the upstream
+  approved first serves it.
+
+Pitfalls:
+
+- Photon passes `x-forwarded-for` through and does not add the peer address. A
+  client can set that header, so an upstream may use it for rate limits only
+  when a gateway in front of Photon overwrites it.
+- Photon also passes `x-api-key` and the query string, so a gateway API key
+  reaches the upstream.
+- An announcement does not name a cluster. Run one registry database per
+  cluster and approve each key there.
+- Photon does not retry a forwarded call and does not follow a redirect. An
+  upstream that does not answer gives HTTP 502 with JSON-RPC error `-32603`.
+- A call passes through two forwarders at most. A third answers HTTP 508.
+
 ### Container releases
 
 Images are published by `.github/workflows/publish-image.yml`, which publishes

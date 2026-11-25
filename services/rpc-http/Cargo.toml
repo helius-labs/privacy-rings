@@ -11,9 +11,17 @@ publish = false
 http-body-util = { workspace = true }
 hyper = { workspace = true }
 jsonrpsee = { workspace = true }
+log = { workspace = true }
+reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+solana-pubkey = { workspace = true }
+solana-signature = { workspace = true }
+spr-indexer-api = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time"] }
 tower = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "net"] }

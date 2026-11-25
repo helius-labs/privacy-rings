@@ -106,7 +106,8 @@ jobs:
                 ('ring_spend_record_rings'),
                 ('ring_spend_records'),
                 ('ring_key_registry_roots'),
-                ('ring_key_registry_members')
+                ('ring_key_registry_members'),
+                ('rpc_upstreams')
             )
             SELECT bool_and(to_regclass('public.' || name) IS NOT NULL)
             FROM required;
@@ -120,6 +121,8 @@ jobs:
           cargo run --locked -p photon-indexer --bin photon-openapi
           git diff --exit-code -- services/photon/src/openapi/specs/rings.yaml
       - name: Run contract and Photon tests
+        env:
+          PHOTON_TEST_POSTGRES_URL: ${{ env.DATABASE_URL }}
         run: |
           cargo test --locked -p spr-indexer-api
           cargo test --locked -p photon-indexer --all-targets
