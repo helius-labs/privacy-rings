@@ -1,0 +1,24 @@
+{
+  "name": "spr-tvc-typescript-client-example",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Turnkey-signed receive and claim with the attested decryption service",
+  "scripts": {
+    "example": "tsx index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "@heliuslabs/spr": "link:../../../sdk-libs/ts",
+    "@solana/kit": "^8.3.0",
+    "@turnkey/sdk-server": "^8.3.0",
+    "dotenv": "^17.0.0",
+    "@heliuslabs/spr-decryption-service": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.7.2"
+  }
+}
