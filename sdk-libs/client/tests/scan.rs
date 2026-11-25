@@ -587,7 +587,7 @@ fn a_token_that_does_not_advance_fails_instead_of_paging_forever() {
 }
 
 /// A page Photon refuses as too large (`-32008`) is asked for again at half
-/// the limit, and the rest of the fetch keeps the smaller limit.
+/// the limit. The next page asks for the full limit again.
 #[test]
 fn a_page_too_large_is_read_again_at_half_the_limit() {
     let owner = keypair(7);
@@ -622,8 +622,15 @@ fn a_page_too_large_is_read_again_at_half_the_limit() {
         .spendable;
     assert_eq!(spendable, expected);
     let limits = dense.limits.take();
-    assert_eq!(limits[..3], [1_000, 500, 250]);
-    assert!(limits[3..].iter().all(|limit| *limit == 250), "{limits:?}");
+    let page = [1_000, 500, 250];
+    assert!(
+        !limits.is_empty() && limits.len() % page.len() == 0,
+        "{limits:?}"
+    );
+    assert!(
+        limits.chunks(page.len()).all(|chunk| chunk == page),
+        "{limits:?}"
+    );
 }
 
 #[test]

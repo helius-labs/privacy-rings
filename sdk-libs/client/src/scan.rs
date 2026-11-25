@@ -20,7 +20,7 @@
 //! named on the last page read, as its
 //! [`latest_tree_id`](spr_transaction::WalletUtxo::latest_tree_id). A page
 //! the indexer refuses as too large is asked for again at half the limit,
-//! down to one item, and the rest of the fetch keeps the smaller limit.
+//! down to one item. The next page asks for the full limit again.
 
 use std::collections::HashSet;
 
@@ -301,8 +301,8 @@ struct Fetched {
 struct Pages {
     /// The output tree the last page read named; every page reports it.
     output_tree_id: Option<u16>,
-    /// The limit every read asks for: [`PAGE_LIMIT`], halved each time the
-    /// indexer refuses a page as too large.
+    /// The limit a fresh page asks for. A page refused as too large is retried
+    /// below it; the retry does not change what the next page asks for.
     limit: u32,
 }
 
@@ -319,8 +319,8 @@ impl Pages {
     /// The items of every page `read_page` returns, from the first page until
     /// one names no next page. A page refused with
     /// [`ClientError::IndexerResponseTooLarge`] is asked for again at half the
-    /// limit, down to one item; a page whose cursor does not advance fails
-    /// the read.
+    /// limit, down to one item. The next page starts at [`PAGE_LIMIT`] again.
+    /// A page whose cursor does not advance fails the read.
     fn read_all<T>(
         &mut self,
         mut read_page: impl FnMut(Option<PaginationToken>, u32) -> Result<Page<T>, ClientError>,
@@ -328,13 +328,16 @@ impl Pages {
         let mut items = Vec::new();
         let mut token = None;
         loop {
-            let page = match read_page(token, self.limit) {
-                Ok(page) => page,
-                Err(ClientError::IndexerResponseTooLarge(_)) if self.limit > 1 => {
-                    self.limit /= 2;
-                    continue;
+            let mut limit = self.limit;
+            let page = loop {
+                match read_page(token, limit) {
+                    Ok(page) => break page,
+                    Err(ClientError::IndexerResponseTooLarge(_)) if limit > 1 => {
+                        limit /= 2;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
                 }
-                Err(error) => return Err(error),
             };
             let next = page
                 .continuation(token)
