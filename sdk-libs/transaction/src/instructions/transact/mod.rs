@@ -49,7 +49,9 @@ pub use transaction::{transact_message_hash, CacheAccounts, PrivateTxHash, SppPr
 
 use ring::sender_owner_tag;
 
-use crate::{error::TransactionError, utxo::SppProofInputUtxo, Mint, WalletUtxo, SOL_MINT};
+use crate::{
+    error::TransactionError, utxo::SppProofInputUtxo, EncryptionMode, Mint, WalletUtxo, SOL_MINT,
+};
 
 /// Build a confidential transaction from ordered input UTXOs.
 ///
@@ -91,6 +93,7 @@ pub struct ConfidentialTransaction {
     addresses: Vec<SppProofInputUtxo>,
     tx_viewing_key: Option<[u8; 32]>,
     outputs: Vec<SppProofOutputUtxo>,
+    change_encryption_mode: EncryptionMode,
     public_transfers: Vec<PublicTransferRequest>,
     payer: Address,
     blinding_seed: [u8; 32],
@@ -104,6 +107,20 @@ pub struct ConfidentialTransaction {
 }
 
 impl ConfidentialTransaction {
+    /// Select encryption for automatically generated change, including the
+    /// zero-amount SOL fallback. Explicit recipients and padding keep their
+    /// own modes. Change is fixed once padding succeeds.
+    pub fn with_change_encryption_mode(
+        mut self,
+        mode: EncryptionMode,
+    ) -> Result<Self, TransactionError> {
+        if self.padded_inputs.is_some() {
+            return Err(TransactionError::OutputUtxosAlreadyPadded);
+        }
+        self.change_encryption_mode = mode;
+        Ok(self)
+    }
+
     pub fn inputs(&self) -> &[SppProofInputUtxo] {
         &self.inputs
     }
@@ -267,6 +284,7 @@ impl ConfidentialTransaction {
             inputs,
             addresses,
             outputs: Vec::new(),
+            change_encryption_mode: EncryptionMode::Hkdf,
             public_transfers: Vec::new(),
             payer,
             blinding_seed: random_blinding(),
@@ -352,6 +370,18 @@ impl ConfidentialTransaction {
         asset: Address,
         amount: u64,
     ) -> Result<&mut Self, TransactionError> {
+        self.transfer_with_mode(recipient, asset, amount, EncryptionMode::Hkdf)
+    }
+
+    /// Transfer SPL tokens with a KDF selected for this recipient output only.
+    /// Generated change uses the independently configured change mode.
+    pub fn transfer_with_mode(
+        &mut self,
+        recipient: &ShieldedAddress,
+        asset: Address,
+        amount: u64,
+        mode: EncryptionMode,
+    ) -> Result<&mut Self, TransactionError> {
         if asset == SOL_MINT {
             return Err(TransactionError::ExpectedSplMint);
         }
@@ -362,12 +392,15 @@ impl ConfidentialTransaction {
             .map(|input| input.utxo.asset)
             .ok_or(TransactionError::UnknownMint(asset))?;
 
-        self.internal_add_output_utxo(Recipient {
-            address: *recipient,
-            asset,
-            amount,
-            ring_program_id: self.ring_program_id,
-        })
+        self.internal_add_output_utxo(
+            Recipient {
+                address: *recipient,
+                asset,
+                amount,
+                ring_program_id: self.ring_program_id,
+            },
+            mode,
+        )
     }
 
     /// Transfer SOL to a recipient shielded address.
@@ -376,12 +409,26 @@ impl ConfidentialTransaction {
         recipient: &ShieldedAddress,
         amount: u64,
     ) -> Result<&mut Self, TransactionError> {
-        self.internal_add_output_utxo(Recipient {
-            address: *recipient,
-            asset: Mint::SOL,
-            amount,
-            ring_program_id: self.ring_program_id,
-        })
+        self.transfer_sol_with_mode(recipient, amount, EncryptionMode::Hkdf)
+    }
+
+    /// Transfer SOL with a KDF selected for this recipient output only.
+    /// Generated change uses the independently configured change mode.
+    pub fn transfer_sol_with_mode(
+        &mut self,
+        recipient: &ShieldedAddress,
+        amount: u64,
+        mode: EncryptionMode,
+    ) -> Result<&mut Self, TransactionError> {
+        self.internal_add_output_utxo(
+            Recipient {
+                address: *recipient,
+                asset: Mint::SOL,
+                amount,
+                ring_program_id: self.ring_program_id,
+            },
+            mode,
+        )
     }
 
     /// Deposit SPL tokens from the source token account.

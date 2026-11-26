@@ -6,7 +6,7 @@ use spr_event::OutputDataEncoding;
 use spr_keypair::{x25519::X25519_PUBKEY_LEN, ShieldedKeypair, ViewingKey};
 use spr_transaction::{
     decrypt_spendable,
-    instructions::transact::{ConfidentialTransaction, SppProofInputs},
+    instructions::transact::{ConfidentialTransaction, Shape, SppProofInputs},
     serialization::{confidential::Confidential, poseidon_kdf::PoseidonKdf},
     AssetRegistry, DecodeCx, EncryptedScheme, EncryptionMode, LocalShieldedKeys, Mint,
     OutputContext, OutputSlot, ShieldedTransaction, SppProofOutputUtxo, TransactionError,
@@ -81,6 +81,220 @@ fn publication(prepared: &SppProofInputs) -> ShieldedTransaction {
         proofless: false,
         ring_config: None,
         ring_program_id: None,
+    }
+}
+
+fn real_output_schemes(prepared: &SppProofInputs) -> Vec<u8> {
+    publication(prepared)
+        .output_slots
+        .iter()
+        .zip(&prepared.output_utxos)
+        .filter(|(_, output)| !output.is_dummy())
+        .map(|(slot, _)| {
+            let OutputDataEncoding::Encrypted(blob) = slot.output_data().unwrap() else {
+                panic!("expected ordinary encrypted framing");
+            };
+            *blob.first().unwrap()
+        })
+        .collect()
+}
+
+#[test]
+fn recipient_mode_helpers_do_not_carry_over_between_calls_or_change() {
+    let sender = keypair(92);
+    let alice = keypair(93);
+    let bob = keypair(94);
+    let sender_address = sender.shielded_address().unwrap();
+    let alice_address = alice.shielded_address().unwrap();
+    let bob_address = bob.shielded_address().unwrap();
+    let spl = Mint::new(spr_transaction::Address::new_from_array([95; 32]), 9);
+    let mut assets = AssetRegistry::default();
+    assets.insert(spl.asset_id, spl.asset).unwrap();
+    for mint in [Mint::SOL, spl] {
+        let input = wallet_utxo(&sender, mint, 100, 2, 1);
+        let mut transaction =
+            ConfidentialTransaction::new(vec![input], sender_address.solana_address().unwrap())
+                .unwrap()
+                .with_output_tree_id(2)
+                .unwrap()
+                .with_change_encryption_mode(EncryptionMode::PoseidonKdf)
+                .unwrap();
+        if mint == Mint::SOL {
+            transaction
+                .transfer_sol_with_mode(&alice_address, 42, EncryptionMode::PoseidonKdf)
+                .unwrap();
+            transaction.transfer_sol(&bob_address, 10).unwrap();
+        } else {
+            transaction
+                .transfer_with_mode(&alice_address, mint.asset, 42, EncryptionMode::PoseidonKdf)
+                .unwrap();
+            transaction.transfer(&bob_address, mint.asset, 10).unwrap();
+        }
+        let prepared = transaction
+            .finalize(&sender_address)
+            .unwrap()
+            .encrypt_with_keys(&sender)
+            .unwrap();
+        let indexed = publication(&prepared);
+        let alice_received =
+            decrypt_spendable(&alice, std::slice::from_ref(&indexed), &assets).unwrap();
+        let bob_received =
+            decrypt_spendable(&bob, std::slice::from_ref(&indexed), &assets).unwrap();
+        let change = decrypt_spendable(&sender, &[indexed], &assets).unwrap();
+        assert_eq!(
+            (
+                real_output_schemes(&prepared),
+                alice_received
+                    .utxos()
+                    .map(|utxo| utxo.utxo.amount)
+                    .collect::<Vec<_>>(),
+                bob_received
+                    .utxos()
+                    .map(|utxo| utxo.utxo.amount)
+                    .collect::<Vec<_>>(),
+                change
+                    .utxos()
+                    .map(|utxo| utxo.utxo.amount)
+                    .collect::<Vec<_>>(),
+            ),
+            (vec![9, 3, 9], vec![42], vec![10], vec![48]),
+        );
+    }
+}
+
+#[test]
+fn transfer_sol_keeps_payment_hkdf_and_recovers_poseidon_change() {
+    let sender = keypair(89);
+    let recipient = keypair(90);
+    let sender_address = sender.shielded_address().unwrap();
+    let input = wallet_utxo(&sender, Mint::SOL, 100, 2, 1);
+    let mut transaction =
+        ConfidentialTransaction::new(vec![input], sender_address.solana_address().unwrap())
+            .unwrap()
+            .with_output_tree_id(2)
+            .unwrap()
+            .with_change_encryption_mode(EncryptionMode::PoseidonKdf)
+            .unwrap();
+    transaction
+        .transfer_sol(&recipient.shielded_address().unwrap(), 42)
+        .unwrap();
+    let prepared = transaction.encrypt(&sender).unwrap();
+    let indexed = publication(&prepared);
+    let assets = AssetRegistry::default();
+    let payment = decrypt_spendable(&recipient, std::slice::from_ref(&indexed), &assets).unwrap();
+    let change = decrypt_spendable(&sender, &[indexed], &assets).unwrap();
+    assert_eq!(
+        (
+            real_output_schemes(&prepared),
+            payment
+                .utxos()
+                .map(|utxo| utxo.utxo.amount)
+                .collect::<Vec<_>>(),
+            change
+                .utxos()
+                .map(|utxo| utxo.utxo.amount)
+                .collect::<Vec<_>>(),
+        ),
+        (vec![3, 9], vec![42], vec![58]),
+    );
+}
+
+#[test]
+fn change_mode_is_used_for_every_asset_remainder() {
+    let sender = keypair(89);
+    let recipient = keypair(90).shielded_address().unwrap();
+    let sender_address = sender.shielded_address().unwrap();
+    let spl = Mint::new(spr_transaction::Address::new_from_array([91; 32]), 9);
+    let inputs = vec![
+        wallet_utxo(&sender, Mint::SOL, 100, 2, 1),
+        wallet_utxo(&sender, spl, 200, 2, 2),
+    ];
+    let mut transaction =
+        ConfidentialTransaction::new(inputs, sender_address.solana_address().unwrap())
+            .unwrap()
+            .with_output_tree_id(2)
+            .unwrap()
+            .with_change_encryption_mode(EncryptionMode::PoseidonKdf)
+            .unwrap();
+    transaction.transfer_sol(&recipient, 42).unwrap();
+    transaction.transfer(&recipient, spl.asset, 70).unwrap();
+    let prepared = transaction.encrypt(&sender).unwrap();
+    let mut assets = AssetRegistry::default();
+    assets.insert(spl.asset_id, spl.asset).unwrap();
+    let change = decrypt_spendable(&sender, &[publication(&prepared)], &assets).unwrap();
+    assert_eq!(
+        (
+            real_output_schemes(&prepared),
+            change
+                .utxos()
+                .map(|utxo| (utxo.utxo.asset.asset_id, utxo.utxo.amount))
+                .collect::<Vec<_>>()
+        ),
+        (
+            vec![3, 3, 9, 9],
+            vec![(Mint::SOL.asset_id, 58), (spl.asset_id, 130)]
+        ),
+    );
+}
+
+#[test]
+fn zero_sol_fallback_uses_change_mode_and_padding_stays_hkdf() {
+    let sender = keypair(89);
+    let sender_address = sender.shielded_address().unwrap();
+    let payer = sender_address.solana_address().unwrap();
+    let input = wallet_utxo(&sender, Mint::SOL, 100, 2, 1);
+    let mut transaction = ConfidentialTransaction::new(vec![input], payer)
+        .unwrap()
+        .with_output_tree_id(2)
+        .unwrap()
+        .with_change_encryption_mode(EncryptionMode::PoseidonKdf)
+        .unwrap();
+    transaction.withdraw_sol(100, payer).unwrap();
+    let prepared = transaction.encrypt(&sender).unwrap();
+    let indexed = publication(&prepared);
+    let OutputDataEncoding::Encrypted(blob) =
+        indexed.output_slots.first().unwrap().output_data().unwrap()
+    else {
+        panic!("expected ordinary encrypted fallback");
+    };
+    let change = decrypt_spendable(&sender, &[indexed], &AssetRegistry::default()).unwrap();
+    assert_eq!(
+        (
+            blob.first(),
+            prepared
+                .output_utxos
+                .iter()
+                .filter(|output| output.is_dummy())
+                .map(|output| output.encryption_mode)
+                .collect::<Vec<_>>(),
+            change
+                .utxos()
+                .map(|utxo| utxo.utxo.amount)
+                .collect::<Vec<_>>(),
+        ),
+        (Some(&9), vec![EncryptionMode::Hkdf], vec![0]),
+    );
+}
+
+#[test]
+fn change_mode_cannot_be_reconfigured_after_padding() {
+    let sender = keypair(89);
+    let sender_address = sender.shielded_address().unwrap();
+    let input = wallet_utxo(&sender, Mint::SOL, 100, 2, 1);
+    let mut transaction =
+        ConfidentialTransaction::new(vec![input], sender_address.solana_address().unwrap())
+            .unwrap();
+    transaction
+        .transfer_sol(&keypair(90).shielded_address().unwrap(), 42)
+        .unwrap();
+    transaction
+        .pad_utxos(Shape::IN1_OUT2, &sender_address)
+        .unwrap();
+    for mode in [EncryptionMode::Hkdf, EncryptionMode::PoseidonKdf] {
+        assert!(matches!(
+            transaction.clone().with_change_encryption_mode(mode),
+            Err(TransactionError::OutputUtxosAlreadyPadded)
+        ));
     }
 }
 

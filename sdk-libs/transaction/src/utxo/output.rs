@@ -117,8 +117,8 @@ pub struct SppProofOutputUtxo {
 }
 
 impl SppProofOutputUtxo {
-    /// Select encryption for this output. Automatically generated change and
-    /// padding use the default HKDF mode.
+    /// Select encryption for this output. Generated change uses the builder's
+    /// change mode; padding defaults to HKDF.
     #[must_use]
     pub fn with_encryption_mode(mut self, mode: EncryptionMode) -> Self {
         self.encryption_mode = mode;
