@@ -47,6 +47,7 @@ export {
 } from "./interface/index.js";
 export {
   CompressedShieldedAddress,
+  EncryptionMode,
   KeypairError,
   NullifierKey,
   ShieldedAddress,

@@ -7,6 +7,7 @@ import { splInterfaceWithBump, treeAddress } from "../src/interface/pda/index.js
 import { checkedBytes, type Bytes34 } from "../src/keypair/bytes.js";
 import {
   ShieldedKeypair,
+  EncryptionMode,
   ShieldedPublicKey,
   SigningKey,
   ViewingKey,
@@ -17,6 +18,8 @@ import {
   LocalShieldedKeys,
   Utxo,
   createProofOutput,
+  decodeOutputData,
+  EncryptedScheme,
   type WalletUtxo,
 } from "../src/transaction/index.js";
 import {
@@ -578,6 +581,43 @@ describe.each(FIXTURES)("the %s program transaction", (_, fixture, walletUtxos) 
       inputs: fixture.transaction.finalizedTx.inputUtxos.map((input) => bytes(input.utxoHash)),
       outputs: fixture.transaction.finalizedTx.outputHashes.map(bytes),
     });
+  });
+
+  it("preserves Rust per-output KDF metadata through browser encryption", async () => {
+    const raw = {
+      ...wasm,
+      outputUtxos: wasm.outputUtxos.map((output, index) =>
+        index === 0 ? { ...output, encryptionMode: EncryptionMode.PoseidonKdf } : output,
+      ),
+    };
+    const decoded = await decodeProgramTransaction(raw, new AssetRegistry());
+    const keypair = senderKeypair();
+    const viewing = keypair.viewingKey();
+    const tx = viewing.transactionViewingKey(decoded.firstNullifier);
+    try {
+      expect(decoded.outputs[0]?.encryptionMode).toBe(EncryptionMode.PoseidonKdf);
+      expect(decoded.outputHashes).toEqual(wasm.outputHashes);
+      const encrypted = decoded.encrypt(tx);
+      const first = encrypted.outputs[0];
+      if (first?.data === undefined) throw new Error("missing first output ciphertext");
+      expect(decodeOutputData(first.data).scheme).toBe(EncryptedScheme.poseidonKdf);
+      await expect(
+        decodeProgramTransaction(
+          {
+            ...wasm,
+            outputUtxos: wasm.outputUtxos.map((output) => ({
+              ...output,
+              encryptionMode: "invalid",
+            })),
+          },
+          new AssetRegistry(),
+        ),
+      ).rejects.toMatchObject({ code: "TRANSACTION_DESERIALIZE" });
+    } finally {
+      tx.destroy();
+      viewing.destroy();
+      keypair.destroy();
+    }
   });
 
   it("retains the registry-validated mint address and id on every UTXO", async () => {

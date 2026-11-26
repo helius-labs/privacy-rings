@@ -1,5 +1,6 @@
 export { initializePoseidon, isPoseidonInitialized } from "../hasher/index.js";
 export { Data } from "./data.js";
+export { EncryptionMode } from "../keypair/encryption-mode.js";
 export { Mint } from "./asset.js";
 export type { DataRecord } from "./data.js";
 export { formatAmount, parseAmount } from "./amount.js";
@@ -124,6 +125,9 @@ export { MERGE, SPLIT, TRANSFER, TRANSFER_PLAINTEXT } from "./serialization/code
 export {
   EncryptedScheme,
   decodeContextForSlot,
+  encryptPoseidonKdf,
+  decryptPoseidonKdf,
+  decryptPoseidonKdfAsSender,
   encryptedSchemeFromByte,
   encryptedSchemeToByte,
   outputDataEncoding,

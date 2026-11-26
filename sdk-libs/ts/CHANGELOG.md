@@ -2,53 +2,47 @@
 
 ## 0.9.0-alpha — unreleased
 
-The SDK publishes as `@heliuslabs/spr`, and its client, indexer and API
-names take the `Spr` prefix.
-Indexer history reads use gTFA-style pagination with string tokens and slot
-filters, and wallet sync resumes each key from a slot checkpoint.
-The client proves anonymous ring transfers from an owner signer or a
-prepared owner signature.
-Clients can take the confidential signer and merge proving keys from an
-attested prover at runtime instead of the keys the SDK pins.
-The signed prover policy now has two parts: a release that the pinned release
-keys approve, and a short-lived freshness part, signed by the freshness keys the
-release names, that keeps it in force.
+The SDK publishes as `@heliuslabs/spr` with `Spr` client, indexer and API names,
+and history reads use gTFA-style pagination with string tokens and slot filters
+while wallet sync resumes each key from a slot checkpoint.
+Anonymous ring transfers accept an owner signer or a prepared owner signature,
+and output encryption supports HKDF or Poseidon KDF independently for recipients
+and generated change.
+Clients can load confidential signer and merge proving keys from an attested
+prover at runtime instead of SDK pins, with a two-part policy whose release is
+approved by pinned release keys and whose short-lived freshness part is signed
+by the freshness keys named in that release to keep it in force.
 
 Breaking
 
-- The package is published as `@heliuslabs/spr`, with the same subpaths → replace the `@heliuslabs/zolana` dependency and every `@heliuslabs/zolana` import specifier with `@heliuslabs/spr`.
-- `ZolanaClient`, `ZolanaClientConfig`, `createZolanaClient`, `ZolanaIndexer`, `ZolanaApi`, `ZolanaApiConfig` and `ZOLANA_GATEWAY_PATH` become `SprClient`, `SprClientConfig`, `createSprClient`, `SprIndexer`, `SprApi`, `SprApiConfig` and `SPR_GATEWAY_PATH` → rename them in imports and code.
+- `ProofOutputUtxo` requires `encryptionMode` and `withEncryptionMode()` → construct outputs with `createProofOutput()` or implement these members, and custom `ShieldedKeys.decrypt()` implementations must handle the new `"poseidonKdfUtxo"` label.
+- The package becomes `@heliuslabs/spr` with the same subpaths, and `ZolanaClient`, `ZolanaClientConfig`, `createZolanaClient`, `ZolanaIndexer`, `ZolanaApi`, `ZolanaApiConfig` and `ZOLANA_GATEWAY_PATH` become `SprClient`, `SprClientConfig`, `createSprClient`, `SprIndexer`, `SprApi`, `SprApiConfig` and `SPR_GATEWAY_PATH` → replace the dependency and every `@heliuslabs/zolana` import prefix with `@heliuslabs/spr`, and rename those symbols in imports and code.
 - `SprIndexer.getShieldedTransactionsByTags`, `getShieldedTransactionsByNullifiers` and `getEncryptedUtxosByTags` take `PageOptions` (`paginationToken`, `limit`, `filters.slot`, `minContextSlot`) and return a `Page` of `{context, data, paginationToken}` with the events or outputs of each Solana transaction grouped in `data` → upgrade Photon with the SDK, pass `paginationToken` back until it is `null`, and resume a later scan that has no `lt` or `lte` bound with `filters: { slot: { gt } }` set to the final page's `context.slot`.
 - `serializeWallet` writes snapshot version 5 with slot checkpoints, and `SerializedCursor` and `SerializedSyncCursors` become `SerializedSyncCheckpoint` and `SerializedSyncCheckpoints` → restore earlier snapshots with `deserializeWallet`, which keeps the wallet state and rescans history once.
-- `Prover` requires `proveAnonymousRingTransact` → implement the method on custom provers.
-- `ProverInputs`, `IndexedProofInputs` and `CircuitId` add anonymous ring variants → forward them in custom `ProofService` and `ProofAuthority` implementations.
+- `Prover` requires `proveAnonymousRingTransact`, `ProverInputs`, `IndexedProofInputs` and `CircuitId` add anonymous ring variants, and `SprClient.proveAnonymousRingTransact(input)` accepts a `TransactOwnerSigner` or an owner signature prepared over `transactMessageDigest(proofInputs)` → implement the new method on custom provers and forward the variants in custom `ProofService` and `ProofAuthority` implementations.
 - `ShieldedPda`, `ProgramOwner`, `bindProgramTransaction`, `decodeProgramTransaction`, `toProgramWalletUtxo`, `transactCpiAccounts` and the `Program*` types move to the experimental `@heliuslabs/spr/program` subpath and may change in any release → import them from `@heliuslabs/spr/program` instead of `/keypair`, `/transaction` and `/interface`.
 - `SignedTeePolicy` reads only the two-part policy file and refuses it once either part expires, when a freshness part runs longer than its release allows, or when it is issued more than a day past the device clock → upgrade before the network publishes the two-part file, which earlier releases refuse; `publicKeys` and `threshold` still pin the release signers.
-- `TreeFeeSchedule.feePerNullifier` becomes `feePerTree`, a flat fee a transact or merge payer pays once to every tree the transaction writes, and `defaultTreeFees()` takes no argument and returns 5,000 lamports per tree with forester reimbursements at cost → rename the field, drop the ZKP batch size argument, and fund payers for the per-tree fee.
+- `TreeFeeSchedule.feePerNullifier` becomes `feePerTree`, a flat fee a transact or merge payer pays once to each tree it writes, `defaultTreeFees()` takes no argument and returns 5,000 lamports per tree with forester reimbursements at cost, and `DEFAULT_APPEND_REIMBURSEMENT_LAMPORTS` and `DEFAULT_CLOSE_REIMBURSEMENT_LAMPORTS` are removed → rename the field, drop the ZKP batch size argument, fund payers for per-tree fees, and use `AT_COST_APPEND_REIMBURSEMENT_LAMPORTS`, `AT_COST_CLOSE_REIMBURSEMENT_LAMPORTS` and `DEFAULT_FEE_PER_TREE_LAMPORTS`.
 - `buildKeyUpdateTransaction` sends only the new viewing key, and the user-registry program refuses the earlier layout that also carried the nullifier key → upgrade the SDK together with the user-registry program.
-- `DEFAULT_APPEND_REIMBURSEMENT_LAMPORTS` and `DEFAULT_CLOSE_REIMBURSEMENT_LAMPORTS` are removed → use `AT_COST_APPEND_REIMBURSEMENT_LAMPORTS`, `AT_COST_CLOSE_REIMBURSEMENT_LAMPORTS` and `DEFAULT_FEE_PER_TREE_LAMPORTS`.
-- `ProgramTransaction.proofInputs` is a `ProgramProofInputs` map of canonical decimal scalars instead of assignment bytes, and `bindProgramTransaction` rejects a map whose `public_hash` differs from `publicHash` with `TRANSACTION_PROGRAM_PUBLIC_HASH_MISMATCH` → regenerate the application WASM bindings and pass the map directly to the Xark prover.
+- `ProgramTransaction.proofInputs` is typed by `ProgramProofInputs` as a map of canonical decimal scalars instead of assignment bytes, and `bindProgramTransaction` rejects a map whose `public_hash` differs from `publicHash` with the `TransactionErrorCode` value `TRANSACTION_PROGRAM_PUBLIC_HASH_MISMATCH` → regenerate the application WASM bindings and pass the map directly to the Xark prover.
 
 Added
 
-- `ProgramProofInputs` types the prover input map of a `ProgramTransaction`, and `TransactionErrorCode.TRANSACTION_PROGRAM_PUBLIC_HASH_MISMATCH` reports proof inputs bound to another public hash.
+- `EncryptionMode`, `ProofOutputUtxo.withEncryptionMode()`, `ConfidentialTransfer.sendWithMode()`, `sendSolWithMode()` and `withChangeEncryptionMode()` select HKDF or Poseidon KDF independently for explicit outputs, one recipient or generated change without affecting later payments, while `decodeProgramTransaction()` preserves Rust output selection through browser encryption and wallet sync reads mixed-mode transactions.
+- `encryptPoseidonKdf()`, `decryptPoseidonKdf()` and `decryptPoseidonKdfAsSender()` encrypt and open ordinary Poseidon-KDF output frames, with recipient-key validation during direct recipient decoding.
 - `ClientErrorCode.CLIENT_INDEXER_RESPONSE_TOO_LARGE` reports an indexer response above 10 MiB, the most Photon sends, whether the SDK or Photon (`-32008`) refuses it.
-- `SprClient.proveAnonymousRingTransact(input)` accepts a `TransactOwnerSigner` or an owner signature prepared over `transactMessageDigest(proofInputs)`.
-- `SprClient.fetchProvingKeySet()` reads the prover's key set over the channel `proverTee` attests and encrypts, and returns a `ProvingKeySet` whose `cacheKey` names the release and whose `key(name)` gives each key's zopro download and gnark digest.
-- `SprClientConfig.provingKeys`, with `proofDataSource: "client"`, makes every proof use the set's keys and `checkProverProvingKeys()` check only those keys; a circuit outside the set and the indexed route fail with `CLIENT_PROVING_KEY_SET`, whose `details.check` names the reason.
+- `SprClient.fetchProvingKeySet()` obtains a `ProvingKeySet` over the channel `proverTee` attests and encrypts, with a release-naming `cacheKey` and `key(name)` entries supplying zopro downloads and gnark digests; passing it as `SprClientConfig.provingKeys` with `proofDataSource: "client"` makes every proof and `checkProverProvingKeys()` use only those keys, while circuits outside the set or indexed proving fail with `CLIENT_PROVING_KEY_SET` and a reason in `details.check`.
 
 Changed
 
 - `initializePoseidon()` and `createSprClient()` initialize Poseidon without WebAssembly, so wallet hashing can run on Hermes.
 - The package declares and is tested on Node.js 22.12 or a newer 22.x as well as Node.js 24 or newer.
 - A ring config created on a pool with permissionless ring activation reads `ringAuthorityTransactIsEnabled` true from creation, where it read false until `setRingActivation`.
-- `SprIndexer` history reads given a freshness wait retry Photon's `-32016` minimum-context-slot error until the wait ends, and `syncWallet` rejects a page whose `paginationToken` does not advance or does not name its last transaction, so it never saves a checkpoint past unread history.
 
 Fixed
 
-- `syncWallet` failed on an indexer page of dense private transactions; it now halves `pageLimit` for the rest of the sync until the page fits, keeping the `requireSlot` check.
-- `syncWallet` misclassified authored spends containing unknown output schemes as withdrawals or splits, and now omits their history rows.
-- `syncWallet` failed with `TRANSACTION_KEYS_UNRESOLVED` when a reserved or unknown output scheme accompanied a confidential note, and now stores the note.
+- `SprIndexer` freshness waits retry Photon's `-32016` minimum-context-slot error until the wait ends, and `syncWallet` fixes dense private-transaction page failures by halving `pageLimit` for the remaining sync until the page fits while retaining `requireSlot` and rejecting pages whose `paginationToken` does not advance or does not name the last transaction, preventing checkpoints from passing unread history.
+- `syncWallet` misclassified authored spends with unknown output schemes as withdrawals or splits and could fail with `TRANSACTION_KEYS_UNRESOLVED` when a reserved or unknown scheme accompanied a confidential note; it now omits those outbound history rows while storing the confidential note.
 - `ProverClient` requests with a trailing slash remain decryptable when the gateway trims it; update the prover with the SDK.
 
 ## 0.8.0-alpha — 2026-11-03

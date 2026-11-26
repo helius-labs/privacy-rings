@@ -5,6 +5,7 @@ import { type ShieldedPublicKey } from "../../keypair/public-key.js";
 import { X25519PublicKey, isSmallOrder } from "../../keypair/x25519.js";
 import type { ShieldedAddress, ShieldedKeypair } from "../../keypair/shielded.js";
 import type { ViewingKey } from "../../keypair/viewing-key.js";
+import { EncryptionMode } from "../../keypair/encryption-mode.js";
 
 import { initializePoseidon } from "../../hasher/index.js";
 import { DEFAULT_TREE_ID } from "../../interface/tree-slot.js";
@@ -15,11 +16,13 @@ import type { IndexedShieldedTransaction, OutputContext } from "../instructions/
 import {
   EncryptedScheme,
   confidentialUtxo,
+  confidentialEncryptionMode,
   decodePlaintextTransfer,
   decodeProofless,
   decodeSplitBundle,
   decodeConfidential,
   decryptConfidentialAsSender,
+  decryptPoseidonKdfAsSender,
   prooflessUtxo,
   plaintextTransferUtxos,
   readOutputData,
@@ -36,6 +39,7 @@ import {
   checkKeysIdentity,
   checkViewingPublicKeys,
   type DecryptRequest,
+  type DecryptLabel,
   type ShieldedKeys,
 } from "./keys.js";
 import { SOL_MINT, type AssetRegistry } from "../asset.js";
@@ -159,6 +163,7 @@ const WALLET_SCHEMES: ReadonlySet<number> = new Set([
   EncryptedScheme.proofless,
   EncryptedScheme.confidential,
   EncryptedScheme.ringConfidential,
+  EncryptedScheme.poseidonKdf,
   EncryptedScheme.split,
   EncryptedScheme.merge,
   EncryptedScheme.plaintextTransfer,
@@ -168,7 +173,19 @@ const WALLET_SCHEMES: ReadonlySet<number> = new Set([
 function carriesReservedScheme(tx: IndexedShieldedTransaction): boolean {
   return tx.outputSlots.some((slot) => {
     try {
-      return !WALLET_SCHEMES.has(readOutputFrame(slot.payload).schemeByte);
+      const frame = readOutputFrame(slot.payload);
+      if (!WALLET_SCHEMES.has(frame.schemeByte)) return true;
+      if (
+        frame.schemeByte === EncryptedScheme.confidential ||
+        frame.schemeByte === EncryptedScheme.ringConfidential ||
+        frame.schemeByte === EncryptedScheme.poseidonKdf
+      ) {
+        return (
+          confidentialEncryptionMode({ encoding: frame.encoding, scheme: frame.schemeByte }) ===
+          undefined
+        );
+      }
+      return false;
     } catch {
       return false;
     }
@@ -620,14 +637,12 @@ class SyncPass {
     tx.outputSlots.forEach((slot, position) => {
       try {
         const frame = readOutputData(slot.payload);
-        if (
-          frame.encoding !== "encrypted" ||
-          (frame.scheme !== EncryptedScheme.confidential &&
-            frame.scheme !== EncryptedScheme.ringConfidential)
-        ) {
-          return;
-        }
-        const plaintext = decryptConfidentialAsSender(txKey, frame.body, salt, position);
+        const mode = confidentialEncryptionMode(frame);
+        if (mode === undefined) return;
+        const plaintext =
+          mode === EncryptionMode.PoseidonKdf
+            ? decryptPoseidonKdfAsSender(txKey, frame.body, salt, position)
+            : decryptConfidentialAsSender(txKey, frame.body, salt, position);
         const recipientKey = X25519PublicKey.fromBytes(frame.body.slice(0, 33) as Bytes33);
         if (position < SENDER_SLOT_COUNT) {
           const candidate = confidentialUtxo(plaintext, this.#owner, this.#assets);
@@ -766,20 +781,26 @@ class SyncPass {
       return;
     }
 
-    if (
-      frame.encoding === "encrypted" &&
-      (frame.scheme === EncryptedScheme.confidential ||
-        frame.scheme === EncryptedScheme.ringConfidential)
-    ) {
+    const mode = confidentialEncryptionMode(frame);
+    if (mode !== undefined) {
       let utxo: Utxo;
       let ciphertext: Uint8Array;
       try {
-        ciphertext = splitEmbeddedKey(body).rest;
+        const embedded = splitEmbeddedKey(body);
+        if (!equalBytes(embedded.key.toBytes(), viewingPublicKey.toBytes())) return;
+        ciphertext = embedded.rest;
       } catch (error) {
         this.#recordUndecryptable(error, siteKey);
         return;
       }
-      const decrypted = this.#decryptSlot(viewingPublicKey, tx, ciphertext, site.slot, siteKey);
+      const decrypted = this.#decryptSlot(
+        viewingPublicKey,
+        tx,
+        ciphertext,
+        site.slot,
+        siteKey,
+        mode === EncryptionMode.PoseidonKdf ? "poseidonKdfUtxo" : "transfer",
+      );
       if (decrypted === undefined) return;
       try {
         utxo = confidentialUtxo(decodeConfidential(decrypted), this.#owner, this.#assets);
@@ -945,6 +966,7 @@ class SyncPass {
     ciphertext: Uint8Array,
     slotIndex: number,
     siteKey: string,
+    label: DecryptLabel = "transfer",
   ): Uint8Array | undefined {
     let envelope: Readonly<{ txViewingPublicKey: X25519PublicKey; salt: Bytes16 }>;
     try {
@@ -959,7 +981,7 @@ class SyncPass {
       txViewingPublicKey: envelope.txViewingPublicKey,
       salt: envelope.salt,
       slotIndex,
-      label: "transfer",
+      label,
     });
   }
 

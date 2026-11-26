@@ -12,6 +12,7 @@ import {
   type ViewingKeyLike,
 } from "../keypair/shielded.js";
 import type { ViewingKey } from "../keypair/viewing-key.js";
+import { type EncryptionMode, checkedEncryptionMode } from "../keypair/encryption-mode.js";
 
 import { AssetRegistry, Mint } from "../transaction/asset.js";
 import { Data, type DataRecord } from "../transaction/data.js";
@@ -79,6 +80,7 @@ export interface ProgramProofInputUtxo {
 
 /** @experimental */
 export interface ProgramProofOutputUtxo {
+  readonly encryptionMode?: EncryptionMode;
   readonly asset: ProgramMint;
   readonly amount: bigint;
   readonly blinding: Uint8Array;
@@ -224,6 +226,7 @@ const INPUT_KEYS = [
 ] as const;
 const UTXO_KEYS = ["owner", "asset", "amount", "blinding", "ringProgramId", "data"] as const;
 const OUTPUT_KEYS = [
+  "encryptionMode",
   "asset",
   "amount",
   "blinding",
@@ -582,6 +585,13 @@ function proofOutput(value: unknown, path: string, assets: AssetRegistry): Proof
     throw invalid(`${path}.compact`);
   const asset = mint(entry["asset"], `${path}.asset`, assets);
   return createProofOutput({
+    ...optional(entry, "encryptionMode", path, (item, field) => {
+      try {
+        return { encryptionMode: checkedEncryptionMode(item) };
+      } catch (cause) {
+        throw new TransactionError("TRANSACTION_DESERIALIZE", { field }, cause);
+      }
+    }),
     asset: asset.asset,
     mint: asset,
     amount: u64(entry["amount"], `${path}.amount`),
