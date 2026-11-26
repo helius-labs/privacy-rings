@@ -9,6 +9,8 @@
 
 #[cfg(feature = "reqwest")]
 use std::io::Read;
+#[cfg(feature = "reqwest")]
+use reqwest::redirect::Policy;
 use std::{
     any::Any,
     borrow::Cow,
@@ -57,6 +59,16 @@ const JSON_RPC_VERSION: &str = "2.0";
 /// rather than holding its thread. [`BlockingSprApi::with_request_timeout`]
 /// changes it.
 pub const BLOCKING_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Connect timeout for the default `reqwest` clients, matching the prover.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Total request timeout for the default async `reqwest` client. Blocking
+/// constructors still apply [`BLOCKING_REQUEST_TIMEOUT`] on top.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Cap on response bodies before JSON parse / error text / HTTP trace. Large
+/// enough for indexer pages; small enough to bound memory and log size.
+pub const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+/// Cap on text embedded in [`ApiError::Response`] and HTTP trace output.
+pub const MAX_ERROR_BODY_CHARS: usize = 4 * 1024;
 const REQUEST_ID: &str = "test-account";
 
 #[derive(Clone, Debug)]
@@ -510,12 +522,53 @@ struct JsonRpcError {
     data: Option<serde_json::Value>,
 }
 
+#[cfg(feature = "reqwest")]
+fn build_http_client(
+    proxy: Option<reqwest::Proxy>,
+) -> Result<reqwest::Client, reqwest::Error> {
+    let mut builder = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(Policy::none())
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(REQUEST_TIMEOUT);
+    if let Some(proxy) = proxy {
+        builder = builder.proxy(proxy);
+    }
+    builder.build()
+}
+
+#[cfg(feature = "reqwest")]
+fn api_proxy(proxy_url: &str) -> Result<reqwest::Proxy, ApiError> {
+    // Require an explicit scheme instead of reqwest's implicit HTTP fallback.
+    // Do not include the URL in errors: it may contain proxy credentials.
+    let url = reqwest::Url::parse(proxy_url).map_err(|_| ApiError::InvalidRequest {
+        field: "proxy",
+        message: "invalid proxy URL",
+    })?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err(ApiError::InvalidRequest {
+            field: "proxy",
+            message: "proxy URL must have a host and an http or https scheme",
+        });
+    }
+    reqwest::Proxy::all(url).map_err(|_| ApiError::InvalidRequest {
+        field: "proxy",
+        message: "invalid proxy URL",
+    })
+}
+
 impl SprApi {
-    /// Over a `reqwest` client with no request bound; see
-    /// [`Self::with_request_timeout`].
+    /// Over a hardened `reqwest` client: no env proxy, no redirects, connect
+    /// and total timeouts. See [`Self::with_request_timeout`] and
+    /// [`Self::with_proxy`]. The API key stays in the query string for gateway
+    /// compatibility; redirect refusal stops a 307/308 from forwarding it.
     #[cfg(feature = "reqwest")]
     pub fn new(url: impl AsRef<str>) -> Self {
-        Self::with_client(url, reqwest::Client::new())
+        Self::with_client(
+            url,
+            build_http_client(None).expect("failed to build HTTP client"),
+        )
+        .with_request_timeout(REQUEST_TIMEOUT)
     }
 
     pub fn with_client(url: impl AsRef<str>, client: impl HttpClient + 'static) -> Self {
@@ -527,6 +580,21 @@ impl SprApi {
             trace_http: false,
             request_timeout: None,
         }
+    }
+
+    /// Route traffic through `proxy_url`. The default client ignores env
+    /// proxies so loopback Photon traffic cannot egress; call this when a
+    /// proxy is intentional. SOCKS needs a `reqwest` build with `socks`.
+    #[cfg(feature = "reqwest")]
+    pub fn with_proxy(mut self, proxy_url: &str) -> Result<Self, ApiError> {
+        let http = build_http_client(Some(api_proxy(proxy_url)?)).map_err(|_| {
+            ApiError::InvalidRequest {
+                field: "proxy",
+                message: "failed to build proxy HTTP client",
+            }
+        })?;
+        self.client = Arc::new(http);
+        Ok(self)
     }
 
     /// Give up on a request at `timeout`. The bound rides on the request for
@@ -737,6 +805,7 @@ impl SprApi {
         }
         let mut request = HttpRequest::post_json(url, body);
         request.timeout = self.request_timeout;
+        request.body_limit = Some(MAX_RESPONSE_BYTES);
         let send = self.client.send(request);
         let response = match self.request_timeout {
             Some(timeout) => tokio::time::timeout(timeout, send)
@@ -757,8 +826,10 @@ impl SprApi {
 }
 
 impl BlockingSprApi {
-    /// Over a `reqwest` client, each request bound by
-    /// [`BLOCKING_REQUEST_TIMEOUT`].
+    /// Over the hardened async `reqwest` client (see [`SprApi::new`]), run
+    /// on this client's own Tokio runtime. Do not build `reqwest::blocking`
+    /// here — constructing it inside an ambient Tokio runtime panics in debug
+    /// builds before a request can return [`BlockingInsideRuntime`].
     #[cfg(feature = "reqwest")]
     pub fn new(url: impl AsRef<str>) -> Self {
         SprApi::new(url)
@@ -774,6 +845,14 @@ impl BlockingSprApi {
         SprApi::with_client(url, OnBlockingPool::new(client))
             .with_request_timeout(BLOCKING_REQUEST_TIMEOUT)
             .into_blocking()
+    }
+
+    /// See [`SprApi::with_proxy`]. Uses the async hardened client so this
+    /// stays safe to call inside a Tokio runtime (same as [`Self::new`]).
+    #[cfg(feature = "reqwest")]
+    pub fn with_proxy(mut self, proxy_url: &str) -> Result<Self, ApiError> {
+        self.api = self.api.with_proxy(proxy_url)?;
+        Ok(self)
     }
 
     /// See [`SprApi::with_request_timeout`].
@@ -1045,17 +1124,39 @@ where
     })
 }
 
+
+fn truncate_for_error(body: &str) -> String {
+    if body.chars().count() <= MAX_ERROR_BODY_CHARS {
+        body.to_owned()
+    } else {
+        let truncated: String = body.chars().take(MAX_ERROR_BODY_CHARS).collect();
+        format!("{truncated}…")
+    }
+}
+
 fn handle_response<R>(method: &str, response: HttpResponse, trace_http: bool) -> Result<R, ApiError>
 where
     R: DeserializeOwned,
 {
     let status = response.status;
+    if response.body.len() > MAX_RESPONSE_BYTES {
+        return Err(ApiError::Response {
+            status,
+            body: format!(
+                "response body exceeds {MAX_RESPONSE_BYTES} bytes (got at least {})",
+                response.body.len()
+            ),
+        });
+    }
     let body = String::from_utf8_lossy(&response.body).into_owned();
     if trace_http {
         print_api_response(method, status, &body);
     }
     if !status.is_success() {
-        return Err(ApiError::Response { status, body });
+        return Err(ApiError::Response {
+            status,
+            body: truncate_for_error(&body),
+        });
     }
     parse_json_response(status, body)
 }
