@@ -1,6 +1,7 @@
 use solana_address::Address;
 use spr_keypair::{
-    constants::SALT_LEN, x25519::X25519_PUBKEY_LEN, PublicKey, ViewingKey, X25519Pubkey,
+    constants::SALT_LEN, x25519::X25519_PUBKEY_LEN, EncryptionMode, PublicKey, ViewingKey,
+    X25519Pubkey,
 };
 use wincode::{SchemaRead, SchemaWrite};
 
@@ -56,7 +57,34 @@ pub struct ConfidentialEncode {
 
 pub struct Confidential;
 
-pub(crate) fn split_embedded_pk(body: &[u8]) -> Result<(X25519Pubkey, &[u8]), TransactionError> {
+pub(crate) trait ConfidentialCodec {
+    const ENCRYPTED_SCHEME: EncryptedScheme;
+    const ENCRYPTION_MODE: EncryptionMode;
+
+    fn decrypt_sender(
+        tx: &ViewingKey,
+        body: &[u8],
+        salt: [u8; SALT_LEN],
+        slot_index: u32,
+    ) -> Result<ConfidentialOutputPlaintext, TransactionError> {
+        let (recipient_pubkey, ciphertext) = split_embedded_pk(body)?;
+        let bytes = tx.decrypt_slot_ephemeral_with_mode(
+            &recipient_pubkey,
+            ciphertext,
+            salt,
+            slot_index,
+            Self::ENCRYPTION_MODE,
+        )?;
+        ConfidentialOutputPlaintext::deserialize(&bytes)
+    }
+}
+
+impl ConfidentialCodec for Confidential {
+    const ENCRYPTED_SCHEME: EncryptedScheme = EncryptedScheme::Confidential;
+    const ENCRYPTION_MODE: EncryptionMode = EncryptionMode::Hkdf;
+}
+
+fn split_embedded_pk(body: &[u8]) -> Result<(X25519Pubkey, &[u8]), TransactionError> {
     let (prefix, rest) =
         body.split_at_checked(X25519_PUBKEY_LEN)
             .ok_or(TransactionError::InvalidLength {
@@ -84,14 +112,12 @@ impl Confidential {
         salt: [u8; SALT_LEN],
         slot_index: u32,
     ) -> Result<ConfidentialOutputPlaintext, TransactionError> {
-        let (recipient_pubkey, rest) = split_embedded_pk(body)?;
-        let bytes = tx.decrypt_slot_ephemeral(&recipient_pubkey, rest, salt, slot_index)?;
-        ConfidentialOutputPlaintext::deserialize(&bytes)
+        Self::decrypt_sender(tx, body, salt, slot_index)
     }
 }
 
-impl UtxoSerialization for Confidential {
-    const SCHEME: EncryptedScheme = EncryptedScheme::Confidential;
+impl<C: ConfidentialCodec> UtxoSerialization for C {
+    const SCHEME: EncryptedScheme = C::ENCRYPTED_SCHEME;
     type Plaintext = ConfidentialOutputPlaintext;
     type EncodeCx = ConfidentialEncode;
 
@@ -100,10 +126,19 @@ impl UtxoSerialization for Confidential {
             .tx_viewing_pk
             .ok_or(TransactionError::MissingEncryptionContext)?;
         let salt = cx.salt.ok_or(TransactionError::MissingEncryptionContext)?;
-        let (_, rest) = split_embedded_pk(body)?;
-        Ok(cx
-            .viewing_key
-            .decrypt_utxo(rest, &tx_viewing_pk, salt, cx.slot_index)?)
+        let (recipient_pubkey, ciphertext) = split_embedded_pk(body)?;
+        if C::ENCRYPTION_MODE == EncryptionMode::PoseidonKdf
+            && recipient_pubkey != cx.viewing_key.pubkey()
+        {
+            return Err(TransactionError::RecipientViewingKeyMismatch);
+        }
+        Ok(cx.viewing_key.decrypt_utxo_with_mode(
+            ciphertext,
+            &tx_viewing_pk,
+            salt,
+            cx.slot_index,
+            C::ENCRYPTION_MODE,
+        )?)
     }
 
     fn deserialize(bytes: &[u8]) -> Result<Self::Plaintext, TransactionError> {
@@ -134,9 +169,13 @@ impl UtxoSerialization for Confidential {
     }
 
     fn encrypt(bytes: &[u8], cx: &Self::EncodeCx) -> Result<Vec<u8>, TransactionError> {
-        let ciphertext = cx
-            .tx
-            .encrypt_slot(&cx.recipient_pubkey, bytes, cx.salt, cx.slot_index)?;
+        let ciphertext = cx.tx.encrypt_slot_with_mode(
+            &cx.recipient_pubkey,
+            bytes,
+            cx.salt,
+            cx.slot_index,
+            C::ENCRYPTION_MODE,
+        )?;
         let mut body = Vec::with_capacity(X25519_PUBKEY_LEN + ciphertext.len());
         body.extend_from_slice(cx.recipient_pubkey.as_bytes());
         body.extend_from_slice(&ciphertext);
