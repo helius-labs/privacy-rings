@@ -23,6 +23,12 @@ type Aes256Ctr = Ctr32BE<Aes256>;
 /// and AES-256-CTR; verifiable mode uses the circuit-compatible Poseidon KDF.
 /// The application proof must separately enforce correct encryption.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize),
+    serde(rename_all = "camelCase")
+)]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 pub enum EncryptionMode {
     #[default]
     Confidential,

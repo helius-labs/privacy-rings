@@ -9,7 +9,7 @@ use spr_transaction::{
     instructions::transact::{ConfidentialTransaction, SppProofInputs},
     serialization::{confidential::Confidential, verifiable::Verifiable},
     AssetRegistry, EncryptedScheme, EncryptionMode, LocalShieldedKeys, Mint, OutputContext,
-    OutputSlot, ShieldedTransaction,
+    OutputSlot, ShieldedTransaction, SppProofOutputUtxo,
 };
 
 fn transfer(
@@ -29,17 +29,25 @@ fn transfer(
     )
     .unwrap()
     .with_output_tree_id(2)
-    .unwrap()
-    .with_encryption_mode(mode);
+    .unwrap();
     transaction
-        .transfer_sol(&recipient.shielded_address().unwrap(), 42)
+        .add_output_utxo(
+            SppProofOutputUtxo::new(Mint::SOL, 42, recipient.shielded_address().unwrap())
+                .unwrap()
+                .with_encryption_mode(mode),
+        )
         .unwrap();
     let prepared = transaction
         .finalize(&sender.shielded_address().unwrap())
         .unwrap()
         .encrypt_with_keys(&sender)
         .unwrap();
-    let indexed = ShieldedTransaction {
+    let indexed = publication(&prepared);
+    (sender, recipient, prepared, indexed)
+}
+
+fn publication(prepared: &SppProofInputs) -> ShieldedTransaction {
+    ShieldedTransaction {
         slot: 9,
         tx_signature: Signature::from([9; 64]),
         event_index: Some(0),
@@ -72,8 +80,7 @@ fn transfer(
         proofless: false,
         ring_config: None,
         ring_program_id: None,
-    };
-    (sender, recipient, prepared, indexed)
+    }
 }
 
 #[test]
@@ -85,6 +92,19 @@ fn recipient_sender_and_retired_keys_decode_the_selected_mode() {
             decrypt_spendable(&recipient, std::slice::from_ref(&indexed), &assets).unwrap();
         let recipient_utxo = received.utxos().next().unwrap();
         let change = decrypt_spendable(&sender, std::slice::from_ref(&indexed), &assets).unwrap();
+        let change_utxo = change.utxos().next().unwrap();
+        let change_slot = indexed
+            .output_slots
+            .iter()
+            .find(|slot| slot.output_context.hash == change_utxo.utxo_hash)
+            .unwrap();
+        let OutputDataEncoding::Encrypted(change_blob) = change_slot.output_data().unwrap() else {
+            panic!("generated change must use confidential encryption");
+        };
+        assert_eq!(
+            change_blob.first(),
+            Some(&EncryptedScheme::Confidential.as_byte())
+        );
         assert_eq!(
             (
                 received.utxos().count(),
@@ -168,6 +188,109 @@ fn recipient_sender_and_retired_keys_decode_the_selected_mode() {
         assert_eq!(
             decrypt_spendable(&rotated, &[indexed], &assets).unwrap(),
             received
+        );
+    }
+}
+
+#[test]
+fn mixed_output_modes_preserve_slot_indices_and_commitments() {
+    let sender = keypair(86);
+    let recipient = keypair(87);
+    let sender_address = sender.shielded_address().unwrap();
+    let recipient_address = recipient.shielded_address().unwrap();
+    for modes in [
+        [
+            EncryptionMode::Confidential,
+            EncryptionMode::Verifiable,
+            EncryptionMode::Confidential,
+        ],
+        [
+            EncryptionMode::Verifiable,
+            EncryptionMode::Confidential,
+            EncryptionMode::Verifiable,
+        ],
+    ] {
+        let input = wallet_utxo(&sender, Mint::SOL, 100, 2, 1);
+        let mut transaction =
+            ConfidentialTransaction::new(vec![input], sender_address.solana_address().unwrap())
+                .unwrap()
+                .with_output_tree_id(2)
+                .unwrap();
+        for (amount, mode) in [11, 22, 33].into_iter().zip(modes) {
+            transaction
+                .add_output_utxo(
+                    SppProofOutputUtxo::new(Mint::SOL, amount, recipient_address)
+                        .unwrap()
+                        .with_encryption_mode(mode),
+                )
+                .unwrap();
+        }
+        let tx_key = sender
+            .get_transaction_viewing_key(transaction.first_nullifier())
+            .unwrap();
+        let finalized = transaction.finalize(&sender_address).unwrap();
+        assert_eq!(
+            finalized
+                .output_utxos()
+                .iter()
+                .map(|output| output.encryption_mode)
+                .collect::<Vec<_>>(),
+            modes
+                .into_iter()
+                .chain([EncryptionMode::Confidential])
+                .collect::<Vec<_>>(),
+        );
+        let prepared = finalized.encrypt_with_viewing_key(&tx_key).unwrap();
+        let indexed = publication(&prepared);
+        for ((output, slot), mode) in prepared
+            .output_utxos
+            .iter()
+            .zip(&indexed.output_slots)
+            .zip(modes)
+        {
+            let expected_scheme = match mode {
+                EncryptionMode::Confidential => EncryptedScheme::Confidential,
+                EncryptionMode::Verifiable => EncryptedScheme::Verifiable,
+            };
+            let blob = match (mode, slot.output_data().unwrap()) {
+                (EncryptionMode::Confidential, OutputDataEncoding::Encrypted(blob))
+                | (EncryptionMode::Verifiable, OutputDataEncoding::VerifiablyEncrypted(blob)) => {
+                    blob
+                }
+                _ => panic!("output framing does not match its encryption mode"),
+            };
+            assert_eq!(
+                (output.encryption_mode, blob.first()),
+                (mode, Some(&expected_scheme.as_byte()))
+            );
+            let opposite_mode = match mode {
+                EncryptionMode::Confidential => EncryptionMode::Verifiable,
+                EncryptionMode::Verifiable => EncryptionMode::Confidential,
+            };
+            assert_eq!(
+                output.clone().with_encryption_mode(opposite_mode).hash(2),
+                output.hash(2)
+            );
+        }
+        let received = decrypt_spendable(
+            &recipient,
+            std::slice::from_ref(&indexed),
+            &AssetRegistry::default(),
+        )
+        .unwrap();
+        let change = decrypt_spendable(&sender, &[indexed], &AssetRegistry::default()).unwrap();
+        assert_eq!(
+            (
+                received
+                    .utxos()
+                    .map(|utxo| (utxo.utxo.amount, utxo.slot_index))
+                    .collect::<Vec<_>>(),
+                change
+                    .utxos()
+                    .map(|utxo| utxo.utxo.amount)
+                    .collect::<Vec<_>>(),
+            ),
+            (vec![(11, 0), (22, 1), (33, 2)], vec![34]),
         );
     }
 }

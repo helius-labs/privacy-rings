@@ -31,10 +31,12 @@ pub trait OutputEncoder {
         sender: &ShieldedAddress,
     ) -> Result<Vec<ResolvedOwnerTag>, TransactionError>;
 
+    /// Encode one output using its selected mode and final slot context.
     fn encode_slot(
         &self,
         plaintext: &ConfidentialOutputPlaintext,
         view_tag: [u8; 32],
+        mode: EncryptionMode,
         cx: &ConfidentialEncode,
     ) -> Result<MessageData, TransactionError>;
 }
@@ -52,8 +54,12 @@ impl OutputEncoder for Confidential {
         &self,
         plaintext: &ConfidentialOutputPlaintext,
         view_tag: [u8; 32],
+        mode: EncryptionMode,
         cx: &ConfidentialEncode,
     ) -> Result<MessageData, TransactionError> {
+        if mode == EncryptionMode::Verifiable {
+            return Verifiable::encode_plaintext(plaintext, view_tag, cx);
+        }
         let mut message = Confidential::encode_plaintext(plaintext, view_tag, cx)?;
         if plaintext.ring_program_id.is_some() {
             let OutputDataEncoding::Encrypted(mut blob) =
@@ -70,28 +76,6 @@ impl OutputEncoder for Confidential {
                 .map_err(|error| TransactionError::Deserialize(error.to_string()))?;
         }
         Ok(message)
-    }
-}
-
-impl OutputEncoder for EncryptionMode {
-    fn owner_tags(
-        &self,
-        transaction: &ConfidentialTransaction,
-        sender: &ShieldedAddress,
-    ) -> Result<Vec<ResolvedOwnerTag>, TransactionError> {
-        transaction.owner_tags(&sender.signing_pubkey)
-    }
-
-    fn encode_slot(
-        &self,
-        plaintext: &ConfidentialOutputPlaintext,
-        view_tag: [u8; 32],
-        cx: &ConfidentialEncode,
-    ) -> Result<MessageData, TransactionError> {
-        match self {
-            Self::Confidential => Confidential.encode_slot(plaintext, view_tag, cx),
-            Self::Verifiable => Verifiable::encode_plaintext(plaintext, view_tag, cx),
-        }
     }
 }
 
@@ -238,8 +222,7 @@ impl FinalizedTransaction {
         self,
         tx_viewing_key: &ViewingKey,
     ) -> Result<SppProofInputs, TransactionError> {
-        let mode = self.encryption_mode;
-        self.encrypt_with(tx_viewing_key, &mode)
+        self.encrypt_with(tx_viewing_key, &Confidential)
     }
 
     fn encrypt_with<E: OutputEncoder>(
@@ -280,7 +263,7 @@ impl FinalizedTransaction {
                     slot_index: slot_index as u32,
                 };
                 encoder
-                    .encode_slot(&plaintext, owner_tag.resolved, &cx)
+                    .encode_slot(&plaintext, owner_tag.resolved, output.encryption_mode, &cx)
                     .map(Some)
             })
             .collect::<Result<Vec<_>, TransactionError>>()?;
@@ -365,6 +348,7 @@ fn dummy_ciphertext_len<E: OutputEncoder>(
                 data: Data::default(),
             },
             [0u8; 32],
+            EncryptionMode::Confidential,
             &ConfidentialEncode {
                 recipient_pubkey: throwaway.pubkey(),
                 tx: throwaway,

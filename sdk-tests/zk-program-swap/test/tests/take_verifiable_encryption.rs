@@ -229,9 +229,9 @@ fn make_and_take_verifiable_encryption() -> Result<()> {
         // proves, so this also exercises a transaction with mixed formats.
         let mut transaction =
             ConfidentialTransaction::from_proof_inputs(inputs, taker_address.solana_address()?)?
-                .with_output_tree_id(localnet.tree_id)?
-                .with_encryption_mode(EncryptionMode::Verifiable);
-        transaction.add_output_utxo(source_output)?;
+                .with_output_tree_id(localnet.tree_id)?;
+        transaction
+            .add_output_utxo(source_output.with_encryption_mode(EncryptionMode::Verifiable))?;
         transaction.add_output_utxo(destination_output)?;
         let mut take_spp_proof_inputs = transaction.encrypt(&taker.keypair)?;
         let [source_output, destination_output]: [_; 2] = take_spp_proof_inputs

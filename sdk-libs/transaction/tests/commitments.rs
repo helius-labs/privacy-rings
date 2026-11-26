@@ -27,6 +27,7 @@ fn field(value: u8) -> [u8; 32] {
 }
 fn output() -> SppProofOutputUtxo {
     SppProofOutputUtxo {
+        encryption_mode: Default::default(),
         asset: Mint::new(address(4), 5),
         amount: 123,
         blinding: field(3),

@@ -9,8 +9,8 @@ use super::{
 };
 use crate::{
     error::TransactionError,
+    serialization::confidential::Confidential,
     utxo::{derive_output_blinding_seed, derive_transact_output_blinding, SppProofInputUtxo},
-    EncryptionMode,
 };
 
 /// A transaction with its final slots, output blindings, owner tags and public
@@ -20,7 +20,6 @@ use crate::{
 /// can request a key from its holder when none was cached.
 #[derive(Clone)]
 pub struct FinalizedTransaction {
-    pub(super) encryption_mode: EncryptionMode,
     pub(super) input_utxos: Vec<SppProofInputUtxo>,
     pub(super) output_utxos: Vec<SppProofOutputUtxo>,
     pub(super) blinding_seed: [u8; 32],
@@ -46,8 +45,7 @@ impl ConfidentialTransaction {
         self,
         sender: &ShieldedAddress,
     ) -> Result<FinalizedTransaction, TransactionError> {
-        let mode = self.encryption_mode;
-        self.finalize_with(sender, &mode)
+        self.finalize_with(sender, &Confidential)
     }
 
     pub(super) fn finalize_with<E: OutputEncoder>(
@@ -115,7 +113,6 @@ impl ConfidentialTransaction {
         let interface_transfers = self.interface_transfers()?;
 
         Ok(FinalizedTransaction {
-            encryption_mode: self.encryption_mode,
             input_utxos: self.padded_inputs.ok_or(TransactionError::NoInputs)?,
             output_utxos: self.outputs,
             blinding_seed: self.blinding_seed,

@@ -223,6 +223,7 @@ impl RingHarness {
         let blinding_seed = random_blinding();
         let output_blinding_seed = derive_output_blinding_seed(&nullifier, &blinding_seed)?;
         let output = SppProofOutputUtxo {
+            encryption_mode: Default::default(),
             owner_address: Some(recipient_address),
             asset: input_utxo.asset,
             amount,
