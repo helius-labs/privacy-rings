@@ -56,7 +56,7 @@ pub struct ConfidentialEncode {
 
 pub struct Confidential;
 
-fn split_embedded_pk(body: &[u8]) -> Result<(X25519Pubkey, &[u8]), TransactionError> {
+pub(crate) fn split_embedded_pk(body: &[u8]) -> Result<(X25519Pubkey, &[u8]), TransactionError> {
     let (prefix, rest) =
         body.split_at_checked(X25519_PUBKEY_LEN)
             .ok_or(TransactionError::InvalidLength {

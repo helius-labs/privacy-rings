@@ -14,6 +14,8 @@ pub enum EncryptedScheme {
     PlaintextTransfer = 7,
     /// Reserved; ring deposit encryption is not implemented in this repository.
     RingDeposit = 8,
+    /// Confidential layout with X25519, Poseidon KDF and AES-256-CTR.
+    Verifiable = 9,
 }
 
 impl EncryptedScheme {
@@ -27,6 +29,7 @@ impl EncryptedScheme {
             6 => Ok(Self::Merge),
             7 => Ok(Self::PlaintextTransfer),
             8 => Ok(Self::RingDeposit),
+            9 => Ok(Self::Verifiable),
             other => Err(TransactionError::BadDiscriminator(other)),
         }
     }

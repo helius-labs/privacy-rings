@@ -9,13 +9,14 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 use shared::{send, setup, TestEnv, DESTINATION_AMOUNT, SOURCE_AMOUNT};
 use spr_client::user_registry::ensure_registered;
-use spr_client::Rpc;
-use spr_interface::instruction::instruction_data::transact::{OwnerTag, TransactOutput};
+use spr_client::{Rpc, UtxoScan};
 use spr_keypair::random_blinding;
 use spr_test_utils::wallet::{sync_wallet, Filter};
 use spr_transaction::{
-    instructions::transact::{ExternalData, SppProofInputs, SppProofOutputUtxo},
-    SOL_ASSET_ID, SOL_MINT,
+    instructions::transact::{
+        ConfidentialTransaction, ExternalData, SppProofInputs, SppProofOutputUtxo,
+    },
+    EncryptedScheme, EncryptionMode, SOL_ASSET_ID, SOL_MINT,
 };
 use swap_sdk::{
     index::index_taker,
@@ -223,9 +224,19 @@ fn make_and_take_verifiable_encryption() -> Result<()> {
             .map_err(|e| anyhow!("order input_utxo: {e:?}"))?;
         let taker_input_utxo = SppProofInputUtxo::from(taker_input_utxo);
         let inputs = vec![order_input_utxo, taker_input_utxo];
-        let mut transaction_outputs = vec![source_output, destination_output];
-        let blinding_seed = prepare_output_blindings(&inputs, &mut transaction_outputs)?;
-        let [source_output, destination_output]: [_; 2] = transaction_outputs
+        // Use the generic Poseidon-KDF confidential mode for the source slot.
+        // The destination retains the symmetric ciphertext the swap circuit
+        // proves, so this also exercises a transaction with mixed formats.
+        let mut transaction =
+            ConfidentialTransaction::from_proof_inputs(inputs, taker_address.solana_address()?)?
+                .with_output_tree_id(localnet.tree_id)?
+                .with_encryption_mode(EncryptionMode::Verifiable);
+        transaction.add_output_utxo(source_output)?;
+        transaction.add_output_utxo(destination_output)?;
+        let mut take_spp_proof_inputs = transaction.encrypt(&taker.keypair)?;
+        let [source_output, destination_output]: [_; 2] = take_spp_proof_inputs
+            .output_utxos
+            .clone()
             .try_into()
             .map_err(|_| anyhow!("take transaction must have two outputs"))?;
         let destination_ciphertext = order_utxo
@@ -238,47 +249,22 @@ fn make_and_take_verifiable_encryption() -> Result<()> {
             .hash(localnet.tree_id)
             .map_err(|e| anyhow!("destination output hash: {e:?}"))?;
 
-        let transaction_viewing_key = get_transaction_viewing_key(&taker.keypair, &inputs)
-            .map_err(|e| anyhow!("transaction viewing key: {e:?}"))?;
-
-        // Only the source slot is encrypted conventionally; the destination
-        // slot is appended by hand with the verifiable ciphertext as its data
-        // and the maker's view tag inline.
-        let mut encoded = encrypt_transaction_data(
-            std::slice::from_ref(&source_output),
-            &transaction_viewing_key,
-            localnet.tree_id,
-        )?;
-        let destination_view_tag = terms
-            .destination
-            .signing_pubkey
-            .confidential_view_tag()
-            .map_err(|e| anyhow!("maker view tag: {e:?}"))?;
-        encoded.outputs.push(TransactOutput {
-            utxo_hash: destination_output_hash,
-            owner_tag: OwnerTag::Inline(destination_view_tag),
-            data: Some(destination_ciphertext),
-        });
-        encoded.resolved_owner_tags.push(destination_view_tag);
-        encoded.output_utxos.push(destination_output.clone());
-
-        let mut external_data = ExternalData::new(
-            *transaction_viewing_key.pubkey().as_bytes(),
-            encoded.salt,
-            encoded.outputs,
-            encoded.resolved_owner_tags,
-            vec![],
-        );
-        external_data.expiry_unix_ts = terms.expiry;
-        let take_spp_proof_inputs = SppProofInputs {
-            input_utxos: inputs,
-            output_utxos: encoded.output_utxos,
-            external_data,
-            payer: taker_address.solana_address()?,
-            blinding_seed,
-            output_tree_id: localnet.tree_id,
-            cache_accounts: Default::default(),
+        let outputs = &mut take_spp_proof_inputs.external_data.outputs;
+        let source_data = outputs
+            .first()
+            .and_then(|output| output.data.as_deref())
+            .ok_or_else(|| anyhow!("missing source ciphertext"))?;
+        let spr_interface::event::OutputDataEncoding::VerifiablyEncrypted(blob) =
+            borsh::from_slice(source_data)?
+        else {
+            return Err(anyhow!("source output must use verifiable framing"));
         };
+        assert_eq!(blob.first(), Some(&EncryptedScheme::Verifiable.as_byte()));
+        outputs
+            .last_mut()
+            .ok_or_else(|| anyhow!("missing destination output"))?
+            .data = Some(destination_ciphertext);
+        take_spp_proof_inputs.external_data.expiry_unix_ts = terms.expiry;
 
         let take_proof_inputs = TakeVerifiableEncryptionProofInputParams {
             order_utxo,
@@ -354,6 +340,21 @@ fn make_and_take_verifiable_encryption() -> Result<()> {
     assert!(
         taker_sol.utxos.is_empty(),
         "the taker's destination-side SOL note must be spent by the take"
+    );
+    let scanned =
+        UtxoScan::new(&taker.keypair, &taker.registry).fetch(localnet.client.indexer())?;
+    let recovered = scanned
+        .spendable
+        .utxos()
+        .find(|utxo| utxo.utxo_hash == source_output_hash)
+        .ok_or_else(|| anyhow!("scanner did not recover the Poseidon-KDF source output"))?;
+    assert_eq!(
+        (
+            recovered.utxo.asset.asset,
+            recovered.utxo.amount,
+            recovered.tree_id
+        ),
+        (spl_mint, SOURCE_AMOUNT, localnet.tree_id),
     );
     Ok(())
 }

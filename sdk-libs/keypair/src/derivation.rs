@@ -112,6 +112,11 @@ pub const HPKE_PREFIX: &[u8] = b"TSPP/hpke/";
 
 pub const ENC_INFO_TRANSFER: &[u8] = b"TSPP/tx";
 
+/// Poseidon/AES confidential output key schedule, version 1.
+pub const ENC_INFO_VERIFIABLE: &[u8; 10] = b"TSPP/tx/v1";
+/// "TVE1": the Poseidon/AES confidential output transcript.
+pub const DOMAIN_VERIFIABLE_TRANSCRIPT: u32 = 0x5456_4531;
+
 pub const ENC_INFO_RING_DEPOSIT: &[u8] = b"TSPP/ring_deposit";
 
 /// HPKE-style key-schedule info string bound into the KDF (spec Merge Proof).

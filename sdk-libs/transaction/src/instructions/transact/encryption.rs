@@ -11,9 +11,10 @@ use crate::{
     keys::{first_input_transaction_key, ShieldedKeys},
     serialization::{
         confidential::{Confidential, ConfidentialEncode, ConfidentialOutputPlaintext},
+        verifiable::Verifiable,
         UtxoSerialization,
     },
-    Data, EncryptedScheme, SOL_ASSET_ID,
+    Data, EncryptedScheme, EncryptionMode, SOL_ASSET_ID,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,6 +70,28 @@ impl OutputEncoder for Confidential {
                 .map_err(|error| TransactionError::Deserialize(error.to_string()))?;
         }
         Ok(message)
+    }
+}
+
+impl OutputEncoder for EncryptionMode {
+    fn owner_tags(
+        &self,
+        transaction: &ConfidentialTransaction,
+        sender: &ShieldedAddress,
+    ) -> Result<Vec<ResolvedOwnerTag>, TransactionError> {
+        transaction.owner_tags(&sender.signing_pubkey)
+    }
+
+    fn encode_slot(
+        &self,
+        plaintext: &ConfidentialOutputPlaintext,
+        view_tag: [u8; 32],
+        cx: &ConfidentialEncode,
+    ) -> Result<MessageData, TransactionError> {
+        match self {
+            Self::Confidential => Confidential.encode_slot(plaintext, view_tag, cx),
+            Self::Verifiable => Verifiable::encode_plaintext(plaintext, view_tag, cx),
+        }
     }
 }
 
@@ -215,7 +238,8 @@ impl FinalizedTransaction {
         self,
         tx_viewing_key: &ViewingKey,
     ) -> Result<SppProofInputs, TransactionError> {
-        self.encrypt_with(tx_viewing_key, &Confidential)
+        let mode = self.encryption_mode;
+        self.encrypt_with(tx_viewing_key, &mode)
     }
 
     fn encrypt_with<E: OutputEncoder>(

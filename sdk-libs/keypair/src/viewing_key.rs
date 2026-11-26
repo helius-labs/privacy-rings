@@ -51,6 +51,58 @@ pub fn random_blinding() -> [u8; 32] {
 }
 
 impl ViewingKey {
+    /// Encrypt a slot with the chosen KDF, binding both viewing public keys,
+    /// the transaction salt and the output index.
+    pub fn encrypt_slot_with_mode(
+        &self,
+        recipient_pubkey: &X25519Pubkey,
+        plaintext: &[u8],
+        salt: Salt,
+        slot_index: u32,
+        mode: crate::EncryptionMode,
+    ) -> Result<Vec<u8>, KeypairError> {
+        encryption::UtxoCipher {
+            mode,
+            ephemeral_pubkey: &self.pubkey(),
+            recipient_pubkey,
+            salt: &salt,
+            slot: slot_index,
+        }
+        .apply(&self.secret, recipient_pubkey, plaintext)
+    }
+
+    /// Recipient-side decryption with the ciphertext's advertised KDF.
+    /// Accept the plaintext only after checking its UTXO hash.
+    pub fn decrypt_utxo_with_mode(
+        &self,
+        ciphertext: &[u8],
+        tx_viewing_pubkey: &X25519Pubkey,
+        salt: Salt,
+        slot_index: u32,
+        mode: crate::EncryptionMode,
+    ) -> Result<Vec<u8>, KeypairError> {
+        encryption::UtxoCipher {
+            mode,
+            ephemeral_pubkey: tx_viewing_pubkey,
+            recipient_pubkey: &self.pubkey(),
+            salt: &salt,
+            slot: slot_index,
+        }
+        .apply(&self.secret, tx_viewing_pubkey, ciphertext)
+    }
+
+    /// Sender-side decryption using the transaction viewing key.
+    pub fn decrypt_slot_ephemeral_with_mode(
+        &self,
+        recipient_pubkey: &X25519Pubkey,
+        ciphertext: &[u8],
+        salt: Salt,
+        slot_index: u32,
+        mode: crate::EncryptionMode,
+    ) -> Result<Vec<u8>, KeypairError> {
+        self.encrypt_slot_with_mode(recipient_pubkey, ciphertext, salt, slot_index, mode)
+    }
+
     /// Generates a viewing key from the OS RNG.
     pub fn new() -> Self {
         Self::from_secret_key(X25519Keypair::new())
@@ -199,16 +251,6 @@ impl ViewingKey {
         Ok(Self::from_bytes(&okm))
     }
 
-    fn encrypt_utxo(
-        &self,
-        recipient_pubkey: &X25519Pubkey,
-        plaintext: &[u8],
-        salt: &Salt,
-        slot_index: u32,
-    ) -> Result<Vec<u8>, KeypairError> {
-        encryption::encrypt_utxo(&self.secret, recipient_pubkey, plaintext, salt, slot_index)
-    }
-
     /// Decrypts the UTXO ciphertext in slot `slot_index`, encrypted to this key
     /// under `tx_viewing_pubkey` with the transaction `salt`.
     pub fn decrypt_utxo(
@@ -218,12 +260,12 @@ impl ViewingKey {
         salt: Salt,
         slot_index: u32,
     ) -> Result<Vec<u8>, KeypairError> {
-        encryption::decrypt_utxo(
-            &self.secret,
-            tx_viewing_pubkey,
+        self.decrypt_utxo_with_mode(
             ciphertext,
-            &salt,
+            tx_viewing_pubkey,
+            salt,
             slot_index,
+            crate::EncryptionMode::Confidential,
         )
     }
 
@@ -234,7 +276,13 @@ impl ViewingKey {
         salt: Salt,
         slot_index: u32,
     ) -> Result<Vec<u8>, KeypairError> {
-        self.encrypt_utxo(recipient_pubkey, plaintext, &salt, slot_index)
+        self.encrypt_slot_with_mode(
+            recipient_pubkey,
+            plaintext,
+            salt,
+            slot_index,
+            crate::EncryptionMode::Confidential,
+        )
     }
 
     /// Encrypts one self-contained ring-deposit plaintext to `recipient_pubkey`.
@@ -264,12 +312,12 @@ impl ViewingKey {
         salt: Salt,
         slot_index: u32,
     ) -> Result<Vec<u8>, KeypairError> {
-        encryption::decrypt_utxo_ephemeral(
-            &self.secret,
+        self.decrypt_slot_ephemeral_with_mode(
             recipient_pubkey,
             ciphertext,
-            &salt,
+            salt,
             slot_index,
+            crate::EncryptionMode::Confidential,
         )
     }
 }

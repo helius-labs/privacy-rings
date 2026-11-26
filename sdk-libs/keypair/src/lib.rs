@@ -52,7 +52,7 @@ pub mod signing_key;
 pub mod traits;
 pub mod viewing_key;
 
-pub use encryption::symmetric_apply;
+pub use encryption::{symmetric_apply, EncryptionMode};
 pub use error::KeypairError;
 pub use nullifier_key::NullifierKey;
 pub use pubkey::{Curve, PublicKey};

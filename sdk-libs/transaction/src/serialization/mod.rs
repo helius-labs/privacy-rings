@@ -11,6 +11,7 @@ pub mod confidential;
 pub mod plaintext;
 pub mod proofless;
 pub mod scheme;
+pub mod verifiable;
 
 pub use proofless::{Proofless, ProoflessEncode};
 
@@ -119,7 +120,9 @@ pub trait UtxoSerialization {
             EncryptedScheme::Proofless | EncryptedScheme::PlaintextTransfer => {
                 OutputDataEncoding::Plaintext(blob)
             }
-            EncryptedScheme::Merge => OutputDataEncoding::VerifiablyEncrypted(blob),
+            EncryptedScheme::Merge | EncryptedScheme::Verifiable => {
+                OutputDataEncoding::VerifiablyEncrypted(blob)
+            }
             _ => OutputDataEncoding::Encrypted(blob),
         };
         let data = borsh::to_vec(&output_data)

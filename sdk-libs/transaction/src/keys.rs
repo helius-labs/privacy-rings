@@ -38,6 +38,8 @@ use crate::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecryptLabel {
     Utxo,
+    /// Confidential layout with the Poseidon KDF instead of HKDF.
+    VerifiableUtxo,
     RingDeposit,
 }
 
@@ -197,6 +199,13 @@ impl ShieldedKeys for LocalShieldedKeys {
                         &request.tx_viewing_pubkey,
                         request.salt,
                         request.slot_index,
+                    ),
+                    DecryptLabel::VerifiableUtxo => viewing.decrypt_utxo_with_mode(
+                        request.ciphertext,
+                        &request.tx_viewing_pubkey,
+                        request.salt,
+                        request.slot_index,
+                        crate::EncryptionMode::Verifiable,
                     ),
                     DecryptLabel::RingDeposit => viewing.decrypt_ring_deposit(
                         request.ciphertext,

@@ -49,7 +49,9 @@ pub use transaction::{transact_message_hash, CacheAccounts, PrivateTxHash, SppPr
 
 use ring::sender_owner_tag;
 
-use crate::{error::TransactionError, utxo::SppProofInputUtxo, Mint, WalletUtxo, SOL_MINT};
+use crate::{
+    error::TransactionError, utxo::SppProofInputUtxo, EncryptionMode, Mint, WalletUtxo, SOL_MINT,
+};
 
 /// Build a confidential transaction from ordered input UTXOs.
 ///
@@ -87,6 +89,7 @@ use crate::{error::TransactionError, utxo::SppProofInputUtxo, Mint, WalletUtxo, 
 /// ```
 #[derive(Clone)]
 pub struct ConfidentialTransaction {
+    encryption_mode: EncryptionMode,
     inputs: Vec<SppProofInputUtxo>,
     addresses: Vec<SppProofInputUtxo>,
     tx_viewing_key: Option<[u8; 32]>,
@@ -104,6 +107,14 @@ pub struct ConfidentialTransaction {
 }
 
 impl ConfidentialTransaction {
+    /// Choose the output cipher. Verifiable mode uses Poseidon in place of
+    /// HKDF; an application proof must enforce its encryption relation.
+    #[must_use]
+    pub fn with_encryption_mode(mut self, mode: EncryptionMode) -> Self {
+        self.encryption_mode = mode;
+        self
+    }
+
     pub fn inputs(&self) -> &[SppProofInputUtxo] {
         &self.inputs
     }
@@ -262,6 +273,7 @@ impl ConfidentialTransaction {
             .ok_or(TransactionError::NoInputs)?;
 
         Ok(Self {
+            encryption_mode: EncryptionMode::default(),
             output_tree_id: 0,
             tx_viewing_key: None,
             inputs,
