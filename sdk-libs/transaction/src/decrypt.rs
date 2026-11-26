@@ -361,7 +361,7 @@ fn decode_slot<K: ShieldedKeys + ?Sized>(
         first_nullifier: tx.nullifiers.first().copied(),
     };
 
-    let verifiable = matches!(&output_data, OutputDataEncoding::VerifiablyEncrypted(_));
+    let verifiably_encrypted = matches!(&output_data, OutputDataEncoding::VerifiablyEncrypted(_));
     match output_data {
         OutputDataEncoding::Plaintext(blob) => {
             let Some((&scheme_byte, body)) = blob.split_first() else {
@@ -424,16 +424,16 @@ fn decode_slot<K: ShieldedKeys + ?Sized>(
                     slot,
                     &blob,
                     owner_cx,
-                    !verifiable,
+                    !verifiably_encrypted,
                 );
             }
-            if (scheme == EncryptedScheme::Verifiable) != verifiable {
+            if verifiably_encrypted {
                 return Ok(None);
             }
             let (ciphertext, viewing_pubkeys) = match scheme {
                 EncryptedScheme::Confidential
                 | EncryptedScheme::RingConfidential
-                | EncryptedScheme::Verifiable => {
+                | EncryptedScheme::PoseidonKdf => {
                     let Ok(viewing_pubkey) = Confidential::embedded_viewing_pk(body) else {
                         return Ok(None);
                     };
@@ -461,8 +461,8 @@ fn decode_slot<K: ShieldedKeys + ?Sized>(
                     tx_viewing_pubkey,
                     salt,
                     slot_index,
-                    label: if scheme == EncryptedScheme::Verifiable {
-                        DecryptLabel::VerifiableUtxo
+                    label: if scheme == EncryptedScheme::PoseidonKdf {
+                        DecryptLabel::PoseidonKdfUtxo
                     } else {
                         DecryptLabel::Utxo
                     },
@@ -475,7 +475,7 @@ fn decode_slot<K: ShieldedKeys + ?Sized>(
                 let utxos = match scheme {
                     EncryptedScheme::Confidential
                     | EncryptedScheme::RingConfidential
-                    | EncryptedScheme::Verifiable => {
+                    | EncryptedScheme::PoseidonKdf => {
                         let Ok(plaintext) = Confidential::deserialize(&bytes) else {
                             continue;
                         };

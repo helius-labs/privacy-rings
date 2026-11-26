@@ -265,7 +265,7 @@ impl ViewingKey {
             tx_viewing_pubkey,
             salt,
             slot_index,
-            crate::EncryptionMode::Confidential,
+            crate::EncryptionMode::Hkdf,
         )
     }
 
@@ -281,7 +281,7 @@ impl ViewingKey {
             plaintext,
             salt,
             slot_index,
-            crate::EncryptionMode::Confidential,
+            crate::EncryptionMode::Hkdf,
         )
     }
 
@@ -317,7 +317,7 @@ impl ViewingKey {
             ciphertext,
             salt,
             slot_index,
-            crate::EncryptionMode::Confidential,
+            crate::EncryptionMode::Hkdf,
         )
     }
 }

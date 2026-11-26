@@ -1,5 +1,5 @@
 //! Confidential UTXO layout encrypted with the Poseidon KDF and AES-256-CTR.
-//! The producing application's proof is responsible for verifying encryption.
+//! The KDF selects encryption only; it does not establish proof verification.
 
 use spr_keypair::{x25519::X25519_PUBKEY_LEN, EncryptionMode, ViewingKey};
 
@@ -11,11 +11,11 @@ use super::{
 };
 use crate::{EncryptedScheme, TransactionError, Utxo};
 
-/// `VerifiablyEncrypted(9 || recipient_viewing_pk || ciphertext)`, with the
+/// `Encrypted(9 || recipient_viewing_pk || ciphertext)`, with the
 /// same plaintext and transaction context as [`Confidential`].
-pub struct Verifiable;
+pub struct PoseidonKdf;
 
-impl Verifiable {
+impl PoseidonKdf {
     pub fn decrypt_with_tx_key(
         tx: &ViewingKey,
         body: &[u8],
@@ -28,14 +28,14 @@ impl Verifiable {
             ciphertext,
             salt,
             slot_index,
-            EncryptionMode::Verifiable,
+            EncryptionMode::PoseidonKdf,
         )?;
         ConfidentialOutputPlaintext::deserialize(&bytes)
     }
 }
 
-impl UtxoSerialization for Verifiable {
-    const SCHEME: EncryptedScheme = EncryptedScheme::Verifiable;
+impl UtxoSerialization for PoseidonKdf {
+    const SCHEME: EncryptedScheme = EncryptedScheme::PoseidonKdf;
     type Plaintext = ConfidentialOutputPlaintext;
     type EncodeCx = ConfidentialEncode;
 
@@ -53,7 +53,7 @@ impl UtxoSerialization for Verifiable {
             &tx_viewing_pk,
             salt,
             cx.slot_index,
-            EncryptionMode::Verifiable,
+            EncryptionMode::PoseidonKdf,
         )?)
     }
 
@@ -83,7 +83,7 @@ impl UtxoSerialization for Verifiable {
             bytes,
             cx.salt,
             cx.slot_index,
-            EncryptionMode::Verifiable,
+            EncryptionMode::PoseidonKdf,
         )?;
         let mut body = Vec::with_capacity(X25519_PUBKEY_LEN + ciphertext.len());
         body.extend_from_slice(cx.recipient_pubkey.as_bytes());

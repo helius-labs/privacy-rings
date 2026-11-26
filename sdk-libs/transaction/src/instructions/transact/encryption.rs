@@ -11,7 +11,7 @@ use crate::{
     keys::{first_input_transaction_key, ShieldedKeys},
     serialization::{
         confidential::{Confidential, ConfidentialEncode, ConfidentialOutputPlaintext},
-        verifiable::Verifiable,
+        poseidon_kdf::PoseidonKdf,
         UtxoSerialization,
     },
     Data, EncryptedScheme, EncryptionMode, SOL_ASSET_ID,
@@ -57,8 +57,8 @@ impl OutputEncoder for Confidential {
         mode: EncryptionMode,
         cx: &ConfidentialEncode,
     ) -> Result<MessageData, TransactionError> {
-        if mode == EncryptionMode::Verifiable {
-            return Verifiable::encode_plaintext(plaintext, view_tag, cx);
+        if mode == EncryptionMode::PoseidonKdf {
+            return PoseidonKdf::encode_plaintext(plaintext, view_tag, cx);
         }
         let mut message = Confidential::encode_plaintext(plaintext, view_tag, cx)?;
         if plaintext.ring_program_id.is_some() {
@@ -348,7 +348,7 @@ fn dummy_ciphertext_len<E: OutputEncoder>(
                 data: Data::default(),
             },
             [0u8; 32],
-            EncryptionMode::Confidential,
+            EncryptionMode::Hkdf,
             &ConfidentialEncode {
                 recipient_pubkey: throwaway.pubkey(),
                 tx: throwaway,

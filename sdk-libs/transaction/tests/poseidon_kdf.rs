@@ -7,7 +7,7 @@ use spr_keypair::{x25519::X25519_PUBKEY_LEN, ShieldedKeypair, ViewingKey};
 use spr_transaction::{
     decrypt_spendable,
     instructions::transact::{ConfidentialTransaction, SppProofInputs},
-    serialization::{confidential::Confidential, verifiable::Verifiable},
+    serialization::{confidential::Confidential, poseidon_kdf::PoseidonKdf},
     AssetRegistry, DecodeCx, EncryptedScheme, EncryptionMode, LocalShieldedKeys, Mint,
     OutputContext, OutputSlot, ShieldedTransaction, SppProofOutputUtxo, TransactionError,
     UtxoSerialization,
@@ -86,7 +86,7 @@ fn publication(prepared: &SppProofInputs) -> ShieldedTransaction {
 
 #[test]
 fn recipient_sender_and_retired_keys_decode_the_selected_mode() {
-    for mode in [EncryptionMode::Confidential, EncryptionMode::Verifiable] {
+    for mode in [EncryptionMode::Hkdf, EncryptionMode::PoseidonKdf] {
         let (sender, recipient, prepared, indexed) = transfer(mode);
         let assets = AssetRegistry::default();
         let received =
@@ -135,41 +135,25 @@ fn recipient_sender_and_retired_keys_decode_the_selected_mode() {
             .iter()
             .find(|output| output.owner_address == Some(recipient.shielded_address().unwrap()))
             .unwrap();
-        let (scheme, plaintext) = match recipient_slot.output_data().unwrap() {
-            OutputDataEncoding::Encrypted(blob) => {
-                let (scheme, body) = blob.split_first().unwrap();
-                (
-                    *scheme,
-                    Confidential::decrypt_with_tx_key(
-                        &tx_key,
-                        body,
-                        indexed.salt.unwrap(),
-                        slot_index,
-                    )
-                    .unwrap(),
-                )
-            }
-            OutputDataEncoding::VerifiablyEncrypted(blob) => {
-                let (scheme, body) = blob.split_first().unwrap();
-                (
-                    *scheme,
-                    Verifiable::decrypt_with_tx_key(
-                        &tx_key,
-                        body,
-                        indexed.salt.unwrap(),
-                        slot_index,
-                    )
-                    .unwrap(),
-                )
-            }
-            OutputDataEncoding::Plaintext(_) => panic!("expected ciphertext"),
+        let OutputDataEncoding::Encrypted(blob) = recipient_slot.output_data().unwrap() else {
+            panic!("expected ordinary encrypted framing");
         };
+        let (&scheme, body) = blob.split_first().unwrap();
+        let plaintext = match mode {
+            EncryptionMode::Hkdf => {
+                Confidential::decrypt_with_tx_key(&tx_key, body, indexed.salt.unwrap(), slot_index)
+            }
+            EncryptionMode::PoseidonKdf => {
+                PoseidonKdf::decrypt_with_tx_key(&tx_key, body, indexed.salt.unwrap(), slot_index)
+            }
+        }
+        .unwrap();
         assert_eq!(
             (scheme, plaintext.amount, plaintext.blinding),
             (
                 match mode {
-                    EncryptionMode::Confidential => EncryptedScheme::Confidential,
-                    EncryptionMode::Verifiable => EncryptedScheme::Verifiable,
+                    EncryptionMode::Hkdf => EncryptedScheme::Confidential,
+                    EncryptionMode::PoseidonKdf => EncryptedScheme::PoseidonKdf,
                 }
                 .as_byte(),
                 42,
@@ -194,8 +178,8 @@ fn recipient_sender_and_retired_keys_decode_the_selected_mode() {
 }
 
 #[test]
-fn direct_verifiable_decode_rejects_a_replaced_embedded_recipient_key() {
-    let (_, recipient, _, indexed) = transfer(EncryptionMode::Verifiable);
+fn direct_poseidon_kdf_decode_rejects_a_replaced_embedded_recipient_key() {
+    let (_, recipient, _, indexed) = transfer(EncryptionMode::PoseidonKdf);
     let (slot_index, slot) = indexed
         .output_slots
         .iter()
@@ -203,16 +187,17 @@ fn direct_verifiable_decode_rejects_a_replaced_embedded_recipient_key() {
         .find(|(_, slot)| {
             matches!(
                 slot.output_data(),
-                Some(OutputDataEncoding::VerifiablyEncrypted(_))
+                Some(OutputDataEncoding::Encrypted(blob))
+                    if blob.first() == Some(&EncryptedScheme::PoseidonKdf.as_byte())
             )
         })
         .unwrap();
-    let OutputDataEncoding::VerifiablyEncrypted(blob) = slot.output_data().unwrap() else {
-        panic!("expected verifiable output");
+    let OutputDataEncoding::Encrypted(blob) = slot.output_data().unwrap() else {
+        panic!("expected Poseidon-KDF output");
     };
     let (&scheme, body) = blob.split_first().unwrap();
     let cx = DecodeCx::for_slot(&recipient.viewing_key, &indexed, slot_index as u32);
-    let plaintext = Verifiable::decode(body, &cx).unwrap();
+    let plaintext = PoseidonKdf::decode(body, &cx).unwrap();
     assert_eq!(
         (plaintext.amount, plaintext.asset_id),
         (42, Mint::SOL.asset_id)
@@ -230,8 +215,8 @@ fn direct_verifiable_decode_rejects_a_replaced_embedded_recipient_key() {
     );
     assert_eq!(
         (
-            Verifiable::decrypt(&changed_body, &cx),
-            Verifiable::decode(&changed_body, &cx)
+            PoseidonKdf::decrypt(&changed_body, &cx),
+            PoseidonKdf::decode(&changed_body, &cx)
         ),
         (
             Err(TransactionError::RecipientViewingKeyMismatch),
@@ -246,7 +231,7 @@ fn direct_verifiable_decode_rejects_a_replaced_embedded_recipient_key() {
         .output_slots
         .get_mut(slot_index)
         .unwrap()
-        .payload = borsh::to_vec(&OutputDataEncoding::VerifiablyEncrypted(changed_blob)).unwrap();
+        .payload = borsh::to_vec(&OutputDataEncoding::Encrypted(changed_blob)).unwrap();
     assert_eq!(
         decrypt_spendable(
             &recipient,
@@ -268,14 +253,14 @@ fn mixed_output_modes_preserve_slot_indices_and_commitments() {
     let recipient_address = recipient.shielded_address().unwrap();
     for modes in [
         [
-            EncryptionMode::Confidential,
-            EncryptionMode::Verifiable,
-            EncryptionMode::Confidential,
+            EncryptionMode::Hkdf,
+            EncryptionMode::PoseidonKdf,
+            EncryptionMode::Hkdf,
         ],
         [
-            EncryptionMode::Verifiable,
-            EncryptionMode::Confidential,
-            EncryptionMode::Verifiable,
+            EncryptionMode::PoseidonKdf,
+            EncryptionMode::Hkdf,
+            EncryptionMode::PoseidonKdf,
         ],
     ] {
         let input = wallet_utxo(&sender, Mint::SOL, 100, 2, 1);
@@ -305,7 +290,7 @@ fn mixed_output_modes_preserve_slot_indices_and_commitments() {
                 .collect::<Vec<_>>(),
             modes
                 .into_iter()
-                .chain([EncryptionMode::Confidential])
+                .chain([EncryptionMode::Hkdf])
                 .collect::<Vec<_>>(),
         );
         let prepared = finalized.encrypt_with_viewing_key(&tx_key).unwrap();
@@ -317,23 +302,19 @@ fn mixed_output_modes_preserve_slot_indices_and_commitments() {
             .zip(modes)
         {
             let expected_scheme = match mode {
-                EncryptionMode::Confidential => EncryptedScheme::Confidential,
-                EncryptionMode::Verifiable => EncryptedScheme::Verifiable,
+                EncryptionMode::Hkdf => EncryptedScheme::Confidential,
+                EncryptionMode::PoseidonKdf => EncryptedScheme::PoseidonKdf,
             };
-            let blob = match (mode, slot.output_data().unwrap()) {
-                (EncryptionMode::Confidential, OutputDataEncoding::Encrypted(blob))
-                | (EncryptionMode::Verifiable, OutputDataEncoding::VerifiablyEncrypted(blob)) => {
-                    blob
-                }
-                _ => panic!("output framing does not match its encryption mode"),
+            let OutputDataEncoding::Encrypted(blob) = slot.output_data().unwrap() else {
+                panic!("output must use ordinary encrypted framing");
             };
             assert_eq!(
                 (output.encryption_mode, blob.first()),
                 (mode, Some(&expected_scheme.as_byte()))
             );
             let opposite_mode = match mode {
-                EncryptionMode::Confidential => EncryptionMode::Verifiable,
-                EncryptionMode::Verifiable => EncryptionMode::Confidential,
+                EncryptionMode::Hkdf => EncryptionMode::PoseidonKdf,
+                EncryptionMode::PoseidonKdf => EncryptionMode::Hkdf,
             };
             assert_eq!(
                 output.clone().with_encryption_mode(opposite_mode).hash(2),
@@ -364,8 +345,8 @@ fn mixed_output_modes_preserve_slot_indices_and_commitments() {
 }
 
 #[test]
-fn verifiable_decode_rejects_wrong_context_framing_and_output_hash() {
-    let (_, recipient, _, indexed) = transfer(EncryptionMode::Verifiable);
+fn poseidon_kdf_decode_rejects_wrong_context_framing_and_output_hash() {
+    let (_, recipient, _, indexed) = transfer(EncryptionMode::PoseidonKdf);
     let assets = AssetRegistry::default();
     let received = decrypt_spendable(&recipient, std::slice::from_ref(&indexed), &assets).unwrap();
     let utxo_hash = received.utxos().next().unwrap().utxo_hash;
@@ -411,8 +392,8 @@ fn verifiable_decode_rejects_wrong_context_framing_and_output_hash() {
             .iter_mut()
             .find(|slot| slot.output_context.hash == utxo_hash)
             .unwrap();
-        let OutputDataEncoding::VerifiablyEncrypted(mut blob) = slot.output_data().unwrap() else {
-            panic!("expected verifiable output");
+        let OutputDataEncoding::Encrypted(mut blob) = slot.output_data().unwrap() else {
+            panic!("expected Poseidon-KDF output");
         };
         match mutation {
             0 => {
@@ -431,9 +412,9 @@ fn verifiable_decode_rejects_wrong_context_framing_and_output_hash() {
             _ => unreachable!(),
         }
         slot.payload = borsh::to_vec(&if mutation == 4 {
-            OutputDataEncoding::Encrypted(blob)
-        } else {
             OutputDataEncoding::VerifiablyEncrypted(blob)
+        } else {
+            OutputDataEncoding::Encrypted(blob)
         })
         .unwrap();
         mutations.push(wrong);

@@ -224,14 +224,14 @@ fn make_and_take_verifiable_encryption() -> Result<()> {
             .map_err(|e| anyhow!("order input_utxo: {e:?}"))?;
         let taker_input_utxo = SppProofInputUtxo::from(taker_input_utxo);
         let inputs = vec![order_input_utxo, taker_input_utxo];
-        // Use the generic Poseidon-KDF confidential mode for the source slot.
+        // Use the ordinary Poseidon-KDF encryption format for the source slot.
         // The destination retains the symmetric ciphertext the swap circuit
         // proves, so this also exercises a transaction with mixed formats.
         let mut transaction =
             ConfidentialTransaction::from_proof_inputs(inputs, taker_address.solana_address()?)?
                 .with_output_tree_id(localnet.tree_id)?;
         transaction
-            .add_output_utxo(source_output.with_encryption_mode(EncryptionMode::Verifiable))?;
+            .add_output_utxo(source_output.with_encryption_mode(EncryptionMode::PoseidonKdf))?;
         transaction.add_output_utxo(destination_output)?;
         let mut take_spp_proof_inputs = transaction.encrypt(&taker.keypair)?;
         let [source_output, destination_output]: [_; 2] = take_spp_proof_inputs
@@ -254,12 +254,12 @@ fn make_and_take_verifiable_encryption() -> Result<()> {
             .first()
             .and_then(|output| output.data.as_deref())
             .ok_or_else(|| anyhow!("missing source ciphertext"))?;
-        let spr_interface::event::OutputDataEncoding::VerifiablyEncrypted(blob) =
+        let spr_interface::event::OutputDataEncoding::Encrypted(blob) =
             borsh::from_slice(source_data)?
         else {
-            return Err(anyhow!("source output must use verifiable framing"));
+            return Err(anyhow!("source output must use ordinary encrypted framing"));
         };
-        assert_eq!(blob.first(), Some(&EncryptedScheme::Verifiable.as_byte()));
+        assert_eq!(blob.first(), Some(&EncryptedScheme::PoseidonKdf.as_byte()));
         outputs
             .last_mut()
             .ok_or_else(|| anyhow!("missing destination output"))?

@@ -9,8 +9,8 @@ use zeroize::Zeroizing;
 use crate::{
     constants::{CTR_NONCE_LEN, SALT_LEN},
     derivation::{
-        hkdf_expand, DOMAIN_VERIFIABLE_TRANSCRIPT, DOM_SEP_KEY, DOM_SEP_NONCE, DOM_SEP_SILO,
-        ENC_INFO_RING_DEPOSIT, ENC_INFO_TRANSFER, ENC_INFO_VERIFIABLE, HPKE_PREFIX,
+        hkdf_expand, DOMAIN_POSEIDON_KDF_TRANSCRIPT, DOM_SEP_KEY, DOM_SEP_NONCE, DOM_SEP_SILO,
+        ENC_INFO_POSEIDON_KDF, ENC_INFO_RING_DEPOSIT, ENC_INFO_TRANSFER, HPKE_PREFIX,
     },
     error::KeypairError,
     hash::poseidon,
@@ -20,8 +20,8 @@ use crate::{
 type Aes256Ctr = Ctr32BE<Aes256>;
 
 /// Per-output encryption for confidential transactions. Both modes use X25519
-/// and AES-256-CTR; verifiable mode uses the circuit-compatible Poseidon KDF.
-/// The application proof must separately enforce correct encryption.
+/// and AES-256-CTR, with either HKDF-SHA256 or the circuit-compatible Poseidon
+/// KDF. The choice of KDF does not establish proof verification.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(
     feature = "serde",
@@ -31,21 +31,21 @@ type Aes256Ctr = Ctr32BE<Aes256>;
 #[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
 pub enum EncryptionMode {
     #[default]
-    Confidential,
+    Hkdf,
     /// Poseidon/AES version 1. Pack the ECDH bytes and both tagged public keys
     /// independently with `pack_be` (31-byte big-endian chunks). Hash, in order:
     /// `TVE1, shared[0], shared[1], tx_pk[0], tx_pk[1], recipient_pk[0],
     /// recipient_pk[1], right_align(salt), right_align(u32_be(slot_index))`.
-    /// Feed that secret and `ENC_INFO_VERIFIABLE` into `symmetric_apply`.
+    /// Feed that secret and `ENC_INFO_POSEIDON_KDF` into `symmetric_apply`.
     /// AES-256-CTR starts at the derived 12-byte nonce followed by `u32_be(2)`.
-    Verifiable,
+    PoseidonKdf,
 }
 
 /// A fixed transcript packs each byte string in 31-byte chunks, preserving
 /// X25519's little-endian encodings without reducing them modulo BN254 Fr.
 /// Public keys, fresh transaction salt and physical output index are bound
 /// before the existing symmetric key schedule. "TVE1" versions the transcript.
-fn verifiable_apply(
+fn poseidon_kdf_apply(
     shared_secret: &[u8; 32],
     ephemeral_pubkey: &X25519Pubkey,
     recipient_pubkey: &X25519Pubkey,
@@ -57,7 +57,7 @@ fn verifiable_apply(
     let ephemeral = pack_be::<33, 2>(ephemeral_pubkey.as_bytes());
     let recipient = pack_be::<33, 2>(recipient_pubkey.as_bytes());
     let transcript_secret = Zeroizing::new(poseidon(&[
-        &right_align(&DOMAIN_VERIFIABLE_TRANSCRIPT.to_be_bytes()),
+        &right_align(&DOMAIN_POSEIDON_KDF_TRANSCRIPT.to_be_bytes()),
         &shared[0],
         &shared[1],
         &ephemeral[0],
@@ -67,7 +67,7 @@ fn verifiable_apply(
         &right_align(salt),
         &right_align(&slot.to_be_bytes()),
     ])?);
-    symmetric_apply(&transcript_secret, ENC_INFO_VERIFIABLE, ciphertext)
+    symmetric_apply(&transcript_secret, ENC_INFO_POSEIDON_KDF, ciphertext)
 }
 
 pub(crate) struct UtxoCipher<'a> {
@@ -88,7 +88,7 @@ impl UtxoCipher<'_> {
         let shared = secret_key.ecdh(counterparty)?;
         let mut output = ciphertext.to_vec();
         match self.mode {
-            EncryptionMode::Confidential => {
+            EncryptionMode::Hkdf => {
                 let (key, nonce) = derive_key_nonce(
                     &shared,
                     self.ephemeral_pubkey,
@@ -99,8 +99,8 @@ impl UtxoCipher<'_> {
                 )?;
                 ctr_apply(&key, &nonce, &mut output);
             }
-            EncryptionMode::Verifiable => {
-                verifiable_apply(
+            EncryptionMode::PoseidonKdf => {
+                poseidon_kdf_apply(
                     &shared,
                     self.ephemeral_pubkey,
                     self.recipient_pubkey,
@@ -147,7 +147,7 @@ fn key_schedule(
     Ok((key, nonce))
 }
 
-/// Symmetric verifiable encryption: derive the AES-256-CTR key/nonce from a
+/// Symmetric encryption: derive the AES-256-CTR key/nonce from a
 /// pre-shared `shared_secret` via the same Poseidon key schedule as the
 /// circuit's `KeySchedule` + `CTREncrypt`, then apply the keystream.
 /// Encryption and decryption are the same operation.

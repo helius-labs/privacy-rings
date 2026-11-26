@@ -10,8 +10,8 @@ use spr_transaction::{
     error::TransactionError,
     instructions::transact::{OutputContext, ShieldedTransaction},
     serialization::{
-        confidential::Confidential, plaintext::PlaintextTransfer, proofless::Proofless,
-        verifiable::Verifiable, DecodeCx, OwnerCx, UtxoSerialization,
+        confidential::Confidential, plaintext::PlaintextTransfer, poseidon_kdf::PoseidonKdf,
+        proofless::Proofless, DecodeCx, OwnerCx, UtxoSerialization,
     },
     utxo::Utxo,
     verify_owned, AssetRegistry, EncryptedScheme, LocalShieldedKeys, WalletUtxo,
@@ -66,7 +66,7 @@ impl TxIndex {
                 match scheme {
                     EncryptedScheme::Confidential
                     | EncryptedScheme::RingConfidential
-                    | EncryptedScheme::Verifiable
+                    | EncryptedScheme::PoseidonKdf
                     | EncryptedScheme::Proofless
                     | EncryptedScheme::PlaintextTransfer
                     | EncryptedScheme::Merge => {
@@ -486,21 +486,19 @@ impl SyncCtx<'_> {
         let mut change = Vec::new();
         let mut recipient_pks = Vec::new();
         for (position, slot) in tx.output_slots.iter().enumerate() {
-            let (blob, verifiable) = match slot.output_data() {
-                Some(OutputDataEncoding::Encrypted(blob)) => (blob, false),
-                Some(OutputDataEncoding::VerifiablyEncrypted(blob)) => (blob, true),
-                _ => continue,
+            let Some(OutputDataEncoding::Encrypted(blob)) = slot.output_data() else {
+                continue;
             };
             let Some((&scheme_byte, body)) = blob.split_first() else {
                 continue;
             };
             let encrypted_slot_index = position as u32;
-            let decoded = match (EncryptedScheme::from_byte(scheme_byte), verifiable) {
-                (Ok(EncryptedScheme::Confidential | EncryptedScheme::RingConfidential), false) => {
+            let decoded = match EncryptedScheme::from_byte(scheme_byte) {
+                Ok(EncryptedScheme::Confidential | EncryptedScheme::RingConfidential) => {
                     Confidential::decrypt_with_tx_key(&tx_key, body, salt, encrypted_slot_index)
                 }
-                (Ok(EncryptedScheme::Verifiable), true) => {
-                    Verifiable::decrypt_with_tx_key(&tx_key, body, salt, encrypted_slot_index)
+                Ok(EncryptedScheme::PoseidonKdf) => {
+                    PoseidonKdf::decrypt_with_tx_key(&tx_key, body, salt, encrypted_slot_index)
                 }
                 _ => continue,
             };
@@ -628,7 +626,6 @@ impl SyncCtx<'_> {
             ring_program_id: None,
             first_nullifier: cx.first_nullifier,
         };
-        let verifiable = matches!(&output_data, OutputDataEncoding::VerifiablyEncrypted(_));
         match output_data {
             OutputDataEncoding::Plaintext(blob) => {
                 let Some((&scheme_byte, body)) = blob.split_first() else {
@@ -685,7 +682,7 @@ impl SyncCtx<'_> {
                     }
                 }
             }
-            OutputDataEncoding::Encrypted(blob) | OutputDataEncoding::VerifiablyEncrypted(blob) => {
+            OutputDataEncoding::Encrypted(blob) => {
                 let Some((&scheme_byte, body)) = blob.split_first() else {
                     self.report.undecryptable_candidates += 1;
                     return Ok(());
@@ -694,16 +691,12 @@ impl SyncCtx<'_> {
                     self.report.undecryptable_candidates += 1;
                     return Ok(());
                 };
-                if (scheme == EncryptedScheme::Verifiable) != verifiable {
-                    self.report.undecryptable_candidates += 1;
-                    return Ok(());
-                }
                 match scheme {
                     EncryptedScheme::Confidential
                     | EncryptedScheme::RingConfidential
-                    | EncryptedScheme::Verifiable => {
-                        let decoded = if verifiable {
-                            Verifiable::decode(body, &cx)
+                    | EncryptedScheme::PoseidonKdf => {
+                        let decoded = if scheme == EncryptedScheme::PoseidonKdf {
+                            PoseidonKdf::decode(body, &cx)
                         } else {
                             Confidential::decode(body, &cx)
                         };
@@ -735,6 +728,10 @@ impl SyncCtx<'_> {
                         self.report.undecryptable_candidates += 1;
                     }
                 }
+            }
+            OutputDataEncoding::VerifiablyEncrypted(_) => {
+                // Merge outputs are decoded through reconstruct_merge.
+                self.report.undecryptable_candidates += 1;
             }
         }
         Ok(())

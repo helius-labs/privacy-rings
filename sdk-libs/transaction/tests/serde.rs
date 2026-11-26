@@ -6,28 +6,30 @@ use spr_transaction::{
 };
 
 #[test]
-fn output_encryption_serialization_omits_confidential_and_preserves_verifiable() {
-    let confidential = SppProofOutputUtxo::default();
-    let verifiable = confidential
+fn output_encryption_serialization_omits_hkdf_and_preserves_poseidon_kdf() {
+    let hkdf = SppProofOutputUtxo::default();
+    let poseidon_kdf = hkdf
         .clone()
-        .with_encryption_mode(EncryptionMode::Verifiable);
-    let reset = verifiable
+        .with_encryption_mode(EncryptionMode::PoseidonKdf);
+    let reset = poseidon_kdf
         .clone()
-        .with_encryption_mode(EncryptionMode::Confidential);
-    let confidential_json = serde_json::to_value(&confidential).unwrap();
-    let verifiable_json = serde_json::to_value(&verifiable).unwrap();
+        .with_encryption_mode(EncryptionMode::Hkdf);
+    let hkdf_json = serde_json::to_value(&hkdf).unwrap();
+    let poseidon_kdf_json = serde_json::to_value(&poseidon_kdf).unwrap();
     let reset_json = serde_json::to_value(&reset).unwrap();
     assert_eq!(
         (
-            confidential.encryption_mode,
-            confidential_json.get("encryptionMode"),
-            verifiable_json.get("encryptionMode"),
+            serde_json::to_value(EncryptionMode::Hkdf).unwrap(),
+            hkdf.encryption_mode,
+            hkdf_json.get("encryptionMode"),
+            poseidon_kdf_json.get("encryptionMode"),
             reset_json.get("encryptionMode"),
         ),
         (
-            EncryptionMode::Confidential,
+            serde_json::json!("hkdf"),
+            EncryptionMode::Hkdf,
             None,
-            Some(&serde_json::json!("verifiable")),
+            Some(&serde_json::json!("poseidonKdf")),
             None
         ),
     );

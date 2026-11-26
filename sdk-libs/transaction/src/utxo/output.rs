@@ -24,8 +24,8 @@ fn canonical_data_order(record: &DataRecord) -> u8 {
 }
 
 #[cfg(feature = "serde")]
-fn is_confidential(mode: &EncryptionMode) -> bool {
-    *mode == EncryptionMode::Confidential
+fn is_hkdf(mode: &EncryptionMode) -> bool {
+    *mode == EncryptionMode::Hkdf
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -43,7 +43,7 @@ fn is_confidential(mode: &EncryptionMode) -> bool {
 )]
 pub struct SppProofOutputUtxo {
     /// How this output is encrypted. Assembly metadata, excluded from its hash.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_confidential"))]
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_hkdf"))]
     #[cfg_attr(feature = "tsify", tsify(optional))]
     pub encryption_mode: EncryptionMode,
     pub asset: Mint,
@@ -118,7 +118,7 @@ pub struct SppProofOutputUtxo {
 
 impl SppProofOutputUtxo {
     /// Select encryption for this output. Automatically generated change and
-    /// padding use the default confidential mode.
+    /// padding use the default HKDF mode.
     #[must_use]
     pub fn with_encryption_mode(mut self, mode: EncryptionMode) -> Self {
         self.encryption_mode = mode;
