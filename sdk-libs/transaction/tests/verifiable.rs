@@ -3,13 +3,14 @@ mod common;
 use common::{keypair, wallet_utxo};
 use solana_signature::Signature;
 use spr_event::OutputDataEncoding;
-use spr_keypair::{ShieldedKeypair, ViewingKey};
+use spr_keypair::{x25519::X25519_PUBKEY_LEN, ShieldedKeypair, ViewingKey};
 use spr_transaction::{
     decrypt_spendable,
     instructions::transact::{ConfidentialTransaction, SppProofInputs},
     serialization::{confidential::Confidential, verifiable::Verifiable},
-    AssetRegistry, EncryptedScheme, EncryptionMode, LocalShieldedKeys, Mint, OutputContext,
-    OutputSlot, ShieldedTransaction, SppProofOutputUtxo,
+    AssetRegistry, DecodeCx, EncryptedScheme, EncryptionMode, LocalShieldedKeys, Mint,
+    OutputContext, OutputSlot, ShieldedTransaction, SppProofOutputUtxo, TransactionError,
+    UtxoSerialization,
 };
 
 fn transfer(
@@ -190,6 +191,73 @@ fn recipient_sender_and_retired_keys_decode_the_selected_mode() {
             received
         );
     }
+}
+
+#[test]
+fn direct_verifiable_decode_rejects_a_replaced_embedded_recipient_key() {
+    let (_, recipient, _, indexed) = transfer(EncryptionMode::Verifiable);
+    let (slot_index, slot) = indexed
+        .output_slots
+        .iter()
+        .enumerate()
+        .find(|(_, slot)| {
+            matches!(
+                slot.output_data(),
+                Some(OutputDataEncoding::VerifiablyEncrypted(_))
+            )
+        })
+        .unwrap();
+    let OutputDataEncoding::VerifiablyEncrypted(blob) = slot.output_data().unwrap() else {
+        panic!("expected verifiable output");
+    };
+    let (&scheme, body) = blob.split_first().unwrap();
+    let cx = DecodeCx::for_slot(&recipient.viewing_key, &indexed, slot_index as u32);
+    let plaintext = Verifiable::decode(body, &cx).unwrap();
+    assert_eq!(
+        (plaintext.amount, plaintext.asset_id),
+        (42, Mint::SOL.asset_id)
+    );
+
+    let replacement = keypair(88).viewing_pubkey();
+    let mut changed_body = body.to_vec();
+    changed_body
+        .get_mut(..X25519_PUBKEY_LEN)
+        .unwrap()
+        .copy_from_slice(replacement.as_bytes());
+    assert_eq!(
+        changed_body.get(X25519_PUBKEY_LEN..),
+        body.get(X25519_PUBKEY_LEN..)
+    );
+    assert_eq!(
+        (
+            Verifiable::decrypt(&changed_body, &cx),
+            Verifiable::decode(&changed_body, &cx)
+        ),
+        (
+            Err(TransactionError::RecipientViewingKeyMismatch),
+            Err(TransactionError::RecipientViewingKeyMismatch)
+        ),
+    );
+
+    let mut changed_blob = vec![scheme];
+    changed_blob.extend_from_slice(&changed_body);
+    let mut changed_transaction = indexed.clone();
+    changed_transaction
+        .output_slots
+        .get_mut(slot_index)
+        .unwrap()
+        .payload = borsh::to_vec(&OutputDataEncoding::VerifiablyEncrypted(changed_blob)).unwrap();
+    assert_eq!(
+        decrypt_spendable(
+            &recipient,
+            &[changed_transaction],
+            &AssetRegistry::default()
+        )
+        .unwrap()
+        .utxos()
+        .count(),
+        0,
+    );
 }
 
 #[test]

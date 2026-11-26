@@ -44,7 +44,10 @@ impl UtxoSerialization for Verifiable {
             .tx_viewing_pk
             .ok_or(TransactionError::MissingEncryptionContext)?;
         let salt = cx.salt.ok_or(TransactionError::MissingEncryptionContext)?;
-        let (_, ciphertext) = split_embedded_pk(body)?;
+        let (recipient_pubkey, ciphertext) = split_embedded_pk(body)?;
+        if recipient_pubkey != cx.viewing_key.pubkey() {
+            return Err(TransactionError::RecipientViewingKeyMismatch);
+        }
         Ok(cx.viewing_key.decrypt_utxo_with_mode(
             ciphertext,
             &tx_viewing_pk,
