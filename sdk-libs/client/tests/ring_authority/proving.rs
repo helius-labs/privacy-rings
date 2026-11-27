@@ -206,6 +206,7 @@ fn build_real_inputs(
 /// A ring-owned real output to a recipient (used in the consolidation scenario).
 fn real_output(recipient: &ShieldedKeypair, amount: u64) -> SppProofOutputUtxo {
     SppProofOutputUtxo {
+        encryption_mode: Default::default(),
         owner_address: Some(recipient.shielded_address().expect("shielded address")),
         asset: Mint::SOL,
         amount,

@@ -10,7 +10,7 @@ use super::{dummy_utxo_hash, owner_utxo_hash, program_id_proof_input_hash, Blind
 use crate::{
     data::{Data, DataRecord},
     error::TransactionError,
-    Mint,
+    EncryptionMode, Mint,
 };
 
 /// Canonical ordering key for data records: `RingData` < `UtxoData` < `Memo`,
@@ -21,6 +21,11 @@ fn canonical_data_order(record: &DataRecord) -> u8 {
         DataRecord::UtxoData(_) => 1,
         DataRecord::Memo(_) => 2,
     }
+}
+
+#[cfg(feature = "serde")]
+fn is_hkdf(mode: &EncryptionMode) -> bool {
+    *mode == EncryptionMode::Hkdf
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -37,6 +42,10 @@ fn canonical_data_order(record: &DataRecord) -> u8 {
     tsify(large_number_types_as_bigints)
 )]
 pub struct SppProofOutputUtxo {
+    /// How this output is encrypted. Assembly metadata, excluded from its hash.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "is_hkdf"))]
+    #[cfg_attr(feature = "tsify", tsify(optional))]
+    pub encryption_mode: EncryptionMode,
     pub asset: Mint,
     pub amount: u64,
     #[cfg_attr(feature = "serde", serde(with = "spr_keypair::serde_helpers::bytes"))]
@@ -108,6 +117,14 @@ pub struct SppProofOutputUtxo {
 }
 
 impl SppProofOutputUtxo {
+    /// Select encryption for this output. Generated change uses the builder's
+    /// change mode; padding defaults to HKDF.
+    #[must_use]
+    pub fn with_encryption_mode(mut self, mode: EncryptionMode) -> Self {
+        self.encryption_mode = mode;
+        self
+    }
+
     pub fn new(
         asset: Mint,
         amount: u64,

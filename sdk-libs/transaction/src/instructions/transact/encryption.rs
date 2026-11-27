@@ -11,9 +11,10 @@ use crate::{
     keys::{first_input_transaction_key, ShieldedKeys},
     serialization::{
         confidential::{Confidential, ConfidentialEncode, ConfidentialOutputPlaintext},
+        poseidon_kdf::PoseidonKdf,
         UtxoSerialization,
     },
-    Data, EncryptedScheme, SOL_ASSET_ID,
+    Data, EncryptedScheme, EncryptionMode, SOL_ASSET_ID,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,10 +31,12 @@ pub trait OutputEncoder {
         sender: &ShieldedAddress,
     ) -> Result<Vec<ResolvedOwnerTag>, TransactionError>;
 
+    /// Encode one output using its selected mode and final slot context.
     fn encode_slot(
         &self,
         plaintext: &ConfidentialOutputPlaintext,
         view_tag: [u8; 32],
+        mode: EncryptionMode,
         cx: &ConfidentialEncode,
     ) -> Result<MessageData, TransactionError>;
 }
@@ -51,8 +54,12 @@ impl OutputEncoder for Confidential {
         &self,
         plaintext: &ConfidentialOutputPlaintext,
         view_tag: [u8; 32],
+        mode: EncryptionMode,
         cx: &ConfidentialEncode,
     ) -> Result<MessageData, TransactionError> {
+        if mode == EncryptionMode::PoseidonKdf {
+            return PoseidonKdf::encode_plaintext(plaintext, view_tag, cx);
+        }
         let mut message = Confidential::encode_plaintext(plaintext, view_tag, cx)?;
         if plaintext.ring_program_id.is_some() {
             let OutputDataEncoding::Encrypted(mut blob) =
@@ -256,7 +263,7 @@ impl FinalizedTransaction {
                     slot_index: slot_index as u32,
                 };
                 encoder
-                    .encode_slot(&plaintext, owner_tag.resolved, &cx)
+                    .encode_slot(&plaintext, owner_tag.resolved, output.encryption_mode, &cx)
                     .map(Some)
             })
             .collect::<Result<Vec<_>, TransactionError>>()?;
@@ -341,6 +348,7 @@ fn dummy_ciphertext_len<E: OutputEncoder>(
                 data: Data::default(),
             },
             [0u8; 32],
+            EncryptionMode::Hkdf,
             &ConfidentialEncode {
                 recipient_pubkey: throwaway.pubkey(),
                 tx: throwaway,

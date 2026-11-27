@@ -9,8 +9,8 @@ use zeroize::Zeroizing;
 use crate::{
     constants::{CTR_NONCE_LEN, SALT_LEN},
     derivation::{
-        hkdf_expand, DOM_SEP_KEY, DOM_SEP_NONCE, DOM_SEP_SILO, ENC_INFO_RING_DEPOSIT,
-        ENC_INFO_TRANSFER, HPKE_PREFIX,
+        hkdf_expand, DOMAIN_POSEIDON_KDF_TRANSCRIPT, DOM_SEP_KEY, DOM_SEP_NONCE, DOM_SEP_SILO,
+        ENC_INFO_POSEIDON_KDF, ENC_INFO_RING_DEPOSIT, ENC_INFO_TRANSFER, HPKE_PREFIX,
     },
     error::KeypairError,
     hash::poseidon,
@@ -18,6 +18,101 @@ use crate::{
 };
 
 type Aes256Ctr = Ctr32BE<Aes256>;
+
+/// Per-output encryption for confidential transactions. Both modes use X25519
+/// and AES-256-CTR, with either HKDF-SHA256 or the circuit-compatible Poseidon
+/// KDF. The choice of KDF does not establish proof verification.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize),
+    serde(rename_all = "camelCase")
+)]
+#[cfg_attr(feature = "tsify", derive(tsify::Tsify))]
+pub enum EncryptionMode {
+    #[default]
+    Hkdf,
+    /// Poseidon/AES version 1. Pack the ECDH bytes and both tagged public keys
+    /// independently with `pack_be` (31-byte big-endian chunks). Hash, in order:
+    /// `TVE1, shared[0], shared[1], tx_pk[0], tx_pk[1], recipient_pk[0],
+    /// recipient_pk[1], right_align(salt), right_align(u32_be(slot_index))`.
+    /// Feed that secret and `ENC_INFO_POSEIDON_KDF` into `symmetric_apply`.
+    /// AES-256-CTR starts at the derived 12-byte nonce followed by `u32_be(2)`.
+    PoseidonKdf,
+}
+
+/// A fixed transcript packs each byte string in 31-byte chunks, preserving
+/// X25519's little-endian encodings without reducing them modulo BN254 Fr.
+/// Public keys, fresh transaction salt and physical output index are bound
+/// before the existing symmetric key schedule. "TVE1" versions the transcript.
+fn poseidon_kdf_apply(
+    shared_secret: &[u8; 32],
+    ephemeral_pubkey: &X25519Pubkey,
+    recipient_pubkey: &X25519Pubkey,
+    salt: &[u8; SALT_LEN],
+    slot: u32,
+    ciphertext: &mut [u8],
+) -> Result<(), KeypairError> {
+    let shared = Zeroizing::new(pack_be::<32, 2>(shared_secret));
+    let ephemeral = pack_be::<33, 2>(ephemeral_pubkey.as_bytes());
+    let recipient = pack_be::<33, 2>(recipient_pubkey.as_bytes());
+    let transcript_secret = Zeroizing::new(poseidon(&[
+        &right_align(&DOMAIN_POSEIDON_KDF_TRANSCRIPT.to_be_bytes()),
+        &shared[0],
+        &shared[1],
+        &ephemeral[0],
+        &ephemeral[1],
+        &recipient[0],
+        &recipient[1],
+        &right_align(salt),
+        &right_align(&slot.to_be_bytes()),
+    ])?);
+    symmetric_apply(&transcript_secret, ENC_INFO_POSEIDON_KDF, ciphertext)
+}
+
+pub(crate) struct UtxoCipher<'a> {
+    pub mode: EncryptionMode,
+    pub ephemeral_pubkey: &'a X25519Pubkey,
+    pub recipient_pubkey: &'a X25519Pubkey,
+    pub salt: &'a [u8; SALT_LEN],
+    pub slot: u32,
+}
+
+impl UtxoCipher<'_> {
+    pub fn apply(
+        self,
+        secret_key: &X25519Keypair,
+        counterparty: &X25519Pubkey,
+        ciphertext: &[u8],
+    ) -> Result<Vec<u8>, KeypairError> {
+        let shared = secret_key.ecdh(counterparty)?;
+        let mut output = ciphertext.to_vec();
+        match self.mode {
+            EncryptionMode::Hkdf => {
+                let (key, nonce) = derive_key_nonce(
+                    &shared,
+                    self.ephemeral_pubkey,
+                    self.recipient_pubkey,
+                    ENC_INFO_TRANSFER,
+                    self.salt,
+                    self.slot,
+                )?;
+                ctr_apply(&key, &nonce, &mut output);
+            }
+            EncryptionMode::PoseidonKdf => {
+                poseidon_kdf_apply(
+                    &shared,
+                    self.ephemeral_pubkey,
+                    self.recipient_pubkey,
+                    self.salt,
+                    self.slot,
+                    &mut output,
+                )?;
+            }
+        }
+        Ok(output)
+    }
+}
 
 /// AES-256-CTR matching aes/ctr.go: J0 = nonce || 0x00000001 and the counter is
 /// advanced once before the first block, so encryption starts at nonce || 2.
@@ -52,7 +147,7 @@ fn key_schedule(
     Ok((key, nonce))
 }
 
-/// Symmetric verifiable encryption: derive the AES-256-CTR key/nonce from a
+/// Symmetric encryption: derive the AES-256-CTR key/nonce from a
 /// pre-shared `shared_secret` via the same Poseidon key schedule as the
 /// circuit's `KeySchedule` + `CTREncrypt`, then apply the keystream.
 /// Encryption and decryption are the same operation.
@@ -66,6 +161,7 @@ pub fn symmetric_apply(
     buf: &mut [u8],
 ) -> Result<(), KeypairError> {
     let (key, nonce) = key_schedule(shared_secret, info)?;
+    let key = Zeroizing::new(key);
     ctr_apply(&key, &nonce, buf);
     Ok(())
 }
@@ -95,23 +191,6 @@ fn derive_key_nonce(
     key.copy_from_slice(&okm[..32]);
     nonce.copy_from_slice(&okm[32..]);
     Ok((key, nonce))
-}
-
-pub(crate) fn encrypt_utxo(
-    ephemeral_secret_key: &X25519Keypair,
-    recipient_pubkey: &X25519Pubkey,
-    plaintext: &[u8],
-    salt: &[u8; SALT_LEN],
-    slot: u32,
-) -> Result<Vec<u8>, KeypairError> {
-    encrypt_payload(
-        ephemeral_secret_key,
-        recipient_pubkey,
-        plaintext,
-        salt,
-        slot,
-        ENC_INFO_TRANSFER,
-    )
 }
 
 pub(crate) fn encrypt_ring_deposit(
@@ -147,23 +226,6 @@ fn encrypt_payload(
     Ok(buf)
 }
 
-pub(crate) fn decrypt_utxo(
-    viewing_secret_key: &X25519Keypair,
-    ephemeral_pubkey: &X25519Pubkey,
-    ciphertext: &[u8],
-    salt: &[u8; SALT_LEN],
-    slot: u32,
-) -> Result<Vec<u8>, KeypairError> {
-    decrypt_payload(
-        viewing_secret_key,
-        ephemeral_pubkey,
-        ciphertext,
-        salt,
-        slot,
-        ENC_INFO_TRANSFER,
-    )
-}
-
 pub(crate) fn decrypt_ring_deposit(
     viewing_secret_key: &X25519Keypair,
     ephemeral_pubkey: &X25519Pubkey,
@@ -192,28 +254,6 @@ fn decrypt_payload(
     let dh = viewing_secret_key.ecdh(ephemeral_pubkey)?;
     let (key, nonce) =
         derive_key_nonce(&dh, ephemeral_pubkey, &recipient_pubkey, info, salt, slot)?;
-    let mut buf = ciphertext.to_vec();
-    ctr_apply(&key, &nonce, &mut buf);
-    Ok(buf)
-}
-
-pub(crate) fn decrypt_utxo_ephemeral(
-    ephemeral_secret_key: &X25519Keypair,
-    recipient_pubkey: &X25519Pubkey,
-    ciphertext: &[u8],
-    salt: &[u8; SALT_LEN],
-    slot: u32,
-) -> Result<Vec<u8>, KeypairError> {
-    let ephemeral_pubkey = ephemeral_secret_key.pubkey();
-    let dh = ephemeral_secret_key.ecdh(recipient_pubkey)?;
-    let (key, nonce) = derive_key_nonce(
-        &dh,
-        &ephemeral_pubkey,
-        recipient_pubkey,
-        ENC_INFO_TRANSFER,
-        salt,
-        slot,
-    )?;
     let mut buf = ciphertext.to_vec();
     ctr_apply(&key, &nonce, &mut buf);
     Ok(buf)

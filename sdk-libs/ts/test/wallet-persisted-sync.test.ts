@@ -1,5 +1,6 @@
+import { treeAddress } from "../src/interface/pda/index.js";
 import { transactionItems, outputItems } from "./helpers/pages.js";
-import { address, getAddressDecoder, type Signature } from "@solana/kit";
+import { getAddressDecoder, type Signature } from "@solana/kit";
 import { describe, expect, it, vi } from "vitest";
 
 import type { Bytes32 } from "../src/interface/index.js";
@@ -24,7 +25,7 @@ import {
 import { syncWallet } from "../src/wallet/sync.js";
 import { syncReads, plainCipher } from "./helpers/clients.js";
 
-const TREE = address("3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3");
+const TREE = treeAddress(0);
 const SIGNATURE = "1".repeat(64) as Signature;
 
 const TAG_TIP = 1n;
@@ -136,7 +137,7 @@ describe("persisted wallet sync", () => {
     expect(store.save).toHaveBeenCalledTimes(1);
     expect(store.saved).toBe(snapshot);
     expect(snapshot).toBe(serializeWallet(wallet));
-    expect((JSON.parse(snapshot) as { version: number }).version).toBe(5);
+    expect((JSON.parse(snapshot) as { version: number }).version).toBe(6);
     expect(wallet.lastSynced).toBeGreaterThan(0n);
     expect(report.storedUtxos).toBe(0);
   });
@@ -341,7 +342,7 @@ describe("persisted wallet sync", () => {
       version: number;
       syncCheckpoints: { transactions: readonly unknown[] };
     };
-    expect(saved.version).toBe(5);
+    expect(saved.version).toBe(6);
     expect(saved.syncCheckpoints.transactions).not.toHaveLength(0);
   });
 });

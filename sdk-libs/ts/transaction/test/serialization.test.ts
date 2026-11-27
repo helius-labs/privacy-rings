@@ -396,10 +396,11 @@ describe("manifest-verified transaction serialization", () => {
     });
     expect(schemes).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
     expect(() => decodeOutputData(Uint8Array.of(4, 0, 0, 0, 0))).toThrow();
-    expect(() => encryptedSchemeFromByte(9)).toThrow(
+    expect(encryptedSchemeFromByte(9)).toBe(EncryptedScheme.poseidonKdf);
+    expect(() => encryptedSchemeFromByte(10)).toThrow(
       expect.objectContaining({
         code: "TRANSACTION_BAD_DISCRIMINATOR",
-        details: { byte: 9 },
+        details: { byte: 10 },
       }),
     );
     expect(() =>

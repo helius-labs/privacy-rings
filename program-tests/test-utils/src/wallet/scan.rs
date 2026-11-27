@@ -10,8 +10,8 @@ use spr_transaction::{
     error::TransactionError,
     instructions::transact::{OutputContext, ShieldedTransaction},
     serialization::{
-        confidential::Confidential, plaintext::PlaintextTransfer, proofless::Proofless, DecodeCx,
-        OwnerCx, UtxoSerialization,
+        confidential::Confidential, plaintext::PlaintextTransfer, poseidon_kdf::PoseidonKdf,
+        proofless::Proofless, DecodeCx, OwnerCx, UtxoSerialization,
     },
     utxo::Utxo,
     verify_owned, AssetRegistry, EncryptedScheme, LocalShieldedKeys, WalletUtxo,
@@ -66,6 +66,7 @@ impl TxIndex {
                 match scheme {
                     EncryptedScheme::Confidential
                     | EncryptedScheme::RingConfidential
+                    | EncryptedScheme::PoseidonKdf
                     | EncryptedScheme::Proofless
                     | EncryptedScheme::PlaintextTransfer
                     | EncryptedScheme::Merge => {
@@ -491,16 +492,17 @@ impl SyncCtx<'_> {
             let Some((&scheme_byte, body)) = blob.split_first() else {
                 continue;
             };
-            if !matches!(
-                EncryptedScheme::from_byte(scheme_byte),
-                Ok(EncryptedScheme::Confidential | EncryptedScheme::RingConfidential)
-            ) {
-                continue;
-            }
             let encrypted_slot_index = position as u32;
-            let Ok(plaintext) =
-                Confidential::decrypt_with_tx_key(&tx_key, body, salt, encrypted_slot_index)
-            else {
+            let decoded = match EncryptedScheme::from_byte(scheme_byte) {
+                Ok(EncryptedScheme::Confidential | EncryptedScheme::RingConfidential) => {
+                    Confidential::decrypt_with_tx_key(&tx_key, body, salt, encrypted_slot_index)
+                }
+                Ok(EncryptedScheme::PoseidonKdf) => {
+                    PoseidonKdf::decrypt_with_tx_key(&tx_key, body, salt, encrypted_slot_index)
+                }
+                _ => continue,
+            };
+            let Ok(plaintext) = decoded else {
                 continue;
             };
             let Ok(recipient_pk) = Confidential::embedded_viewing_pk(body) else {
@@ -690,8 +692,15 @@ impl SyncCtx<'_> {
                     return Ok(());
                 };
                 match scheme {
-                    EncryptedScheme::Confidential | EncryptedScheme::RingConfidential => {
-                        let Ok(plaintext) = Confidential::decode(body, &cx) else {
+                    EncryptedScheme::Confidential
+                    | EncryptedScheme::RingConfidential
+                    | EncryptedScheme::PoseidonKdf => {
+                        let decoded = if scheme == EncryptedScheme::PoseidonKdf {
+                            PoseidonKdf::decode(body, &cx)
+                        } else {
+                            Confidential::decode(body, &cx)
+                        };
+                        let Ok(plaintext) = decoded else {
                             self.report.undecryptable_candidates += 1;
                             return Ok(());
                         };
@@ -721,8 +730,7 @@ impl SyncCtx<'_> {
                 }
             }
             OutputDataEncoding::VerifiablyEncrypted(_) => {
-                // Only merges publish this encoding, and `TxIndex` routes
-                // every merge to `reconstruct_merge`; one here is malformed.
+                // Merge outputs are decoded through reconstruct_merge.
                 self.report.undecryptable_candidates += 1;
             }
         }

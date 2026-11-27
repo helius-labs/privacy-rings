@@ -20,12 +20,14 @@ export type KeypairErrorCode =
   | "KEYPAIR_DERIVATION_INPUT"
   | "KEYPAIR_INVALID_DERIVATION_SEED"
   // TypeScript-only: Rust rejects these at the type level.
+  | "KEYPAIR_INVALID_ENCRYPTION_MODE"
   | "KEYPAIR_INVALID_LENGTH"
   | "KEYPAIR_HASH";
 
 /** The Rust variant each code mirrors, or `null` for a TypeScript-only code. */
 export const KEYPAIR_ERROR_RUST_VARIANT: Readonly<Record<KeypairErrorCode, string | null>> =
   Object.freeze({
+    KEYPAIR_INVALID_ENCRYPTION_MODE: null,
     KEYPAIR_INVALID_PUBLIC_KEY: "InvalidPublicKey",
     KEYPAIR_INVALID_SECRET_KEY: "InvalidSecretKey",
     KEYPAIR_NON_CONTRIBUTORY_KEY: "NonContributoryKey",

@@ -6,6 +6,7 @@ import { ShieldedPublicKey } from "../../keypair/public-key.js";
 import { X25519PublicKey } from "../../keypair/x25519.js";
 import type { ViewingKeyLike } from "../../keypair/shielded.js";
 import type { ViewingKey } from "../../keypair/viewing-key.js";
+import { EncryptionMode } from "../../keypair/encryption-mode.js";
 
 import { Data, type DataRecord } from "../data.js";
 import { TransactionError } from "../error.js";
@@ -54,9 +55,26 @@ export const EncryptedScheme = Object.freeze({
   merge: 6,
   plaintextTransfer: 7,
   ringDeposit: 8,
+  poseidonKdf: 9,
 } as const);
 export type EncryptedScheme = (typeof EncryptedScheme)[keyof typeof EncryptedScheme];
 export type OutputDataEncoding = "plaintext" | "encrypted" | "verifiable";
+
+/** @internal The encryption modes accepted by ordinary confidential slot readers. */
+export function confidentialEncryptionMode(
+  frame: Readonly<{ encoding: OutputDataEncoding; scheme: EncryptedScheme }>,
+): EncryptionMode | undefined {
+  if (frame.encoding !== "encrypted") return undefined;
+  switch (frame.scheme) {
+    case EncryptedScheme.confidential:
+    case EncryptedScheme.ringConfidential:
+      return EncryptionMode.Hkdf;
+    case EncryptedScheme.poseidonKdf:
+      return EncryptionMode.PoseidonKdf;
+    default:
+      return undefined;
+  }
+}
 
 export function encryptedSchemeFromByte(byte: number): EncryptedScheme {
   if (!Number.isInteger(byte) || byte < 0 || byte > 0xff) {
@@ -72,6 +90,7 @@ export function encryptedSchemeFromByte(byte: number): EncryptedScheme {
     case EncryptedScheme.merge:
     case EncryptedScheme.plaintextTransfer:
     case EncryptedScheme.ringDeposit:
+    case EncryptedScheme.poseidonKdf:
       return byte;
     default:
       throw new TransactionError("TRANSACTION_BAD_DISCRIMINATOR", { byte });
@@ -855,12 +874,36 @@ export function encryptConfidential(
   salt: Bytes16,
   slotIndex: number,
 ): Uint8Array {
-  return concatBytes(
-    recipient.toBytes(),
-    inTransactionCategory(() =>
-      tx.encryptSlot(recipient, encodeConfidential(value), salt, slotIndex),
-    ),
-  );
+  const plaintext = encodeConfidential(value);
+  try {
+    return concatBytes(
+      recipient.toBytes(),
+      inTransactionCategory(() => tx.encryptSlot(recipient, plaintext, salt, slotIndex)),
+    );
+  } finally {
+    plaintext.fill(0);
+  }
+}
+
+/** Confidential plaintext encrypted with Rust's Poseidon-KDF output mode. */
+export function encryptPoseidonKdf(
+  tx: ViewingKey,
+  recipient: X25519PublicKey,
+  value: ConfidentialOutputPlaintext,
+  salt: Bytes16,
+  slotIndex: number,
+): Uint8Array {
+  const plaintext = encodeConfidential(value);
+  try {
+    return concatBytes(
+      recipient.toBytes(),
+      inTransactionCategory(() =>
+        tx.encryptSlotWithMode(recipient, plaintext, salt, slotIndex, EncryptionMode.PoseidonKdf),
+      ),
+    );
+  } finally {
+    plaintext.fill(0);
+  }
 }
 
 export function encryptSplit(
@@ -909,6 +952,7 @@ function inTransactionCategory<T>(run: () => T): T {
     throw new TransactionError(
       "TRANSACTION_KEYPAIR",
       typeof code === "string" ? { keypair: code } : {},
+      error,
     );
   }
 }
@@ -923,6 +967,54 @@ export function decryptConfidentialAsSender(
   return decodeConfidential(
     inTransactionCategory(() => tx.decryptSlotEphemeral(key, rest, salt, slotIndex)),
   );
+}
+
+/** Open a Poseidon-KDF output only with the recipient key its frame names. */
+export function decryptPoseidonKdf(
+  body: Uint8Array,
+  cx: DecodeContext,
+): ConfidentialOutputPlaintext {
+  const txViewingPublicKey = cx.txViewingPublicKey;
+  const salt = cx.salt;
+  if (txViewingPublicKey === undefined || salt === undefined) {
+    throw new TransactionError("TRANSACTION_MISSING_ENCRYPTION_CONTEXT");
+  }
+  const { key, rest } = inTransactionCategory(() => splitEmbeddedKey(body));
+  const recipientPublicKey = inTransactionCategory(() => cx.viewingKey.publicKey());
+  if (!equalBytes(key.toBytes(), recipientPublicKey.toBytes())) {
+    throw new TransactionError("TRANSACTION_RECIPIENT_VIEWING_KEY_MISMATCH");
+  }
+  const plaintext = inTransactionCategory(() =>
+    cx.viewingKey.decryptUtxoWithMode(
+      rest,
+      txViewingPublicKey,
+      salt,
+      cx.slotIndex,
+      EncryptionMode.PoseidonKdf,
+    ),
+  );
+  try {
+    return decodeConfidential(plaintext);
+  } finally {
+    plaintext.fill(0);
+  }
+}
+
+export function decryptPoseidonKdfAsSender(
+  tx: ViewingKey,
+  body: Uint8Array,
+  salt: Bytes16,
+  slotIndex: number,
+): ConfidentialOutputPlaintext {
+  const { key, rest } = inTransactionCategory(() => splitEmbeddedKey(body));
+  const plaintext = inTransactionCategory(() =>
+    tx.decryptSlotEphemeralWithMode(key, rest, salt, slotIndex, EncryptionMode.PoseidonKdf),
+  );
+  try {
+    return decodeConfidential(plaintext);
+  } finally {
+    plaintext.fill(0);
+  }
 }
 
 function requireOwner(utxo: Utxo, owner: ShieldedPublicKey): void {

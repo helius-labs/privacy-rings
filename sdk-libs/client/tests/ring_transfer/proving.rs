@@ -269,6 +269,7 @@ fn build_real_inputs(
 /// tag, and the shared ring program.
 fn real_output(recipient: &ShieldedKeypair, amount: u64) -> SppProofOutputUtxo {
     SppProofOutputUtxo {
+        encryption_mode: Default::default(),
         owner_address: Some(recipient.shielded_address().expect("shielded address")),
         asset: Mint::SOL,
         amount,

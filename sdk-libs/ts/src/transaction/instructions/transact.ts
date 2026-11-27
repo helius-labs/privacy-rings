@@ -32,6 +32,7 @@ import { randomBlinding, randomSalt, randomBytes } from "../../keypair/bytes.js"
 import { X25519PublicKey } from "../../keypair/x25519.js";
 import { ShieldedKeypair, type ShieldedAddress } from "../../keypair/shielded.js";
 import { ViewingKey } from "../../keypair/viewing-key.js";
+import { EncryptionMode } from "../../keypair/encryption-mode.js";
 
 import { Data } from "../data.js";
 import { TransactionError } from "../error.js";
@@ -46,12 +47,18 @@ import {
   nonZeroHashChain,
   poseidon,
 } from "../internal.js";
-import { EncryptedScheme, encodeOutputData, encryptConfidential } from "../serialization/codecs.js";
+import {
+  EncryptedScheme,
+  encodeOutputData,
+  encryptConfidential,
+  encryptPoseidonKdf,
+} from "../serialization/codecs.js";
 import {
   ProofInputUtxo,
   Utxo,
   checkedTreeId,
   createProofOutput,
+  checkedOutputEncryptionMode,
   outputBlindingSeed,
   privateTxBlinding,
   transactOutputBlinding,
@@ -992,6 +999,7 @@ interface Recipient {
   readonly address: ShieldedAddress;
   readonly asset: Address;
   readonly amount: bigint;
+  readonly encryptionMode: EncryptionMode;
   /** Resolved at `prepare`, mirrors Rust `RecipientRing`, `default` is an exit when the transfer runs in a ring. */
   readonly ring: RecipientRing;
 }
@@ -1011,6 +1019,8 @@ export class ConfidentialTransfer {
   #ringProgramId?: Address;
   #compactPadding = false;
   #confidentialEddsaShape = false;
+  #changeEncryptionMode: EncryptionMode = EncryptionMode.Hkdf;
+  #prepared = false;
 
   /**
    * Like the constructor, but pads unused slots with compact padding instead of
@@ -1056,6 +1066,13 @@ export class ConfidentialTransfer {
     return this;
   }
 
+  /** Selects generated change only; fixed after the first successful `prepare`. */
+  withChangeEncryptionMode(mode: EncryptionMode): this {
+    if (this.#prepared) throw new TransactionError("TRANSACTION_OUTPUT_UTXOS_ALREADY_PADDED");
+    this.#changeEncryptionMode = checkedOutputEncryptionMode(mode);
+    return this;
+  }
+
   /** Selects the cheapest shape with keys for an in-circuit owner signature. */
   withConfidentialEddsaShape(): this {
     this.#confidentialEddsaShape = true;
@@ -1075,12 +1092,33 @@ export class ConfidentialTransfer {
 
   /** The UTXO joins the ring of the transfer, the default ring without one. */
   send(recipient: ShieldedAddress, asset: Address, amount: bigint): void {
-    this.#push({ address: recipient, asset, amount, ring: "transfer" });
+    this.sendWithMode(recipient, asset, amount, EncryptionMode.Hkdf);
+  }
+
+  /** Selects the KDF for this recipient only, using the transfer's ring. */
+  sendWithMode(
+    recipient: ShieldedAddress,
+    asset: Address,
+    amount: bigint,
+    mode: EncryptionMode,
+  ): void {
+    this.#push({ address: recipient, asset, amount, encryptionMode: mode, ring: "transfer" });
+  }
+
+  /** SOL counterpart of `sendWithMode`; later recipients keep their own defaults. */
+  sendSolWithMode(recipient: ShieldedAddress, amount: bigint, mode: EncryptionMode): void {
+    this.sendWithMode(recipient, ZERO_ADDRESS, amount, mode);
   }
 
   /** The UTXO leaves the transfer ring for the default ring. Mirrors Rust `send_default_ring`. */
   sendDefaultRing(recipient: ShieldedAddress, asset: Address, amount: bigint): void {
-    this.#push({ address: recipient, asset, amount, ring: "default" });
+    this.#push({
+      address: recipient,
+      asset,
+      amount,
+      encryptionMode: EncryptionMode.Hkdf,
+      ring: "default",
+    });
   }
 
   sendToRing(
@@ -1089,14 +1127,21 @@ export class ConfidentialTransfer {
     amount: bigint,
     ringProgramId: Address,
   ): void {
-    this.#push({ address: recipient, asset, amount, ring: { programId: ringProgramId } });
+    this.#push({
+      address: recipient,
+      asset,
+      amount,
+      encryptionMode: EncryptionMode.Hkdf,
+      ring: { programId: ringProgramId },
+    });
   }
 
   // Rust `send` performs no amount check; `checkU64` stands in for its `u64`
   // parameter and nothing more. A zero-amount recipient is a slot Rust builds.
   #push(recipient: Recipient): void {
     checkU64(recipient.amount, "recipient amount");
-    this.#recipients.push(recipient);
+    const encryptionMode = checkedOutputEncryptionMode(recipient.encryptionMode);
+    this.#recipients.push({ ...recipient, encryptionMode });
   }
 
   withdraw(asset: Address, amount: bigint, target: WithdrawalTarget): void {
@@ -1170,11 +1215,18 @@ export class ConfidentialTransfer {
         ownerAddress: this.#owner,
         asset: splChangeAsset,
         amount: splChange,
+        encryptionMode: this.#changeEncryptionMode,
         ...ring,
       });
     }
     if (hasSolChange) {
-      layouts.push({ ownerAddress: this.#owner, asset: ZERO_ADDRESS, amount: solChange, ...ring });
+      layouts.push({
+        ownerAddress: this.#owner,
+        asset: ZERO_ADDRESS,
+        amount: solChange,
+        encryptionMode: this.#changeEncryptionMode,
+        ...ring,
+      });
     }
     const senderOutputCount = layouts.length;
     layouts.push(
@@ -1182,6 +1234,7 @@ export class ConfidentialTransfer {
         ownerAddress: recipient.address,
         asset: recipient.asset,
         amount: recipient.amount,
+        encryptionMode: recipient.encryptionMode,
         ...(recipient.ring === "transfer"
           ? ring
           : recipient.ring === "default"
@@ -1232,7 +1285,7 @@ export class ConfidentialTransfer {
                 splInterfaceBump: target.splInterfaceBump,
               },
             ];
-    return preparedTransfer({
+    const prepared = preparedTransfer({
       owner: this.#owner,
       ownerMode: "signed",
       inputs: Object.freeze(inputs),
@@ -1248,6 +1301,8 @@ export class ConfidentialTransfer {
       ...ring,
       ...(this.#compactPadding ? { compactPadding: true } : {}),
     });
+    this.#prepared = true;
+    return prepared;
   }
 
   /**
@@ -1669,6 +1724,7 @@ function retagDummyOutput(output: ProofOutputUtxo, ownerTag: Bytes32): ProofOutp
 
 function outputInit(output: ProofOutputUtxo): ProofOutputInit {
   return {
+    encryptionMode: checkedOutputEncryptionMode(output.encryptionMode),
     ...(output.ownerAddress === undefined ? {} : { ownerAddress: output.ownerAddress }),
     asset: output.asset,
     ...(output.mint === undefined ? {} : { mint: output.mint }),
@@ -1717,13 +1773,18 @@ export function encodeConfidentialSlots(
         assetId: String(mint.assetId),
       });
     }
+    const mode = checkedOutputEncryptionMode(output.encryptionMode);
+    const scheme =
+      mode === EncryptionMode.PoseidonKdf
+        ? EncryptedScheme.poseidonKdf
+        : output.ringProgramId === undefined
+          ? EncryptedScheme.confidential
+          : EncryptedScheme.ringConfidential;
     return {
       viewTag: address.signingPublicKey.confidentialViewTag(),
       data: encodeOutputData(
-        output.ringProgramId === undefined
-          ? EncryptedScheme.confidential
-          : EncryptedScheme.ringConfidential,
-        encryptConfidential(
+        scheme,
+        (mode === EncryptionMode.PoseidonKdf ? encryptPoseidonKdf : encryptConfidential)(
           tx,
           address.viewingPublicKey,
           {
@@ -1736,7 +1797,6 @@ export function encodeConfidentialSlots(
           salt,
           slotOrdinal(slotIndex),
         ),
-        "encrypted",
       ),
     };
   });

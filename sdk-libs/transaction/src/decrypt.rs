@@ -361,6 +361,7 @@ fn decode_slot<K: ShieldedKeys + ?Sized>(
         first_nullifier: tx.nullifiers.first().copied(),
     };
 
+    let verifiably_encrypted = matches!(&output_data, OutputDataEncoding::VerifiablyEncrypted(_));
     match output_data {
         OutputDataEncoding::Plaintext(blob) => {
             let Some((&scheme_byte, body)) = blob.split_first() else {
@@ -406,7 +407,7 @@ fn decode_slot<K: ShieldedKeys + ?Sized>(
                 _ => Ok(None),
             }
         }
-        OutputDataEncoding::Encrypted(blob) => {
+        OutputDataEncoding::Encrypted(blob) | OutputDataEncoding::VerifiablyEncrypted(blob) => {
             let Some((&scheme_byte, body)) = blob.split_first() else {
                 return Ok(None);
             };
@@ -416,10 +417,23 @@ fn decode_slot<K: ShieldedKeys + ?Sized>(
             // A ring merge publishes its ciphertext unverified: the ring merge
             // proof does not bind it, so only the commitment check accepts it.
             if scheme == EncryptedScheme::Merge {
-                return decode_merge(shielded_keys, address, tx, slot, &blob, owner_cx, true);
+                return decode_merge(
+                    shielded_keys,
+                    address,
+                    tx,
+                    slot,
+                    &blob,
+                    owner_cx,
+                    !verifiably_encrypted,
+                );
+            }
+            if verifiably_encrypted {
+                return Ok(None);
             }
             let (ciphertext, viewing_pubkeys) = match scheme {
-                EncryptedScheme::Confidential | EncryptedScheme::RingConfidential => {
+                EncryptedScheme::Confidential
+                | EncryptedScheme::RingConfidential
+                | EncryptedScheme::PoseidonKdf => {
                     let Ok(viewing_pubkey) = Confidential::embedded_viewing_pk(body) else {
                         return Ok(None);
                     };
@@ -447,7 +461,11 @@ fn decode_slot<K: ShieldedKeys + ?Sized>(
                     tx_viewing_pubkey,
                     salt,
                     slot_index,
-                    label: DecryptLabel::Utxo,
+                    label: if scheme == EncryptedScheme::PoseidonKdf {
+                        DecryptLabel::PoseidonKdfUtxo
+                    } else {
+                        DecryptLabel::Utxo
+                    },
                 })
                 .collect();
             let Some(plaintexts) = trial_decrypt(shielded_keys, &requests)? else {
@@ -455,7 +473,9 @@ fn decode_slot<K: ShieldedKeys + ?Sized>(
             };
             for bytes in plaintexts {
                 let utxos = match scheme {
-                    EncryptedScheme::Confidential | EncryptedScheme::RingConfidential => {
+                    EncryptedScheme::Confidential
+                    | EncryptedScheme::RingConfidential
+                    | EncryptedScheme::PoseidonKdf => {
                         let Ok(plaintext) = Confidential::deserialize(&bytes) else {
                             continue;
                         };
@@ -473,9 +493,6 @@ fn decode_slot<K: ShieldedKeys + ?Sized>(
                 }));
             }
             Ok(None)
-        }
-        OutputDataEncoding::VerifiablyEncrypted(blob) => {
-            decode_merge(shielded_keys, address, tx, slot, &blob, owner_cx, false)
         }
     }
 }

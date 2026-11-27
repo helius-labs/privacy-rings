@@ -3,7 +3,7 @@ use spr_interface::instruction::instruction_data::transact::OwnerTag;
 use spr_keypair::{shielded::ShieldedAddress, PublicKey};
 
 use super::{ConfidentialTransaction, Recipient, SppProofInputUtxo};
-use crate::{error::TransactionError, Mint, WalletUtxo};
+use crate::{error::TransactionError, EncryptionMode, Mint, WalletUtxo};
 
 impl ConfidentialTransaction {
     /// Create a transaction in a custom ring. Normal transfers, change and
@@ -60,12 +60,15 @@ impl ConfidentialTransaction {
         amount: u64,
         ring_program_id: Option<Address>,
     ) -> Result<&mut Self, TransactionError> {
-        self.internal_add_output_utxo(Recipient {
-            address: *recipient,
-            asset,
-            amount,
-            ring_program_id,
-        })
+        self.internal_add_output_utxo(
+            Recipient {
+                address: *recipient,
+                asset,
+                amount,
+                ring_program_id,
+            },
+            EncryptionMode::Hkdf,
+        )
     }
 }
 

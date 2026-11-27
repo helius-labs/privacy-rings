@@ -1,8 +1,39 @@
 use solana_address::Address;
 use solana_signature::Signature;
 use spr_transaction::{
-    instructions::transact::SettlementTransfer, Data, DataRecord, Mint, Utxo, WalletUtxo,
+    instructions::transact::SettlementTransfer, Data, DataRecord, EncryptionMode, Mint,
+    SppProofOutputUtxo, Utxo, WalletUtxo,
 };
+
+#[test]
+fn output_encryption_serialization_omits_hkdf_and_preserves_poseidon_kdf() {
+    let hkdf = SppProofOutputUtxo::default();
+    let poseidon_kdf = hkdf
+        .clone()
+        .with_encryption_mode(EncryptionMode::PoseidonKdf);
+    let reset = poseidon_kdf
+        .clone()
+        .with_encryption_mode(EncryptionMode::Hkdf);
+    let hkdf_json = serde_json::to_value(&hkdf).unwrap();
+    let poseidon_kdf_json = serde_json::to_value(&poseidon_kdf).unwrap();
+    let reset_json = serde_json::to_value(&reset).unwrap();
+    assert_eq!(
+        (
+            serde_json::to_value(EncryptionMode::Hkdf).unwrap(),
+            hkdf.encryption_mode,
+            hkdf_json.get("encryptionMode"),
+            poseidon_kdf_json.get("encryptionMode"),
+            reset_json.get("encryptionMode"),
+        ),
+        (
+            serde_json::json!("hkdf"),
+            EncryptionMode::Hkdf,
+            None,
+            Some(&serde_json::json!("poseidonKdf")),
+            None
+        ),
+    );
+}
 
 fn without_indexer_metadata(utxo: &WalletUtxo) -> serde_json::Value {
     let mut json = serde_json::to_value(utxo).unwrap();

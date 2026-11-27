@@ -12,6 +12,7 @@ import { isCanonicalField } from "../interface/canonical-field.js";
 import { CACHE_CAPACITY } from "../interface/state.js";
 import { DEFAULT_TREE_ID, treeIdField } from "../interface/tree-slot.js";
 import { randomBlinding } from "../keypair/bytes.js";
+import { EncryptionMode, checkedEncryptionMode } from "../keypair/encryption-mode.js";
 import { zeroKeyNullifier, type NullifierKey } from "../keypair/nullifier-key.js";
 import { ShieldedPublicKey } from "../keypair/public-key.js";
 import type { ShieldedAddress, ShieldedKeypair } from "../keypair/shielded.js";
@@ -682,6 +683,7 @@ function noncanonicalDummyField(input: ProofInputUtxo): string | undefined {
 }
 
 export interface ProofOutputUtxo {
+  readonly encryptionMode: EncryptionMode;
   readonly ownerAddress?: ShieldedAddress;
   readonly asset: Address;
   /** Registry-validated address/id pair for encryption without a registry lookup. */
@@ -717,9 +719,11 @@ export interface ProofOutputUtxo {
   /** Binds the UTXO to a ring, only that ring's transact can spend it. */
   withRingProgramId(ringProgramId: Address): ProofOutputUtxo;
   withCacheSlot(slot: number): ProofOutputUtxo;
+  withEncryptionMode(mode: EncryptionMode): ProofOutputUtxo;
 }
 
 export interface ProofOutputInit {
+  readonly encryptionMode?: EncryptionMode;
   readonly ownerAddress?: ShieldedAddress;
   readonly asset: Address;
   readonly mint?: Mint;
@@ -749,7 +753,19 @@ function withDataRecord(data: Data, record: DataRecord): Data {
   );
 }
 
+/** @internal Validation shared by output construction and structural encoder requests. */
+export function checkedOutputEncryptionMode(mode: unknown): EncryptionMode {
+  try {
+    return checkedEncryptionMode(mode);
+  } catch (cause) {
+    throw new TransactionError("TRANSACTION_KEYPAIR", undefined, cause);
+  }
+}
+
 export function createProofOutput(input: ProofOutputInit): ProofOutputUtxo {
+  const encryptionMode = checkedOutputEncryptionMode(
+    input.encryptionMode === undefined ? EncryptionMode.Hkdf : input.encryptionMode,
+  );
   if (input.mint !== undefined) Mint.checked(input.mint, input.asset);
   const blinding = checked<Bytes32>(input.blinding ?? randomBlinding(), 32, "output blinding");
   const amount = checkU64(input.amount, "output amount");
@@ -764,6 +780,7 @@ export function createProofOutput(input: ProofOutputInit): ProofOutputUtxo {
   const ringDataHash = normalizeRingDataHash(suppliedRingDataHash);
   const init: ProofOutputInit = {
     ...rest,
+    encryptionMode,
     amount,
     blinding,
     data,
@@ -773,6 +790,7 @@ export function createProofOutput(input: ProofOutputInit): ProofOutputUtxo {
     input.ownerAddress ? input.ownerAddress.ownerHash() : copy(ZERO_32);
   return Object.freeze({
     ...init,
+    encryptionMode,
     amount,
     blinding,
     data,
@@ -817,6 +835,9 @@ export function createProofOutput(input: ProofOutputInit): ProofOutputUtxo {
     },
     withCacheSlot(slot: number): ProofOutputUtxo {
       return createProofOutput({ ...init, cacheSlot: slot });
+    },
+    withEncryptionMode(mode: EncryptionMode): ProofOutputUtxo {
+      return createProofOutput({ ...init, encryptionMode: checkedOutputEncryptionMode(mode) });
     },
   });
 }

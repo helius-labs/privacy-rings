@@ -20,16 +20,17 @@ import { ShieldedPublicKey } from "../../keypair/public-key.js";
 import { X25519PublicKey } from "../../keypair/x25519.js";
 import { ShieldedAddress, type ShieldedKeypair } from "../../keypair/shielded.js";
 import { ViewingKey } from "../../keypair/viewing-key.js";
+import { EncryptionMode } from "../../keypair/encryption-mode.js";
 
 import { TransactionError } from "../error.js";
 
 /**
  * Which cipher label a ciphertext was sealed under. Every UTXO ciphertext a
  * wallet can open is the transfer cipher keyed by ECDH between the wallet's
- * viewing key and the transaction's viewing key; only the ring-deposit
- * envelope uses its own label.
+ * viewing key and the transaction's viewing key. Poseidon-KDF outputs and
+ * ring deposits have separate labels from the ordinary HKDF transfer cipher.
  */
-export type DecryptLabel = "transfer" | "ringDeposit";
+export type DecryptLabel = "transfer" | "poseidonKdfUtxo" | "ringDeposit";
 
 export interface DecryptRequest {
   readonly ciphertext: Uint8Array;
@@ -230,14 +231,20 @@ export class LocalShieldedKeys implements ShieldedKeys {
   decryptOne(request: DecryptRequest): Uint8Array {
     checkDecryptRequest(request);
     const viewing = this.#viewingKey(request.viewingPublicKey);
-    return request.label === "ringDeposit"
-      ? viewing.decryptRingDeposit(request.ciphertext, request.txViewingPublicKey, request.salt)
-      : viewing.decryptUtxo(
-          request.ciphertext,
-          request.txViewingPublicKey,
-          request.salt,
-          request.slotIndex,
-        );
+    if (request.label === "ringDeposit") {
+      return viewing.decryptRingDeposit(
+        request.ciphertext,
+        request.txViewingPublicKey,
+        request.salt,
+      );
+    }
+    return viewing.decryptUtxoWithMode(
+      request.ciphertext,
+      request.txViewingPublicKey,
+      request.salt,
+      request.slotIndex,
+      request.label === "poseidonKdfUtxo" ? EncryptionMode.PoseidonKdf : EncryptionMode.Hkdf,
+    );
   }
 
   deriveOne(request: DeriveRequest): Bytes32 {
@@ -344,6 +351,16 @@ export function checkViewingPublicKeys(
 }
 
 function checkDecryptRequest(request: DecryptRequest): void {
+  if (!(request.ciphertext instanceof Uint8Array)) {
+    throw new TransactionError("TRANSACTION_DESERIALIZE", { field: "ciphertext" });
+  }
+  if (
+    request.label !== "transfer" &&
+    request.label !== "poseidonKdfUtxo" &&
+    request.label !== "ringDeposit"
+  ) {
+    throw new TransactionError("TRANSACTION_DESERIALIZE", { field: "label" });
+  }
   if (!(request.txViewingPublicKey instanceof X25519PublicKey)) {
     throw new TransactionError("TRANSACTION_DESERIALIZE", { field: "txViewingPublicKey" });
   }

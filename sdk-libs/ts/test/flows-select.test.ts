@@ -1,3 +1,4 @@
+import { treeAddress } from "../src/interface/pda/index.js";
 import { address, type Address } from "@solana/kit";
 import { describe, expect, it } from "vitest";
 
@@ -14,8 +15,8 @@ import {
 } from "../src/flows/select.js";
 import { MAX_INPUT_TREES } from "../src/interface/tree-slot.js";
 
-const TREE = address("3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3");
-const OTHER_TREE = address("8qbHbw2BbbTHBW1sbeqakYXV9q2RZ1R6MUi6nEZa6wJk");
+const TREE = treeAddress(0);
+const OTHER_TREE = treeAddress(1);
 const MINT = address("So11111111111111111111111111111111111111112");
 
 function filled(value: number): Bytes32 {
@@ -55,7 +56,12 @@ function walletWith(utxos: readonly (readonly [bigint, Address?])[]): Wallet {
         blinding: filled(index + 1),
         data: new Data(),
       }),
-      outputContext: { hash: filled(index + 1), tree: tree ?? TREE, leafIndex: BigInt(index) },
+      outputContext: {
+        hash: filled(index + 1),
+        tree: tree ?? TREE,
+        treeId: tree === OTHER_TREE ? 1 : 0,
+        leafIndex: BigInt(index),
+      },
       nullifier: filled(index + 100),
       spent: false,
     })),

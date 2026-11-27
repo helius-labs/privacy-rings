@@ -3,6 +3,8 @@
 // build: `npm run build && node scripts/regenerate-fixtures.mjs`.
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
+import { getAddressEncoder } from "@solana/kit";
+import { treeAddress } from "../dist/interface/pda/index.js";
 
 import {
   ShieldedKeypair,
@@ -240,15 +242,18 @@ const serialization = readJson("transaction/serialization-v1.json");
 
 const walletSync = readJson("transaction/wallet-sync-v1.json");
 {
+  const defaultTreeBytes = hex(getAddressEncoder().encode(treeAddress(0)));
   const viewing = ViewingKey.fromBytes(bytes(walletSync.inputs.viewingSecretBytes));
   const tag = hex(viewing.recipientBootstrapViewTag());
   for (const tx of walletSync.inputs.transactions) {
     for (const slot of tx.outputSlots) {
+      slot.treeBytes = defaultTreeBytes;
       if (tx.proofless === true) slot.viewTagBytes = tag;
     }
   }
   for (const tx of walletSync.inputs.history.transactions) {
     for (const slot of tx.outputSlots) {
+      slot.treeBytes = defaultTreeBytes;
       if (tx.proofless === true) slot.viewTagBytes = tag;
     }
   }

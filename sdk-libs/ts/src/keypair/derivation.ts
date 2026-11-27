@@ -52,6 +52,8 @@ export const TSPP_APPLICATION_DOMAIN = Uint8Array.from([
 export const HPKE_PREFIX = "TSPP/hpke/";
 
 export const ENC_INFO_TRANSFER = "TSPP/tx";
+export const ENC_INFO_POSEIDON_KDF = encoder.encode("TSPP/tx/v1");
+export const DOMAIN_POSEIDON_KDF_TRANSCRIPT = 0x5456_4531;
 
 export const ENC_INFO_RING_DEPOSIT = "TSPP/ring_deposit";
 

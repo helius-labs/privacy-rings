@@ -18,7 +18,8 @@ import {
   viewRoot,
   x25519Ecdh,
 } from "./derivation.js";
-import { applyTransferCipher } from "./encryption.js";
+import { applyTransferCipher, applyUtxoCipher } from "./encryption.js";
+import { EncryptionMode } from "./encryption-mode.js";
 import { KeypairError } from "./error.js";
 import { type ViewTag } from "./public-key.js";
 import type { ViewingKeyLike } from "./shielded.js";
@@ -195,8 +196,25 @@ export class ViewingKey implements ViewingKeyLike {
     salt: Salt,
     slotIndex: number,
   ): Uint8Array {
+    return this.encryptSlotWithMode(
+      recipientPublicKey,
+      plaintext,
+      salt,
+      slotIndex,
+      EncryptionMode.Hkdf,
+    );
+  }
+
+  encryptSlotWithMode(
+    recipientPublicKey: X25519PublicKey,
+    plaintext: Uint8Array,
+    salt: Salt,
+    slotIndex: number,
+    mode: EncryptionMode,
+  ): Uint8Array {
     this.#assertUsable();
-    return applyTransferCipher(
+    return applyUtxoCipher(
+      mode,
       this.#secret,
       recipientPublicKey,
       this.publicKey(),
@@ -213,8 +231,25 @@ export class ViewingKey implements ViewingKeyLike {
     salt: Salt,
     slotIndex: number,
   ): Uint8Array {
+    return this.decryptUtxoWithMode(
+      ciphertext,
+      txViewingPublicKey,
+      salt,
+      slotIndex,
+      EncryptionMode.Hkdf,
+    );
+  }
+
+  decryptUtxoWithMode(
+    ciphertext: Uint8Array,
+    txViewingPublicKey: X25519PublicKey,
+    salt: Salt,
+    slotIndex: number,
+    mode: EncryptionMode,
+  ): Uint8Array {
     this.#assertUsable();
-    return applyTransferCipher(
+    return applyUtxoCipher(
+      mode,
       this.#secret,
       txViewingPublicKey,
       txViewingPublicKey,
@@ -269,6 +304,16 @@ export class ViewingKey implements ViewingKeyLike {
     slotIndex: number,
   ): Uint8Array {
     return this.encryptSlot(recipientPublicKey, ciphertext, salt, slotIndex);
+  }
+
+  decryptSlotEphemeralWithMode(
+    recipientPublicKey: X25519PublicKey,
+    ciphertext: Uint8Array,
+    salt: Salt,
+    slotIndex: number,
+    mode: EncryptionMode,
+  ): Uint8Array {
+    return this.encryptSlotWithMode(recipientPublicKey, ciphertext, salt, slotIndex, mode);
   }
 
   destroy(): void {

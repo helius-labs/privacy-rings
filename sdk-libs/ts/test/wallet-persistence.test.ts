@@ -1,4 +1,5 @@
-import { address, type Signature } from "@solana/kit";
+import { treeAddress } from "../src/interface/pda/index.js";
+import { type Signature } from "@solana/kit";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -12,7 +13,7 @@ import {
   type Bytes32,
 } from "../src/index.js";
 
-const TREE = address("3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3");
+const TREE = treeAddress(0);
 const SIGNATURE = "1".repeat(64) as Signature;
 
 function bytes(value: number): Bytes32 {

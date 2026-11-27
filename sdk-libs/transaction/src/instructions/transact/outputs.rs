@@ -4,7 +4,8 @@ use spr_keypair::shielded::ShieldedAddress;
 
 use super::{inputs::pad_inputs, shape::is_transact_shape, ConfidentialTransaction};
 use crate::{
-    error::TransactionError, instructions::transact::shape::Shape, utxo::SppProofOutputUtxo, Mint,
+    error::TransactionError, instructions::transact::shape::Shape, utxo::SppProofOutputUtxo,
+    EncryptionMode, Mint,
 };
 
 pub struct Recipient {
@@ -122,10 +123,11 @@ impl ConfidentialTransaction {
             .map(|asset| Ok((asset, self.change(&asset)?)))
             .collect::<Result<Vec<_>, TransactionError>>()?;
 
-        // 3. Append nonzero change in asset first-use order, using the transaction's ring.
+        // 3. Append change in asset first-use order with the configured ring and KDF.
         let mut outputs = self.outputs.clone();
         for (asset, amount) in changes.into_iter().filter(|(_, amount)| *amount > 0) {
             outputs.push(SppProofOutputUtxo {
+                encryption_mode: self.change_encryption_mode,
                 owner_address: Some(*sender),
                 asset,
                 amount,
@@ -145,6 +147,7 @@ impl ConfidentialTransaction {
                 None if fixed_outputs => return Err(TransactionError::NoDummyOwnerTagParticipant),
                 None => {
                     outputs.push(SppProofOutputUtxo {
+                        encryption_mode: self.change_encryption_mode,
                         owner_address: Some(*sender),
                         asset: Mint::SOL,
                         ring_program_id: self.ring_program_id,
@@ -255,6 +258,7 @@ impl ConfidentialTransaction {
     pub(super) fn internal_add_output_utxo(
         &mut self,
         recipient: Recipient,
+        mode: EncryptionMode,
     ) -> Result<&mut Self, TransactionError> {
         if self.padded_inputs.is_some() {
             return Err(TransactionError::OutputUtxosAlreadyPadded);
@@ -263,6 +267,7 @@ impl ConfidentialTransaction {
             return Err(TransactionError::ZeroRecipientOwner);
         }
         self.outputs.push(SppProofOutputUtxo {
+            encryption_mode: mode,
             owner_address: Some(recipient.address),
             asset: recipient.asset,
             amount: recipient.amount,

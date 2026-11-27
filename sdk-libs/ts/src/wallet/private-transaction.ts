@@ -5,10 +5,8 @@ import {
 import { initializePoseidon } from "../hasher/index.js";
 import { equalBytes } from "../interface/bytes.js";
 import type { Address, Bytes32, Instruction, RequestContext } from "../interface/types.js";
-import { treeAddress } from "../interface/pda/index.js";
 import { selectConfidentialEddsaShape } from "../interface/shape.js";
 import { randomBlinding } from "../keypair/bytes.js";
-import { DEFAULT_TREE_ID } from "../interface/tree-slot.js";
 import type { ShieldedAddress } from "../keypair/shielded.js";
 import type { ViewingKey } from "../keypair/viewing-key.js";
 import type { Data } from "../transaction/data.js";
@@ -16,6 +14,7 @@ import { ConfidentialSplit } from "../transaction/instructions/builders.js";
 import { ConfidentialTransfer, SppProofInputs } from "../transaction/instructions/transact.js";
 import { TransactionError } from "../transaction/error.js";
 import { ProofInputUtxo, type Utxo } from "../transaction/utxo.js";
+import { outputContextTreeId } from "../transaction/output-context.js";
 import {
   approveUnattended,
   checkAuthorizedBinding,
@@ -31,7 +30,7 @@ import { encryptConfidentialTransfer, encryptSplit } from "../transaction/wallet
 import type { Wallet, WalletUtxo } from "../transaction/wallet/state.js";
 
 import { UnsignedPrivateTransaction } from "./actions.js";
-import { WalletError } from "./error.js";
+import { WalletError, wrapWalletError } from "./error.js";
 
 function intentMismatch(field: string): WalletError {
   return new WalletError("WALLET_INTENT_MISMATCH", { details: { field } });
@@ -132,16 +131,17 @@ export async function authorizePrivateTransaction(
 
 /** A stored UTXO already carries the nullifier its sync derived. */
 export function proofInputFromEntry(entry: WalletUtxo, address: ShieldedAddress): ProofInputUtxo {
-  // Wallet conversion currently opens commitments in the default tree only.
-  // A stored nullifier from another tree cannot be reused for that opening.
-  if (entry.outputContext.tree !== treeAddress(DEFAULT_TREE_ID)) {
-    throw new WalletError("WALLET_INPUT_UTXO_TREE_MISMATCH");
+  let treeId: number;
+  try {
+    treeId = outputContextTreeId(entry.outputContext);
+  } catch (cause) {
+    throw wrapWalletError("WALLET_INPUT_UTXO_TREE_MISMATCH", cause);
   }
   return new ProofInputUtxo({
     utxo: entry.utxo,
     nullifierPublicKey: address.nullifierPublicKey,
     nullifier: entry.nullifier,
-    treeId: DEFAULT_TREE_ID,
+    treeId,
     ...(entry.dataHash === undefined ? {} : { dataHash: entry.dataHash }),
     ...(entry.ringDataHash === undefined ? {} : { ringDataHash: entry.ringDataHash }),
   });
@@ -173,7 +173,9 @@ async function authorizeWithInputs(
       numOutputs: action.numOutputs,
       perOutputAmount: action.perOutputAmount,
       payer: transaction.payer(),
-    }).prepare();
+    })
+      .withOutputTreeId(input.treeId)
+      .prepare();
     const encrypted = await withTransactionKey(
       keys,
       prepared.firstNullifier,
@@ -205,7 +207,13 @@ async function authorizeWithInputs(
       payload: encrypted.payload,
     });
   } else {
-    const transfer = new ConfidentialTransfer(address, inputs, transaction.payer());
+    const firstInput = inputs[0];
+    if (firstInput === undefined) throw new WalletError("WALLET_NO_INPUTS");
+    const transfer = new ConfidentialTransfer(
+      address,
+      inputs,
+      transaction.payer(),
+    ).withOutputTreeId(firstInput.treeId);
     if (action.kind === "transfer") {
       for (const payment of action.payments) {
         transfer.send(payment.recipient, action.asset, payment.amount);
@@ -252,7 +260,10 @@ async function authorizeWithInputs(
       proofInputs.outputs.length,
     );
     const padded = [...proofInputs.inputUtxos];
-    while (padded.length < shape.inputs) padded.push(ProofInputUtxo.dummy(randomBlinding()));
+    const paddingTreeId = padded[0]?.treeId;
+    if (paddingTreeId === undefined) throw new WalletError("WALLET_NO_INPUTS");
+    while (padded.length < shape.inputs)
+      padded.push(ProofInputUtxo.dummy(randomBlinding(), paddingTreeId));
     proofInputs = new SppProofInputs({ ...proofInputs, inputUtxos: padded });
   }
   const withdrawal = transaction._withdrawal();

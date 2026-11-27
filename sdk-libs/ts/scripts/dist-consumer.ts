@@ -18,6 +18,20 @@ export function structuredProgramBuilder(
 }
 export { ed25519DerivationMessage, X25519PublicKey, X25519Keypair } from "@heliuslabs/spr/keypair";
 export { ShieldedPda } from "@heliuslabs/spr/program";
+export type CurrentSnapshotVersion =
+  import("@heliuslabs/spr/transaction").SerializedWalletState["version"];
+export const currentSnapshotVersion: CurrentSnapshotVersion = 6;
+export type RecipientModeHelper =
+  import("@heliuslabs/spr/transaction").ConfidentialTransfer["sendWithMode"];
+export type SolRecipientModeHelper =
+  import("@heliuslabs/spr/transaction").ConfidentialTransfer["sendSolWithMode"];
+export { EncryptionMode as KeypairEncryptionMode } from "@heliuslabs/spr/keypair";
+export {
+  EncryptionMode,
+  encryptPoseidonKdf,
+  decryptPoseidonKdf,
+  decryptPoseidonKdfAsSender,
+} from "@heliuslabs/spr/transaction";
 /** Named exports the changelog promises, resolved through the package exports map. */
 export {
   MAX_INPUT_TREES,

@@ -5,9 +5,9 @@ import { type ShieldedPublicKey } from "../../keypair/public-key.js";
 import { X25519PublicKey, isSmallOrder } from "../../keypair/x25519.js";
 import type { ShieldedAddress, ShieldedKeypair } from "../../keypair/shielded.js";
 import type { ViewingKey } from "../../keypair/viewing-key.js";
+import { EncryptionMode } from "../../keypair/encryption-mode.js";
 
 import { initializePoseidon } from "../../hasher/index.js";
-import { DEFAULT_TREE_ID } from "../../interface/tree-slot.js";
 import { TransactionError } from "../error.js";
 import { copy, decodeAddress } from "../internal.js";
 import { SENDER_SLOT_COUNT } from "../instructions/transact.js";
@@ -15,11 +15,13 @@ import type { IndexedShieldedTransaction, OutputContext } from "../instructions/
 import {
   EncryptedScheme,
   confidentialUtxo,
+  confidentialEncryptionMode,
   decodePlaintextTransfer,
   decodeProofless,
   decodeSplitBundle,
   decodeConfidential,
   decryptConfidentialAsSender,
+  decryptPoseidonKdfAsSender,
   prooflessUtxo,
   plaintextTransferUtxos,
   readOutputData,
@@ -30,12 +32,14 @@ import {
 } from "../serialization/codecs.js";
 import { decryptMergeOutput, readMergeOutputBody } from "../serialization/merge.js";
 import { Utxo } from "../utxo.js";
+import { outputContextTreeId } from "../output-context.js";
 import { KeyMemo } from "./key-memo.js";
 import {
   LocalShieldedKeys,
   checkKeysIdentity,
   checkViewingPublicKeys,
   type DecryptRequest,
+  type DecryptLabel,
   type ShieldedKeys,
 } from "./keys.js";
 import { SOL_MINT, type AssetRegistry } from "../asset.js";
@@ -55,15 +59,6 @@ import {
 } from "./state.js";
 
 const U64_MAX = 0xffff_ffff_ffff_ffffn;
-
-/**
- * The tree id synced UTXOs are hashed under. A UTXO that lives in another tree
- * fails the recompute-and-compare against the indexed leaf and is never
- * stored, so a wrong id cannot admit a foreign commitment.
- *
- * TODO(tree-id): resolve the tree id from the tree account.
- */
-const SYNC_TREE_ID = DEFAULT_TREE_ID;
 
 /** The nullifier every seed-disclosing bundle of `tx` derives its blindings from. */
 function firstNullifierOf(tx: IndexedShieldedTransaction): Bytes32 {
@@ -159,6 +154,7 @@ const WALLET_SCHEMES: ReadonlySet<number> = new Set([
   EncryptedScheme.proofless,
   EncryptedScheme.confidential,
   EncryptedScheme.ringConfidential,
+  EncryptedScheme.poseidonKdf,
   EncryptedScheme.split,
   EncryptedScheme.merge,
   EncryptedScheme.plaintextTransfer,
@@ -168,7 +164,19 @@ const WALLET_SCHEMES: ReadonlySet<number> = new Set([
 function carriesReservedScheme(tx: IndexedShieldedTransaction): boolean {
   return tx.outputSlots.some((slot) => {
     try {
-      return !WALLET_SCHEMES.has(readOutputFrame(slot.payload).schemeByte);
+      const frame = readOutputFrame(slot.payload);
+      if (!WALLET_SCHEMES.has(frame.schemeByte)) return true;
+      if (
+        frame.schemeByte === EncryptedScheme.confidential ||
+        frame.schemeByte === EncryptedScheme.ringConfidential ||
+        frame.schemeByte === EncryptedScheme.poseidonKdf
+      ) {
+        return (
+          confidentialEncryptionMode({ encoding: frame.encoding, scheme: frame.schemeByte }) ===
+          undefined
+        );
+      }
+      return false;
     } catch {
       return false;
     }
@@ -358,6 +366,7 @@ class SyncPass {
         outputContext: Object.freeze({
           hash: copy(outputContext.hash),
           tree: outputContext.tree,
+          treeId: outputContextTreeId(outputContext),
           leafIndex: outputContext.leafIndex,
         }),
         nullifier,
@@ -378,8 +387,16 @@ class SyncPass {
    * transaction.
    */
   #storeInTx(utxo: Utxo, tx: IndexedShieldedTransaction): void {
-    const hash = utxo.hash(this.#nullifierPublicKey, SYNC_TREE_ID);
-    const slot = tx.outputSlots.find((candidate) => equalBytes(candidate.outputContext.hash, hash));
+    const hashes = new Map<number, Bytes32>();
+    const slot = tx.outputSlots.find((candidate) => {
+      const treeId = outputContextTreeId(candidate.outputContext);
+      let hash = hashes.get(treeId);
+      if (hash === undefined) {
+        hash = utxo.hash(this.#nullifierPublicKey, treeId);
+        hashes.set(treeId, hash);
+      }
+      return equalBytes(candidate.outputContext.hash, hash);
+    });
     if (slot === undefined) {
       this.undecryptableCandidates++;
       return;
@@ -395,10 +412,11 @@ class SyncPass {
     ringDataHash: Bytes32 | undefined,
   ): boolean {
     let stored = false;
+    const treeId = outputContextTreeId(outputContext);
     for (const utxo of utxos) {
       if (
         !equalBytes(
-          utxo.hash(this.#nullifierPublicKey, SYNC_TREE_ID, dataHash, ringDataHash),
+          utxo.hash(this.#nullifierPublicKey, treeId, dataHash, ringDataHash),
           outputContext.hash,
         )
       ) {
@@ -620,14 +638,12 @@ class SyncPass {
     tx.outputSlots.forEach((slot, position) => {
       try {
         const frame = readOutputData(slot.payload);
-        if (
-          frame.encoding !== "encrypted" ||
-          (frame.scheme !== EncryptedScheme.confidential &&
-            frame.scheme !== EncryptedScheme.ringConfidential)
-        ) {
-          return;
-        }
-        const plaintext = decryptConfidentialAsSender(txKey, frame.body, salt, position);
+        const mode = confidentialEncryptionMode(frame);
+        if (mode === undefined) return;
+        const plaintext =
+          mode === EncryptionMode.PoseidonKdf
+            ? decryptPoseidonKdfAsSender(txKey, frame.body, salt, position)
+            : decryptConfidentialAsSender(txKey, frame.body, salt, position);
         const recipientKey = X25519PublicKey.fromBytes(frame.body.slice(0, 33) as Bytes33);
         if (position < SENDER_SLOT_COUNT) {
           const candidate = confidentialUtxo(plaintext, this.#owner, this.#assets);
@@ -638,7 +654,7 @@ class SyncPass {
                 change.length === 1 &&
                 change[0]?.asset !== SOL_MINT)) &&
             equalBytes(
-              candidate.hash(this.#nullifierPublicKey, SYNC_TREE_ID),
+              candidate.hash(this.#nullifierPublicKey, outputContextTreeId(slot.outputContext)),
               slot.outputContext.hash,
             )
           ) {
@@ -766,20 +782,26 @@ class SyncPass {
       return;
     }
 
-    if (
-      frame.encoding === "encrypted" &&
-      (frame.scheme === EncryptedScheme.confidential ||
-        frame.scheme === EncryptedScheme.ringConfidential)
-    ) {
+    const mode = confidentialEncryptionMode(frame);
+    if (mode !== undefined) {
       let utxo: Utxo;
       let ciphertext: Uint8Array;
       try {
-        ciphertext = splitEmbeddedKey(body).rest;
+        const embedded = splitEmbeddedKey(body);
+        if (!equalBytes(embedded.key.toBytes(), viewingPublicKey.toBytes())) return;
+        ciphertext = embedded.rest;
       } catch (error) {
         this.#recordUndecryptable(error, siteKey);
         return;
       }
-      const decrypted = this.#decryptSlot(viewingPublicKey, tx, ciphertext, site.slot, siteKey);
+      const decrypted = this.#decryptSlot(
+        viewingPublicKey,
+        tx,
+        ciphertext,
+        site.slot,
+        siteKey,
+        mode === EncryptionMode.PoseidonKdf ? "poseidonKdfUtxo" : "transfer",
+      );
       if (decrypted === undefined) return;
       try {
         utxo = confidentialUtxo(decodeConfidential(decrypted), this.#owner, this.#assets);
@@ -907,7 +929,12 @@ class SyncPass {
         blinding: outputBlinding,
         ...(tx.ringProgramId === undefined ? {} : { ringProgramId: tx.ringProgramId }),
       });
-      const hash = utxo.hash(this.#nullifierPublicKey, SYNC_TREE_ID, undefined, body.ringDataHash);
+      const hash = utxo.hash(
+        this.#nullifierPublicKey,
+        outputContextTreeId(slot.outputContext),
+        undefined,
+        body.ringDataHash,
+      );
       if (!equalBytes(hash, slot.outputContext.hash)) {
         this.undecryptableCandidates++;
         return;
@@ -945,6 +972,7 @@ class SyncPass {
     ciphertext: Uint8Array,
     slotIndex: number,
     siteKey: string,
+    label: DecryptLabel = "transfer",
   ): Uint8Array | undefined {
     let envelope: Readonly<{ txViewingPublicKey: X25519PublicKey; salt: Bytes16 }>;
     try {
@@ -959,7 +987,7 @@ class SyncPass {
       txViewingPublicKey: envelope.txViewingPublicKey,
       salt: envelope.salt,
       slotIndex,
-      label: "transfer",
+      label,
     });
   }
 
@@ -1007,6 +1035,11 @@ export async function decryptTransactions(
   }>,
 ): Promise<SyncReport> {
   await initializePoseidon();
+  // Indexer metadata is authoritative for the slot location; reject missing or
+  // inconsistent ids before decode catches can treat them as foreign ciphertexts.
+  for (const transaction of input.transactions) {
+    for (const slot of transaction.outputSlots) outputContextTreeId(slot.outputContext);
+  }
   checkKeysIdentity(input.keys, input.wallet.identity);
   const identity = input.keys.address();
   const viewingPublicKeys = checkViewingPublicKeys(input.keys, identity);

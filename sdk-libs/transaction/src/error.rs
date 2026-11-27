@@ -124,6 +124,9 @@ pub enum TransactionError {
     #[error("missing encryption context for scheme")]
     MissingEncryptionContext,
 
+    #[error("output recipient viewing key does not match the decryption key")]
+    RecipientViewingKeyMismatch,
+
     #[error("merge output ciphertext element {index} is not canonical")]
     NonCanonicalMergeCiphertext { index: usize },
 

@@ -9,6 +9,7 @@ use crate::{
 
 pub mod confidential;
 pub mod plaintext;
+pub mod poseidon_kdf;
 pub mod proofless;
 pub mod scheme;
 
