@@ -2,7 +2,6 @@ package indexed
 
 import (
 	"encoding/json"
-	"fmt"
 	"math/big"
 	"strings"
 
@@ -43,7 +42,7 @@ func (h Hash) MarshalJSON() ([]byte, error) {
 func (h *Hash) UnmarshalJSON(data []byte) error {
 	var value string
 	if err := json.Unmarshal(data, &value); err != nil {
-		return fmt.Errorf("invalid encoded hash")
+		return failure("indexer_invalid_encoded_hash", "invalid encoded hash")
 	}
 	decoded, err := decodeHash(value)
 	if err != nil {
@@ -76,22 +75,22 @@ func (h Hash) String() string {
 func decodeHash(value string) (Hash, error) {
 	var result Hash
 	if len(value) < 32 || len(value) > 44 {
-		return result, fmt.Errorf("invalid hash length")
+		return result, failure("indexer_invalid_hash_length", "invalid hash length")
 	}
 	number, radix := new(big.Int), big.NewInt(58)
 	for _, character := range value {
 		digit := strings.IndexRune(alphabet, character)
 		if digit < 0 {
-			return result, fmt.Errorf("invalid hash encoding")
+			return result, failure("indexer_invalid_hash_encoding", "invalid hash encoding")
 		}
 		number.Mul(number, radix).Add(number, big.NewInt(int64(digit)))
 	}
 	if number.BitLen() > 256 {
-		return result, fmt.Errorf("hash exceeds width")
+		return result, failure("indexer_hash_exceeds_width", "hash exceeds width")
 	}
 	number.FillBytes(result[:])
 	if result.String() != value {
-		return Hash{}, fmt.Errorf("noncanonical hash encoding")
+		return Hash{}, failure("indexer_noncanonical_hash_encoding", "noncanonical hash encoding")
 	}
 	return result, nil
 }
@@ -99,7 +98,7 @@ func decodeHash(value string) (Hash, error) {
 func HashField(value *big.Int) (Hash, error) {
 	var result Hash
 	if value == nil || value.Sign() < 0 || value.Cmp(fr.Modulus()) >= 0 {
-		return result, fmt.Errorf("noncanonical field")
+		return result, failure("indexer_noncanonical_field", "noncanonical field")
 	}
 	value.FillBytes(result[:])
 	return result, nil

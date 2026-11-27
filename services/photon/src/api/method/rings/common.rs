@@ -91,6 +91,10 @@ pub(super) async fn get_tree_info(
         })
 }
 
+#[cfg(test)]
+#[path = "common_error_test.rs"]
+mod error_tests;
+
 pub(super) async fn rings_output_leaf_indices(
     tx: &DatabaseTransaction,
     tree_account: SerializablePubkey,
@@ -123,11 +127,9 @@ pub(super) async fn rings_output_leaf_indices(
         .iter()
         .map(|leaf| {
             let leaf_bytes = leaf.to_vec();
-            let leaf_index = found_indices_by_leaf.get(&leaf_bytes).ok_or_else(|| {
-                PhotonApiError::RecordNotFound(
-                    "Some Rings output leaves were not found for the requested tree".to_string(),
-                )
-            })?;
+            let leaf_index = found_indices_by_leaf
+                .get(&leaf_bytes)
+                .ok_or(PhotonApiError::OutputLeafNotFound)?;
             u64_from_i64(*leaf_index, "leaf index")
         })
         .collect()

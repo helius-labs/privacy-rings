@@ -4,14 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"github.com/helius-labs/zolana/prover/server/prover/timing"
 	"io"
 	"mime"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/helius-labs/zolana/prover/server/prover/timing"
 )
 
 type Config struct {
@@ -37,13 +39,13 @@ const DefaultMaxBatchLeaves = 1_000_000
 func NewResolver(config Config) (*Resolver, error) {
 	endpoint, err := url.Parse(config.URL)
 	if err != nil {
-		return nil, fmt.Errorf("unparseable indexer URL")
+		return nil, failure("indexer_url_unparseable", "unparseable indexer URL")
 	}
 	if endpoint.Host == "" || endpoint.User != nil || (endpoint.Scheme != "https" && endpoint.Scheme != "http") {
-		return nil, fmt.Errorf("invalid indexer URL %s://%s", endpoint.Scheme, endpoint.Host)
+		return nil, failure("indexer_invalid_url", "invalid indexer URL")
 	}
 	if config.Concurrency < 1 {
-		return nil, fmt.Errorf("invalid indexer concurrency %d", config.Concurrency)
+		return nil, failure("indexer_invalid_concurrency", "invalid indexer concurrency")
 	}
 	if config.MaxBatchLeaves == 0 {
 		config.MaxBatchLeaves = DefaultMaxBatchLeaves
@@ -66,13 +68,28 @@ func NewResolver(config Config) (*Resolver, error) {
 	}, nil
 }
 
-// RPCError drops the indexer error message.
+// RPCError keeps only structured diagnostics; the upstream message may contain
+// request values and must not reach logs or the decrypted client response.
 type RPCError struct {
-	Code int `json:"code"`
+	Code        int    `json:"code"`
+	Method      string `json:"-"`
+	Diagnostics struct {
+		Code string `json:"code"`
+	} `json:"data"`
 }
 
 func (e *RPCError) Error() string {
 	return fmt.Sprintf("indexer error %d", e.Code)
+}
+
+// HTTPError distinguishes an upstream HTTP rejection from a JSON-RPC error.
+type HTTPError struct {
+	Status int
+	Method string
+}
+
+func (failure *HTTPError) Error() string {
+	return fmt.Sprintf("indexer response status %d", failure.Status)
 }
 
 // Rejection code and detail reach the client.
@@ -112,11 +129,11 @@ func (r *Resolver) RPC(ctx context.Context, method string, params any) (json.Raw
 		Params  any    `json:"params"`
 	}{JSONRPC: "2.0", ID: method, Method: method, Params: params})
 	if err != nil {
-		return nil, fmt.Errorf("cannot encode indexer request")
+		return nil, failure("indexer_request_encode_failed", "cannot encode indexer request")
 	}
 	endpoint, err := url.Parse(r.url)
 	if err != nil {
-		return nil, fmt.Errorf("invalid indexer URL")
+		return nil, failure("indexer_invalid_url", "invalid indexer URL")
 	}
 	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/" + method
 	if r.apiKey != "" {
@@ -126,25 +143,34 @@ func (r *Resolver) RPC(ctx context.Context, method string, params any) (json.Raw
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("cannot create indexer request")
+		return nil, failure("indexer_request_create_failed", "cannot create indexer request")
 	}
 	request.Header.Set("Content-Type", "application/json")
 	result, err := r.client.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("indexer request failed")
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, failure("indexer_request_timeout", "indexer request timed out")
+		}
+		if errors.Is(err, context.Canceled) {
+			return nil, failure("indexer_request_canceled", "indexer request canceled")
+		}
+		return nil, failure("indexer_request_failed", "indexer request failed")
 	}
 	defer result.Body.Close()
 	if result.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("indexer response status %d", result.StatusCode)
+		return nil, &HTTPError{Status: result.StatusCode, Method: method}
 	}
 	mediaType, _, err := mime.ParseMediaType(result.Header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" {
-		return nil, fmt.Errorf("invalid indexer content type")
+		return nil, failure("indexer_invalid_content_type", "invalid indexer content type")
 	}
 	const maxResponse = 2 << 20
 	data, err := io.ReadAll(io.LimitReader(result.Body, maxResponse+1))
-	if err != nil || len(data) > maxResponse {
-		return nil, fmt.Errorf("invalid indexer response size")
+	if err != nil {
+		return nil, failure("indexer_response_read_failed", "indexer response read failed")
+	}
+	if len(data) > maxResponse {
+		return nil, failure("indexer_response_too_large", "indexer response exceeds size limit")
 	}
 	var envelope struct {
 		JSONRPC string          `json:"jsonrpc"`
@@ -152,17 +178,46 @@ func (r *Resolver) RPC(ctx context.Context, method string, params any) (json.Raw
 		Result  json.RawMessage `json:"result"`
 		Error   json.RawMessage `json:"error"`
 	}
-	if json.Unmarshal(data, &envelope) != nil || envelope.JSONRPC != "2.0" || envelope.ID != method {
-		return nil, fmt.Errorf("invalid indexer response")
+	if json.Unmarshal(data, &envelope) != nil {
+		return nil, failure("indexer_response_json_invalid", "invalid indexer response JSON")
+	}
+	if envelope.JSONRPC != "2.0" {
+		return nil, failure("indexer_response_version_mismatch", "invalid indexer JSON-RPC version")
+	}
+	if envelope.ID != method {
+		return nil, failure("indexer_response_id_mismatch", "indexer response ID mismatch")
 	}
 	if len(envelope.Error) != 0 {
-		var failure RPCError
-		if json.Unmarshal(envelope.Error, &failure) == nil && failure.Code != 0 {
-			return nil, &failure
+		var rpcFailure RPCError
+		if json.Unmarshal(envelope.Error, &rpcFailure) == nil && rpcFailure.Code != 0 {
+			rpcFailure.Method = method
+			rpcFailure.Diagnostics.Code = knownRPCReason(rpcFailure.Diagnostics.Code, rpcFailure.Code)
+			return nil, &rpcFailure
 		}
+		return nil, failure("indexer_rpc_error_invalid", "invalid indexer JSON-RPC error")
 	}
-	if len(envelope.Error) != 0 || len(envelope.Result) == 0 || bytes.Equal(envelope.Result, []byte("null")) {
-		return nil, fmt.Errorf("invalid indexer response")
+	if len(envelope.Result) == 0 {
+		return nil, failure("indexer_response_result_missing", "indexer response result missing")
+	}
+	if bytes.Equal(envelope.Result, []byte("null")) {
+		return nil, failure("indexer_response_result_null", "indexer response result is null")
 	}
 	return envelope.Result, nil
+}
+
+func knownRPCReason(code string, rpcCode int) string {
+	expected := -32600
+	switch code {
+	case "output_leaf_not_found", "validation_error", "invalid_pubkey", "record_not_found", "stale_slot", "stale_root":
+	case "minimum_context_slot":
+		expected = -32016
+	case "database_error", "unexpected_error":
+		expected = -32603
+	default:
+		return ""
+	}
+	if rpcCode != expected {
+		return ""
+	}
+	return code
 }

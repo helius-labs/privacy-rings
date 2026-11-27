@@ -16,6 +16,8 @@ pub enum PhotonApiError {
     DatabaseError(#[from] sea_orm::DbErr),
     #[error("Record Not Found: {0}")]
     RecordNotFound(String),
+    #[error("Record Not Found: Some Rings output leaves were not found for the requested tree")]
+    OutputLeafNotFound,
     #[error("Unexpected Error: {0}")]
     UnexpectedError(String),
     #[error("Node is behind {0} slots")]
@@ -28,13 +30,31 @@ pub enum PhotonApiError {
     StaleRoot(String),
 }
 
+impl PhotonApiError {
+    fn reason(&self) -> &'static str {
+        match self {
+            Self::ValidationError(_) => "validation_error",
+            Self::InvalidPubkey { .. } => "invalid_pubkey",
+            Self::DatabaseError(_) => "database_error",
+            Self::RecordNotFound(_) => "record_not_found",
+            Self::OutputLeafNotFound => "output_leaf_not_found",
+            Self::UnexpectedError(_) => "unexpected_error",
+            Self::StaleSlot(_) => "stale_slot",
+            Self::MinimumContextSlot { .. } => "minimum_context_slot",
+            Self::StaleRoot(_) => "stale_root",
+        }
+    }
+}
+
 impl From<PhotonApiError> for ErrorObjectOwned {
     fn from(val: PhotonApiError) -> Self {
         match val {
             PhotonApiError::MinimumContextSlot { context_slot } => ErrorObjectOwned::owned(
                 -32016,
                 "Minimum context slot has not been reached",
-                Some(serde_json::json!({"contextSlot": context_slot})),
+                Some(
+                    serde_json::json!({"code": "minimum_context_slot", "contextSlot": context_slot}),
+                ),
             ),
             PhotonApiError::ValidationError(_) => {
                 metric! {
@@ -48,7 +68,7 @@ impl From<PhotonApiError> for ErrorObjectOwned {
                 }
                 invalid_request(val)
             }
-            PhotonApiError::RecordNotFound(_) => {
+            PhotonApiError::RecordNotFound(_) | PhotonApiError::OutputLeafNotFound => {
                 metric! {
                     statsd_count!("record_not_found_api_error", 1);
                 }
@@ -71,14 +91,14 @@ impl From<PhotonApiError> for ErrorObjectOwned {
                 metric! {
                     statsd_count!("internal_database_api_error", 1);
                 }
-                internal_server_error()
+                internal_server_error("database_error")
             }
             PhotonApiError::UnexpectedError(e) => {
                 error!("Internal server error: {}", e);
                 metric! {
                     statsd_count!("unexpected_api_error", 1);
                 }
-                internal_server_error()
+                internal_server_error("unexpected_error")
             }
         }
     }
@@ -99,13 +119,21 @@ impl From<ParsePubkeyError> for PhotonApiError {
 }
 
 fn invalid_request(e: PhotonApiError) -> ErrorObjectOwned {
-    ErrorObjectOwned::owned(ErrorCode::InvalidRequest.code(), e.to_string(), None::<()>)
+    ErrorObjectOwned::owned(
+        ErrorCode::InvalidRequest.code(),
+        e.to_string(),
+        Some(serde_json::json!({"code": e.reason()})),
+    )
 }
 
-fn internal_server_error() -> ErrorObjectOwned {
+fn internal_server_error(code: &'static str) -> ErrorObjectOwned {
     ErrorObjectOwned::owned(
         ErrorCode::InternalError.code(),
         "Internal server error",
-        None::<()>,
+        Some(serde_json::json!({"code": code})),
     )
 }
+
+#[cfg(test)]
+#[path = "error_test.rs"]
+mod tests;

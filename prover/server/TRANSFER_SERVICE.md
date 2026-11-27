@@ -97,9 +97,45 @@ input. When all non-dummy inputs in a tree are cached, the resolver skips its
 state path request and uses the cache root sentinel.
 
 An output owner without a matching registry key fails with `422` and code
-`registry_member_missing`, which names the member. Indexer lag fails with
-`503` and code `indexer_not_ready`. A failed queued job reports the same
-`code` in its status.
+`registry_member_missing`, which names the member. Each built-in indexed
+preparation failure has a stable `code`; queued jobs retain that same code
+and diagnostic `detail` in their status. Responses remain encrypted on TEE
+deployments. Upstream response text and request values are not copied into
+these diagnostics.
+
+| Failure | HTTP status | Code |
+| --- | --- | --- |
+| Requested output leaf is absent from the requested tree | 422 | `indexer_rpc_output_leaf_not_found` |
+| Photon rejects request validation or a public key | 422 | `indexer_rpc_validation_error` / `indexer_rpc_invalid_pubkey` |
+| Photon is behind, has not reached the requested context slot, or has an expired root | 503 + `Retry-After` | `indexer_rpc_stale_slot` / `indexer_rpc_minimum_context_slot` / `indexer_rpc_stale_root` |
+| Photon reports a database or internal failure | 502 | `indexer_rpc_database_error` / `indexer_rpc_unexpected_error` |
+| Upstream HTTP error | 502 | `indexer_http_<status>` |
+| Transport failure / timeout / cancellation | 502 | `indexer_request_failed` / `indexer_request_timeout` / `indexer_request_canceled` |
+| Invalid JSON / version / response ID | 502 | `indexer_response_json_invalid` / `indexer_response_version_mismatch` / `indexer_response_id_mismatch` |
+| Missing or null RPC result | 502 | `indexer_response_result_missing` / `indexer_response_result_null` |
+| Proof count / state binding / nullifier binding / root mismatch | 502 | `indexer_proof_count_mismatch` / `indexer_state_proof_binding_mismatch` / `indexer_nullifier_proof_binding_mismatch` / `indexer_proof_root_mismatch` |
+
+These HTTP statuses describe synchronous requests. Queued submission still
+returns `202`; a failed job's poll carries its reason in the response body.
+
+Other validation and batch preparation failures use the named `indexer_*`
+codes defined at their check sites. Local indexer lag and batch replay waits
+have distinct retryable `indexer_*` reasons and preserve the not-ready
+classification. An expired synchronous request still returns `408 proof_timeout`.
+
+Photon supplies its structured reason as JSON-RPC `error.data.code`, preserving
+its existing numeric RPC codes and messages. The prover accepts only known
+reason/number pairs; missing, unknown, or inconsistent metadata stays `502`
+with code `indexer_rpc_<number>`. RPC failures include `detail.method` and
+`detail.rpcCode`; HTTP failures include `detail.method`. Deploy Photon with
+the structured reasons before expecting the prover to distinguish missing
+inputs from other errors sharing `-32600`. An absent leaf means the indexer
+does not have that input in that tree; it does not establish whether a pending
+transaction will create it later.
+
+Upstream failure logs carry the same `code` and safe `detail`, alongside
+`Indexer proof data unavailable`. Unknown extension failures use
+`indexer_unexpected_error` and keep their underlying cause in server logs.
 
 The returned proof includes `resolution` with the resolved trees, their roots
 and history positions, and `publicInputHash`. The caller must bind those trees
