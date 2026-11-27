@@ -436,7 +436,9 @@ async fn fetch_rings_nullifiers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::method::rings::get_encrypted_utxos_by_tags;
+    use crate::api::method::rings::{
+        get_encrypted_utxos_by_tags, get_shielded_transactions_by_signature,
+    };
     use crate::dao::generated::{
         blocks, ring_configs, rings_output_payloads, rings_outputs, rings_transactions,
         rings_tx_nullifiers, transactions,
@@ -445,8 +447,10 @@ mod tests {
     use crate::monitor::tree_metadata_sync::{upsert_tree_metadata, TreeAccountData};
     use sea_orm::{Database, EntityTrait, Set};
     use sea_orm_migration::MigratorTrait;
+    use solana_signature::Signature;
     use spr_indexer_api::{
-        GetRingsByNullifiersRequest, HistoryFilters, Limit, PaginationToken, Positioned, SlotFilter,
+        GetRingsByNullifiersRequest, GetShieldedTransactionsBySignatureRequest, HistoryFilters,
+        Limit, PaginationToken, Positioned, SerializableSignature, SlotFilter,
     };
 
     const OUTPUT_TREE: [u8; 32] = [8; 32];
@@ -797,6 +801,35 @@ mod tests {
             Some(SerializablePubkey::from(pda::ring_auth(&ring_program).0))
         );
         assert_eq!(tx.ring_program_id, None);
+    }
+
+    /// The signature lookup hydrates the same rows as the tag lookup, so it
+    /// must report the same ring for a transaction.
+    #[tokio::test]
+    async fn signature_lookup_reports_the_ring_like_the_tag_lookup() {
+        for registered in [true, false] {
+            let (db, _) = setup_ring(registered).await;
+
+            let by_signature = get_shielded_transactions_by_signature(
+                &db,
+                GetShieldedTransactionsBySignatureRequest {
+                    tx_signature: SerializableSignature(Signature::from([2u8; 64])),
+                },
+            )
+            .await
+            .unwrap();
+            let [indexed] = by_signature.transactions.as_slice() else {
+                panic!("expected one transaction, got {}", by_signature.transactions.len());
+            };
+            let by_tags = tags_query(&db, None).await;
+            let [tx] = by_tags.as_slice() else {
+                panic!("expected one transaction, got {}", by_tags.len());
+            };
+
+            assert!(indexed.transaction.ring_config.is_some());
+            assert_eq!(indexed.transaction.ring_config, tx.ring_config);
+            assert_eq!(indexed.transaction.ring_program_id, tx.ring_program_id);
+        }
     }
 
     /// Filtering derives the config account, so it does not consult the
