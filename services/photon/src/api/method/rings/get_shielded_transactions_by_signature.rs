@@ -50,8 +50,11 @@ async fn fetch_rings_transactions_by_signature(
             pt.event_index AS event_index,
             pt.tx_viewing_pk AS tx_viewing_pk,
             pt.salt AS salt,
-            pt.proofless AS proofless
+            pt.proofless AS proofless,
+            pt.ring_config AS ring_config,
+            rc.program_id AS ring_program_id
          FROM rings_transactions pt
+         LEFT JOIN ring_configs rc ON rc.ring_config = pt.ring_config
          WHERE pt.signature = {signature}
          ORDER BY pt.event_index ASC
          LIMIT {limit}"
