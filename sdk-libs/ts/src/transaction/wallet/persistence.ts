@@ -11,6 +11,7 @@ import { ShieldedAddress } from "../../keypair/shielded.js";
 import { Data, type DataRecord } from "../data.js";
 import { TransactionError } from "../error.js";
 import { Utxo } from "../utxo.js";
+import { outputContextTreeId } from "../output-context.js";
 import { AssetRegistry, SOL_ASSET_ID } from "../asset.js";
 import {
   Wallet,
@@ -48,6 +49,7 @@ interface SerializedWalletUtxo {
   readonly outputContext: Readonly<{
     hash: string;
     tree: Address;
+    treeId: number;
     leafIndex: string;
   }>;
   readonly nullifier: string;
@@ -96,7 +98,7 @@ export interface SerializedNoteReservation {
  * must still encrypt it at rest.
  */
 export interface SerializedWalletState {
-  readonly version: 5;
+  readonly version: 6;
   readonly identity: Readonly<{
     signingPublicKey: string;
     nullifierPublicKey: string;
@@ -124,7 +126,7 @@ export function serializeWallet(wallet: Wallet): string {
   if (!(wallet instanceof Wallet)) fail("wallet");
   const state = wallet._state();
   const snapshot: SerializedWalletState = {
-    version: 5,
+    version: 6,
     identity: {
       signingPublicKey: encode(wallet.identity.signingPublicKey.toBytes()),
       nullifierPublicKey: encode(wallet.identity.nullifierPublicKey),
@@ -187,7 +189,8 @@ export function deserializeWallet(serialized: string): Wallet {
 function hydrate(value: unknown): Wallet {
   const snapshot = record(value, "wallet");
   const version = snapshot["version"];
-  if (version !== 2 && version !== 3 && version !== 4 && version !== 5) fail("version");
+  if (version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6)
+    fail("version");
   const identityValue = record(snapshot["identity"], "identity");
   const identity = ShieldedAddress.fromPublicKeys(
     ShieldedPublicKey.fromBytes(
@@ -218,7 +221,9 @@ function hydrate(value: unknown): Wallet {
   ) {
     fail("viewingKeyHistory");
   }
-  const decodedUtxos = array(snapshot["utxos"], "utxos").map(deserializeUtxo);
+  const decodedUtxos = array(snapshot["utxos"], "utxos").map((entry, index) =>
+    deserializeUtxo(entry, index, version),
+  );
   const expectedOwner = encode(identity.signingPublicKey.toBytes());
   if (decodedUtxos.some((entry) => encode(entry.utxo.owner.toBytes()) !== expectedOwner)) {
     fail("utxos.owner");
@@ -244,7 +249,7 @@ function hydrate(value: unknown): Wallet {
   });
   // Versions before 5 predate slot checkpoints, their first sync rescans
   // history once.
-  if (version === 5) {
+  if (version >= 5) {
     hydrateCheckpoints(wallet, snapshot["syncCheckpoints"]);
     wallet._forgetNullifierCheckpoints(nullifiers);
   }
@@ -390,6 +395,7 @@ function serializeUtxo(value: WalletUtxo): SerializedWalletUtxo {
     outputContext: {
       hash: encode(value.outputContext.hash),
       tree: value.outputContext.tree,
+      treeId: outputContextTreeId(value.outputContext),
       leafIndex: value.outputContext.leafIndex.toString(),
     },
     nullifier: encode(value.nullifier),
@@ -399,10 +405,31 @@ function serializeUtxo(value: WalletUtxo): SerializedWalletUtxo {
   };
 }
 
-function deserializeUtxo(value: unknown, index: number): WalletUtxo {
+function deserializeUtxo(value: unknown, index: number, version: number): WalletUtxo {
   const path = `utxos[${String(index)}]`;
   const entry = record(value, path);
   const context = record(entry["outputContext"], `${path}.outputContext`);
+  const tree = address(context["tree"], `${path}.outputContext.tree`);
+  const suppliedTreeId = context["treeId"];
+  if (
+    (version >= 6 && suppliedTreeId === undefined) ||
+    (suppliedTreeId !== undefined && typeof suppliedTreeId !== "number")
+  ) {
+    fail(`${path}.outputContext.treeId`);
+  }
+  let treeId: number;
+  try {
+    treeId =
+      suppliedTreeId === undefined
+        ? outputContextTreeId({ tree })
+        : outputContextTreeId({ tree, treeId: suppliedTreeId });
+  } catch (cause) {
+    throw new TransactionError(
+      "TRANSACTION_DESERIALIZE",
+      { field: `${path}.outputContext.treeId` },
+      cause,
+    );
+  }
   const records = array(entry["data"], `${path}.data`).map((value, recordIndex) => {
     const recordPath = `${path}.data[${String(recordIndex)}]`;
     const item = record(value, recordPath);
@@ -428,7 +455,8 @@ function deserializeUtxo(value: unknown, index: number): WalletUtxo {
     }),
     outputContext: {
       hash: bytes(context["hash"], 32, `${path}.outputContext.hash`) as Bytes32,
-      tree: address(context["tree"], `${path}.outputContext.tree`),
+      tree,
+      treeId,
       leafIndex: unsigned(context["leafIndex"], `${path}.outputContext.leafIndex`),
     },
     nullifier: bytes(entry["nullifier"], 32, `${path}.nullifier`) as Bytes32,

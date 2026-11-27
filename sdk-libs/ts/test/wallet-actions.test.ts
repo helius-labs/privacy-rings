@@ -599,7 +599,7 @@ describe("keys at the wallet boundary", () => {
     },
   );
 
-  it("refuses non-default tree entries before deriving merge material", async () => {
+  it("refuses mismatched tree metadata before storing it or deriving merge material", async () => {
     const owner = ShieldedKeypair.generate();
     const wallet = fundedWallet(owner, [20n, 30n]);
     const keys = localKeys(owner);
@@ -607,18 +607,17 @@ describe("keys at the wallet boundary", () => {
       ...entry,
       outputContext: { ...entry.outputContext, tree: treeAddress(1) },
     }));
-    wallet._replace({ utxos, transactions: [], nullifiers: new Set() });
     const before = serializeWallet(wallet);
     const derive = vi.spyOn(keys, "derive");
     try {
-      for (const entry of wallet.utxos()) {
+      expect(() => wallet._replace({ utxos, transactions: [], nullifiers: new Set() })).toThrow(
+        expect.objectContaining({ code: "TRANSACTION_OUTPUT_TREE_MISMATCH" }),
+      );
+      for (const entry of utxos) {
         expect(() => proofInputFromEntry(entry, owner.shieldedAddress())).toThrow(
           expect.objectContaining({ code: "WALLET_INPUT_UTXO_TREE_MISMATCH" }),
         );
       }
-      await expect(createMerge({ wallet, keys, asset: SOL_MINT })).rejects.toMatchObject({
-        code: "WALLET_INPUT_UTXO_TREE_MISMATCH",
-      });
       expect(derive).not.toHaveBeenCalled();
       expect(wallet._reservationEntries()).toHaveLength(0);
       expect(serializeWallet(wallet)).toBe(before);

@@ -14,6 +14,7 @@ import type { ShieldedAddress } from "../keypair/shielded.js";
 import type { PreparedMerge } from "../transaction/instructions/builders.js";
 import { prepareMerge } from "../flows/merge.js";
 import type { ProofInputUtxo } from "../transaction/utxo.js";
+import { outputContextTreeId } from "../transaction/output-context.js";
 import { SOL_MINT } from "../transaction/asset.js";
 import type { ShieldedKeys } from "../transaction/wallet/keys.js";
 import type { Wallet, WalletUtxo } from "../transaction/wallet/state.js";
@@ -88,8 +89,9 @@ export async function createMerge(
   context?: RequestContext,
 ): Promise<CreatedMerge> {
   const selected = selectMergeEntries(params);
-  const tree = selected[0]?.outputContext.tree;
-  if (tree === undefined) throw new WalletError("WALLET_NOTHING_TO_MERGE");
+  const first = selected[0];
+  if (first === undefined) throw new WalletError("WALLET_NOTHING_TO_MERGE");
+  const tree = first.outputContext.tree;
   if (selected.some((entry) => entry.outputContext.tree !== tree)) {
     throw new WalletError("WALLET_INPUT_UTXO_TREE_MISMATCH");
   }
@@ -103,6 +105,7 @@ export async function createMerge(
       {
         keys: params.keys,
         inputs,
+        outputTreeId: outputContextTreeId(first.outputContext),
         invalidAnswers: () => new WalletError("WALLET_KEYS_BATCH_MISMATCH"),
       },
       context,

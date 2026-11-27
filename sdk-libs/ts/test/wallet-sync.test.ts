@@ -1,3 +1,4 @@
+import { treeAddress } from "../src/interface/pda/index.js";
 import { transactionItems, outputItems } from "./helpers/pages.js";
 import {
   address,
@@ -62,7 +63,7 @@ import { syncPersistedWallet } from "../src/wallet/persisted.js";
 import { kitReads, solanaRpcReads, syncReads, plainCipher } from "./helpers/clients.js";
 
 const OWNER = address("4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi");
-const TREE = address("3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3");
+const TREE = treeAddress(0);
 const SIGNATURE = "1".repeat(64) as Signature;
 const SPL_MINT = address("So11111111111111111111111111111111111111112");
 
@@ -1283,7 +1284,7 @@ describe("wallet sync", () => {
     expect(report).toMatchObject({ storedUtxos: 1, undecryptableCandidates: 0 });
     expect(wallet.balance(SOL_MINT).amount).toBe(42n);
     expect(wallet.utxos().map((entry) => entry.outputContext)).toEqual([
-      chainedMerge.outputSlots[0]!.outputContext,
+      { ...chainedMerge.outputSlots[0]!.outputContext, treeId: DEFAULT_TREE_ID },
     ]);
 
     // The first merge decrypts on its own too, and the chained merge then marks
@@ -1292,8 +1293,8 @@ describe("wallet sync", () => {
     await decryptWithKeys(keys, { wallet: both, transactions: [merge, chainedMerge] });
     expect(both.balance(SOL_MINT).amount).toBe(42n);
     expect(both.utxos().map((entry) => [entry.outputContext, entry.spent])).toEqual([
-      [merge.outputSlots[0]!.outputContext, true],
-      [chainedMerge.outputSlots[0]!.outputContext, false],
+      [{ ...merge.outputSlots[0]!.outputContext, treeId: DEFAULT_TREE_ID }, true],
+      [{ ...chainedMerge.outputSlots[0]!.outputContext, treeId: DEFAULT_TREE_ID }, false],
     ]);
   });
 

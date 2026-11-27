@@ -1,3 +1,4 @@
+import { treeAddress } from "../src/interface/pda/index.js";
 import { address, type Address } from "@solana/kit";
 import { describe, expect, it } from "vitest";
 
@@ -7,7 +8,7 @@ import { Data, Utxo, Wallet } from "../src/transaction/index.js";
 import { AssetRegistry } from "../src/transaction/asset.js";
 import type { SyncDelta } from "../src/transaction/wallet/state.js";
 
-const TREE = address("3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3");
+const TREE = treeAddress(0);
 const MINT = address("So11111111111111111111111111111111111111112");
 
 function filled(value: number): Bytes32 {

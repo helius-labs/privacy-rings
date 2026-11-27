@@ -8,7 +8,6 @@ import type { ViewingKey } from "../../keypair/viewing-key.js";
 import { EncryptionMode } from "../../keypair/encryption-mode.js";
 
 import { initializePoseidon } from "../../hasher/index.js";
-import { DEFAULT_TREE_ID } from "../../interface/tree-slot.js";
 import { TransactionError } from "../error.js";
 import { copy, decodeAddress } from "../internal.js";
 import { SENDER_SLOT_COUNT } from "../instructions/transact.js";
@@ -33,6 +32,7 @@ import {
 } from "../serialization/codecs.js";
 import { decryptMergeOutput, readMergeOutputBody } from "../serialization/merge.js";
 import { Utxo } from "../utxo.js";
+import { outputContextTreeId } from "../output-context.js";
 import { KeyMemo } from "./key-memo.js";
 import {
   LocalShieldedKeys,
@@ -59,15 +59,6 @@ import {
 } from "./state.js";
 
 const U64_MAX = 0xffff_ffff_ffff_ffffn;
-
-/**
- * The tree id synced UTXOs are hashed under. A UTXO that lives in another tree
- * fails the recompute-and-compare against the indexed leaf and is never
- * stored, so a wrong id cannot admit a foreign commitment.
- *
- * TODO(tree-id): resolve the tree id from the tree account.
- */
-const SYNC_TREE_ID = DEFAULT_TREE_ID;
 
 /** The nullifier every seed-disclosing bundle of `tx` derives its blindings from. */
 function firstNullifierOf(tx: IndexedShieldedTransaction): Bytes32 {
@@ -375,6 +366,7 @@ class SyncPass {
         outputContext: Object.freeze({
           hash: copy(outputContext.hash),
           tree: outputContext.tree,
+          treeId: outputContextTreeId(outputContext),
           leafIndex: outputContext.leafIndex,
         }),
         nullifier,
@@ -395,8 +387,16 @@ class SyncPass {
    * transaction.
    */
   #storeInTx(utxo: Utxo, tx: IndexedShieldedTransaction): void {
-    const hash = utxo.hash(this.#nullifierPublicKey, SYNC_TREE_ID);
-    const slot = tx.outputSlots.find((candidate) => equalBytes(candidate.outputContext.hash, hash));
+    const hashes = new Map<number, Bytes32>();
+    const slot = tx.outputSlots.find((candidate) => {
+      const treeId = outputContextTreeId(candidate.outputContext);
+      let hash = hashes.get(treeId);
+      if (hash === undefined) {
+        hash = utxo.hash(this.#nullifierPublicKey, treeId);
+        hashes.set(treeId, hash);
+      }
+      return equalBytes(candidate.outputContext.hash, hash);
+    });
     if (slot === undefined) {
       this.undecryptableCandidates++;
       return;
@@ -412,10 +412,11 @@ class SyncPass {
     ringDataHash: Bytes32 | undefined,
   ): boolean {
     let stored = false;
+    const treeId = outputContextTreeId(outputContext);
     for (const utxo of utxos) {
       if (
         !equalBytes(
-          utxo.hash(this.#nullifierPublicKey, SYNC_TREE_ID, dataHash, ringDataHash),
+          utxo.hash(this.#nullifierPublicKey, treeId, dataHash, ringDataHash),
           outputContext.hash,
         )
       ) {
@@ -653,7 +654,7 @@ class SyncPass {
                 change.length === 1 &&
                 change[0]?.asset !== SOL_MINT)) &&
             equalBytes(
-              candidate.hash(this.#nullifierPublicKey, SYNC_TREE_ID),
+              candidate.hash(this.#nullifierPublicKey, outputContextTreeId(slot.outputContext)),
               slot.outputContext.hash,
             )
           ) {
@@ -928,7 +929,12 @@ class SyncPass {
         blinding: outputBlinding,
         ...(tx.ringProgramId === undefined ? {} : { ringProgramId: tx.ringProgramId }),
       });
-      const hash = utxo.hash(this.#nullifierPublicKey, SYNC_TREE_ID, undefined, body.ringDataHash);
+      const hash = utxo.hash(
+        this.#nullifierPublicKey,
+        outputContextTreeId(slot.outputContext),
+        undefined,
+        body.ringDataHash,
+      );
       if (!equalBytes(hash, slot.outputContext.hash)) {
         this.undecryptableCandidates++;
         return;
@@ -1029,6 +1035,11 @@ export async function decryptTransactions(
   }>,
 ): Promise<SyncReport> {
   await initializePoseidon();
+  // Indexer metadata is authoritative for the slot location; reject missing or
+  // inconsistent ids before decode catches can treat them as foreign ciphertexts.
+  for (const transaction of input.transactions) {
+    for (const slot of transaction.outputSlots) outputContextTreeId(slot.outputContext);
+  }
   checkKeysIdentity(input.keys, input.wallet.identity);
   const identity = input.keys.address();
   const viewingPublicKeys = checkViewingPublicKeys(input.keys, identity);

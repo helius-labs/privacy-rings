@@ -15,6 +15,7 @@ import {
   type ShieldedAddress,
 } from "../../src/keypair/index.js";
 import { describe, expect, it } from "vitest";
+import { treeAddress } from "../../src/interface/pda/index.js";
 
 import {
   AssetRegistry,
@@ -286,7 +287,7 @@ describe("manifest-verified wallet behavior", () => {
       });
       const outputContext = {
         hash: hexBytes(fixtureString(row, "hashBytes")) as Bytes32,
-        tree: SOL_MINT,
+        tree: treeAddress(DEFAULT_TREE_ID),
         leafIndex: BigInt(fixtureString(row, "leafIndex")),
       };
       const nullifier = utxo.nullifier(outputContext.hash, value.nullifier);

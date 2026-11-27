@@ -6,6 +6,7 @@ import type { ShieldedAddress } from "../../keypair/shielded.js";
 import { TransactionError } from "../error.js";
 import { copy } from "../internal.js";
 import { Utxo } from "../utxo.js";
+import { outputContextTreeId } from "../output-context.js";
 import { AssetRegistry } from "../asset.js";
 
 export interface AssetBalance {
@@ -165,6 +166,8 @@ export interface WalletUtxo {
   readonly outputContext: Readonly<{
     hash: Bytes32;
     tree: Address;
+    /** Raw commitment tree id, resolved during sync or snapshot restoration. */
+    treeId?: number;
     leafIndex: bigint;
   }>;
   readonly nullifier: Bytes32;
@@ -190,6 +193,7 @@ function snapshotUtxo(value: WalletUtxo): WalletUtxo {
     utxo: copyUtxo(value.utxo),
     outputContext: Object.freeze({
       ...value.outputContext,
+      treeId: outputContextTreeId(value.outputContext),
       hash: copy(value.outputContext.hash),
     }),
     nullifier: copy(value.nullifier),
@@ -218,8 +222,8 @@ export class Wallet {
    * tags have advanced far past those slots, so a single checkpoint would skip
    * those transactions permanently.
    *
-   * Serialized in snapshot version 5, an older snapshot restores with no
-   * checkpoints and rescans history once.
+   * Slot checkpoints were introduced in snapshot version 5; an older snapshot
+   * restores without them and rescans history once.
    */
   #syncCheckpoints = new Map<string, bigint>();
   #revision = 0;
@@ -592,6 +596,7 @@ export class Wallet {
     }
     const hashes = new Set<string>();
     for (const entry of delta.utxos) {
+      outputContextTreeId(entry.outputContext);
       const hash = bytesKey(entry.outputContext.hash);
       if (hashes.has(hash)) {
         throw new TransactionError("TRANSACTION_DUPLICATE_OUTPUT", { hash });
