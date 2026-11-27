@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -101,32 +100,32 @@ func decodeRequest(data []byte) (Request, *Prepared, error) {
 
 func (request Request) Check(limits Limits) error {
 	if len(request.Trees) == 0 || len(request.Trees) > limits.Trees {
-		return fmt.Errorf("invalid input tree count")
+		return failure("indexer_invalid_input_tree_count", "invalid input tree count")
 	}
 	for index, tree := range request.Trees {
 		if _, err := decodeHash(tree.Address); err != nil {
-			return fmt.Errorf("invalid tree address")
+			return failure("indexer_invalid_tree_address", "invalid tree address")
 		}
 		for _, previous := range request.Trees[:index] {
 			if tree.ID == previous.ID || tree.Address == previous.Address {
-				return fmt.Errorf("duplicate input tree")
+				return failure("indexer_duplicate_input_tree", "duplicate input tree")
 			}
 		}
 	}
 	if len(request.PublicInputs) != limits.PublicInputs {
-		return fmt.Errorf("invalid public input count")
+		return failure("indexer_invalid_public_input_count", "invalid public input count")
 	}
 	for _, encoded := range request.PublicInputs {
 		field, err := common.FeFromHex(encoded)
 		if err != nil || encoded == "" {
-			return fmt.Errorf("invalid public input")
+			return failure("indexer_invalid_public_input", "invalid public input")
 		}
 		if _, err := HashField(field); err != nil {
 			return err
 		}
 	}
 	if requestCircuit(request.Prepared) != request.CircuitType {
-		return fmt.Errorf("prepared circuit mismatch")
+		return failure("indexer_prepared_circuit_mismatch", "prepared circuit mismatch")
 	}
 	return nil
 }
@@ -157,14 +156,14 @@ func (r *Resolver) resolve(ctx context.Context, data []byte) (*Resolved, error) 
 // ResolvePrepared fetches and binds the tree paths of a checked request.
 func (r *Resolver) ResolvePrepared(ctx context.Context, request Request, prepared *Prepared) (*Resolved, error) {
 	if len(prepared.Inputs) != len(request.Inputs) {
-		return nil, fmt.Errorf("prepared %d inputs for %d request inputs", len(prepared.Inputs), len(request.Inputs))
+		return nil, failure("indexer_prepared_input_count_mismatch", "prepared input count mismatch")
 	}
 	trace := timing.FromContext(ctx)
 	finishAdmission := trace.Start("indexer_admission")
 	defer finishAdmission()
 	release, err := r.Admit(ctx)
 	if err != nil {
-		return nil, err
+		return nil, causedFailure("indexer_admission_canceled", "indexer preparation admission canceled", err)
 	}
 	defer release()
 	finishAdmission()
@@ -183,7 +182,7 @@ func (r *Resolver) ResolvePrepared(ctx context.Context, request Request, prepare
 	}
 	for _, group := range proofs {
 		if len(group.inputs) == 0 && !prepared.EmptyTrees {
-			return nil, fmt.Errorf("input tree has no real spend")
+			return nil, failure("indexer_input_tree_has_no_real_spend", "input tree has no real spend")
 		}
 	}
 	ctx, cancel := context.WithCancel(ctx)
@@ -210,10 +209,10 @@ func (r *Resolver) ResolvePrepared(ctx context.Context, request Request, prepare
 					return err
 				}
 				if json.Unmarshal(data, &group.state) != nil {
-					return fmt.Errorf("invalid state proof response")
+					return failure("indexer_invalid_state_proof_response", "invalid state proof response")
 				}
 				if group.state.Context.Slot < request.MinContextSlot {
-					return ErrIndexerNotReady
+					return notReady("indexer_state_context_slot_not_reached")
 				}
 				return nil
 			}))
@@ -225,10 +224,10 @@ func (r *Resolver) ResolvePrepared(ctx context.Context, request Request, prepare
 					return err
 				}
 				if json.Unmarshal(data, &group.exclusion) != nil {
-					return fmt.Errorf("invalid nullifier proof response")
+					return failure("indexer_invalid_nullifier_proof_response", "invalid nullifier proof response")
 				}
 				if group.exclusion.Context.Slot < request.MinContextSlot {
-					return ErrIndexerNotReady
+					return notReady("indexer_nullifier_context_slot_not_reached")
 				}
 				return nil
 			}))
@@ -249,7 +248,7 @@ func (r *Resolver) ResolvePrepared(ctx context.Context, request Request, prepare
 	for treeIndex, tree := range request.Trees {
 		group := &proofs[treeIndex]
 		if len(group.state.Proofs) != len(group.realInputs) || len(group.exclusion.Proofs) != len(group.inputs) {
-			return nil, fmt.Errorf("indexer proof count mismatch")
+			return nil, failure("indexer_proof_count_mismatch", "indexer proof count mismatch")
 		}
 		stateRoot := stateProof{RootIndex: ^uint16(0)}
 		if len(group.state.Proofs) != 0 {
@@ -273,7 +272,7 @@ func (r *Resolver) ResolvePrepared(ctx context.Context, request Request, prepare
 		for index, input := range group.realInputs {
 			proof := &group.state.Proofs[index]
 			if proof.Leaf != *request.Inputs[input].Commitment || proof.MerkleContext.Tree != tree.Address || proof.MerkleContext.TreeType != 1 || proof.Root != stateRoot.Root || proof.RootIndex != stateRoot.RootIndex || proof.RootSeq != stateRoot.RootSeq || len(proof.Path) != 32 {
-				return nil, fmt.Errorf("state proof binding mismatch")
+				return nil, failure("indexer_state_proof_binding_mismatch", "state proof binding mismatch")
 			}
 			if err := VerifyPath(proof.Leaf, proof.Path, proof.LeafIndex, proof.Root); err != nil {
 				return nil, err
@@ -284,7 +283,7 @@ func (r *Resolver) ResolvePrepared(ctx context.Context, request Request, prepare
 			proof := group.exclusion.Proofs[index]
 			expected, err := HashField(prepared.Inputs[input].Nullifier)
 			if err != nil || proof.Leaf != expected || proof.MerkleContext.Tree != tree.Address || proof.MerkleContext.TreeType != 2 || proof.Root != nullifierRoot.Root || proof.RootIndex != nullifierRoot.RootIndex || proof.RootSeq != nullifierRoot.RootSeq || len(proof.Path) != 40 {
-				return nil, fmt.Errorf("nullifier proof binding mismatch")
+				return nil, failure("indexer_nullifier_proof_binding_mismatch", "nullifier proof binding mismatch")
 			}
 			low, err := proof.LowElement.Field()
 			if err != nil {
@@ -292,7 +291,7 @@ func (r *Resolver) ResolvePrepared(ctx context.Context, request Request, prepare
 			}
 			high, err := proof.HighElement.Field()
 			if err != nil || low.Cmp(prepared.Inputs[input].Nullifier) >= 0 || high.Cmp(prepared.Inputs[input].Nullifier) <= 0 {
-				return nil, fmt.Errorf("invalid nullifier exclusion range")
+				return nil, failure("indexer_invalid_nullifier_exclusion_range", "invalid nullifier exclusion range")
 			}
 			leaf, err := prooftranscript.HashFields([]*big.Int{low, high})
 			if err != nil {
@@ -315,16 +314,16 @@ func (r *Resolver) ResolvePrepared(ctx context.Context, request Request, prepare
 	for index, slot := range slots {
 		hashes[index], err = prooftranscript.HashFields([]*big.Int{slot.ID, slot.UtxoRoot, slot.NullifierRoot})
 		if err != nil {
-			return nil, err
+			return nil, classifyFailure("indexer_tree_slot_hash_failed", "cannot hash resolved tree slot", err)
 		}
 	}
 	treeHash, err := prooftranscript.RightHashChain(hashes)
 	if err != nil {
-		return nil, err
+		return nil, classifyFailure("indexer_tree_hash_failed", "cannot hash resolved trees", err)
 	}
 	public, err := common.FeFromHexSlice(request.PublicInputs)
 	if err != nil {
-		return nil, fmt.Errorf("invalid public input")
+		return nil, failure("indexer_invalid_public_input", "invalid public input")
 	}
 	if prepared.Statement != nil {
 		*prepared.Hash, err = prepared.Statement(public, treeHash)
@@ -335,13 +334,13 @@ func (r *Resolver) ResolvePrepared(ctx context.Context, request Request, prepare
 		*prepared.Hash, err = prooftranscript.HashChain4(transcript)
 	}
 	if err != nil {
-		return nil, err
+		return nil, classifyFailure("indexer_statement_hash_failed", "cannot hash resolved statement", err)
 	}
 	*prepared.Slots = slots
 	resolution.PublicInputHash = common.FeHex(*prepared.Hash)
 	payload, err := prepared.Value.MarshalJSON()
 	if err != nil {
-		return nil, fmt.Errorf("cannot encode resolved inputs")
+		return nil, failure("indexer_encode_resolved_inputs", "cannot encode resolved inputs")
 	}
 	return &Resolved{Payload: payload, Resolution: resolution}, nil
 }
@@ -349,15 +348,15 @@ func (r *Resolver) ResolvePrepared(ctx context.Context, request Request, prepare
 // DecodeEnvelope rejects unknown fields and trailing data.
 func DecodeEnvelope(data []byte, request any) error {
 	if len(data) > 1<<20 {
-		return fmt.Errorf("invalid indexed request")
+		return failure("indexer_request_too_large", "indexed request exceeds size limit")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(request); err != nil {
-		return fmt.Errorf("invalid indexed request: %w", err)
+		return failure("indexer_invalid_indexed_request_json", "invalid indexed request JSON")
 	}
 	if decoder.Decode(new(any)) != io.EOF {
-		return fmt.Errorf("invalid indexed request")
+		return failure("indexer_request_trailing_json", "indexed request contains trailing JSON")
 	}
 	return nil
 }
@@ -374,7 +373,7 @@ func requestCircuit(data []byte) common.CircuitType {
 
 func VerifyPath(leaf Hash, path []Hash, index uint64, root Hash) error {
 	if len(path) > 63 || index >= uint64(1)<<len(path) {
-		return fmt.Errorf("invalid proof path index")
+		return failure("indexer_invalid_proof_path_index", "invalid proof path index")
 	}
 	hash, err := leaf.Field()
 	if err != nil {
@@ -395,7 +394,7 @@ func VerifyPath(leaf Hash, path []Hash, index uint64, root Hash) error {
 		}
 	}
 	if !bytes.Equal(hash.FillBytes(make([]byte, 32)), root[:]) {
-		return fmt.Errorf("proof root mismatch")
+		return failure("indexer_proof_root_mismatch", "proof root mismatch")
 	}
 	return nil
 }
@@ -405,7 +404,7 @@ func recovered(task func() error) func() error {
 	return func() (err error) {
 		defer func() {
 			if recover() != nil {
-				err = errors.New("indexed task panicked")
+				err = failure("indexer_task_panicked", "indexed task panicked")
 			}
 		}()
 		return task()

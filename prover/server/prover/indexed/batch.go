@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"math/big"
 	"slices"
@@ -69,22 +68,22 @@ func decodeBatch(data []byte) (BatchRequest, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if len(data) > 1<<20 || decoder.Decode(&request) != nil || decoder.Decode(new(any)) != io.EOF {
-		return request, fmt.Errorf("invalid indexed batch")
+		return request, failure("indexer_invalid_indexed_batch", "invalid indexed batch")
 	}
 	if request.CircuitType != common.BatchAddressAppendCircuitType || request.TreeHeight != 40 || (request.BatchSize != 10 && request.BatchSize != 4999) || request.AnchorIndex == 0 || request.StartIndex < request.AnchorIndex || request.StartIndex > (1<<40)-uint64(request.BatchSize) {
-		return request, fmt.Errorf("invalid indexed batch bounds")
+		return request, failure("indexer_invalid_indexed_batch_bounds", "invalid indexed batch bounds")
 	}
 	if _, err := decodeHash(request.Tree); err != nil {
 		return request, err
 	}
 	distance := request.StartIndex - request.AnchorIndex
 	if distance%uint64(request.BatchSize) != 0 || uint64(len(request.PreviousBatches)) != distance/uint64(request.BatchSize) {
-		return request, fmt.Errorf("invalid preceding batch commitments")
+		return request, failure("indexer_invalid_preceding_batch_commitments", "invalid preceding batch commitments")
 	}
 	for _, value := range append([]string{request.AnchorRoot, request.HashchainHash}, request.PreviousBatches...) {
 		field, err := common.FeFromHex(value)
 		if err != nil || value == "" {
-			return request, fmt.Errorf("invalid batch commitment")
+			return request, failure("indexer_invalid_batch_commitment", "invalid batch commitment")
 		}
 		if _, err := HashField(field); err != nil {
 			return request, err
@@ -112,12 +111,12 @@ func (t *batchTree) fork() *batchTree {
 func (t *batchTree) append(value *big.Int, params *nullifiertree.BatchAddressAppendParameters) error {
 	position, exists := slices.BinarySearchFunc(t.order, value, func(index int, value *big.Int) int { return t.leaves[index].value.Cmp(value) })
 	if exists || position == 0 {
-		return fmt.Errorf("duplicate or invalid queued nullifier")
+		return failure("indexer_duplicate_or_invalid_queued_nullifier", "duplicate or invalid queued nullifier")
 	}
 	lowIndex := t.order[position-1]
 	low := t.leaves[lowIndex]
 	if value.Cmp(low.next) >= 0 {
-		return fmt.Errorf("queued nullifier exceeds range")
+		return failure("indexer_queued_nullifier_exceeds_range", "queued nullifier exceeds range")
 	}
 	index := len(t.leaves)
 	if params != nil {
@@ -151,7 +150,7 @@ func (r *Resolver) resolveBatch(ctx context.Context, data []byte) (result *Resol
 	var checkpointed bool
 	defer func() {
 		if err != nil && checkpointed && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			err = ErrIndexerNotReady
+			err = notReady("indexer_batch_checkpoint_timeout")
 		}
 	}()
 	request, err := decodeBatch(data)
@@ -159,13 +158,13 @@ func (r *Resolver) resolveBatch(ctx context.Context, data []byte) (result *Resol
 		return nil, err
 	}
 	if request.StartIndex+uint64(request.BatchSize) > r.maxBatchLeaves {
-		return nil, fmt.Errorf("batch replay exceeds configured leaf limit")
+		return nil, failure("indexer_batch_replay_exceeds_configured_leaf_limit", "batch replay exceeds configured leaf limit")
 	}
 	select {
 	case r.batchLock <- struct{}{}:
 		defer func() { <-r.batchLock }()
 	case <-ctx.Done():
-		return nil, ErrIndexerNotReady
+		return nil, notReady("indexer_batch_admission_canceled")
 	}
 	finish := timing.FromContext(ctx).Start("indexer_batch_prepare")
 	defer finish()
@@ -175,7 +174,7 @@ func (r *Resolver) resolveBatch(ctx context.Context, data []byte) (result *Resol
 	if r.batch.address != request.Tree || base == nil || uint64(len(base.leaves)) > request.AnchorIndex {
 		base, err = newBatchTree(request.TreeHeight)
 		if err != nil {
-			return nil, err
+			return nil, classifyFailure("indexer_batch_tree_init_failed", "cannot initialize batch tree", err)
 		}
 	}
 	if latest := r.batch.latest; r.batch.address == request.Tree && latest != nil && uint64(len(latest.leaves)) <= request.AnchorIndex && len(latest.leaves) > len(base.leaves) {
@@ -192,14 +191,14 @@ func (r *Resolver) resolveBatch(ctx context.Context, data []byte) (result *Resol
 	var preceding []*big.Int
 	for next := uint64(len(tree.leaves)); next < end; {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, causedFailure("indexer_batch_replay_canceled", "batch replay canceled", err)
 		}
 		if next == request.AnchorIndex && !anchored {
 			root := tree.tree.Root.Value()
 			if root.Cmp(anchor) != 0 {
 				r.batch = batchCache{}
 				r.batchReplay = batchReplay{}
-				return nil, ErrIndexerNotReady
+				return nil, notReady("indexer_batch_anchor_root_not_ready")
 			}
 			latest := r.batch.latest
 			chains := r.batch.chains
@@ -230,17 +229,20 @@ func (r *Resolver) resolveBatch(ctx context.Context, data []byte) (result *Resol
 		}
 		var page queuePage
 		if json.Unmarshal(body, &page) != nil || uint64(len(page.Elements)) > limit {
-			return nil, fmt.Errorf("invalid indexer batch page")
+			return nil, failure("indexer_invalid_batch_page", "invalid indexer batch page")
 		}
-		if page.Context.Slot < request.MinContextSlot || uint64(len(page.Elements)) < limit {
-			return nil, ErrIndexerNotReady
+		if page.Context.Slot < request.MinContextSlot {
+			return nil, notReady("indexer_batch_context_slot_not_reached")
+		}
+		if uint64(len(page.Elements)) < limit {
+			return nil, notReady("indexer_batch_queue_incomplete")
 		}
 		for _, element := range page.Elements {
 			if err := ctx.Err(); err != nil {
-				return nil, err
+				return nil, causedFailure("indexer_batch_replay_canceled", "batch replay canceled", err)
 			}
 			if element.Seq != next {
-				return nil, fmt.Errorf("indexer batch sequence mismatch")
+				return nil, failure("indexer_batch_sequence_mismatch", "indexer batch sequence mismatch")
 			}
 			value, err := element.Value.Field()
 			if err != nil {
@@ -264,7 +266,7 @@ func (r *Resolver) resolveBatch(ctx context.Context, data []byte) (result *Resol
 					expected, _ := common.FeFromHex(request.PreviousBatches[batch])
 					actual, err := transcript.HashChain4(preceding)
 					if err != nil || actual.Cmp(expected) != 0 {
-						return nil, ErrIndexerNotReady
+						return nil, notReady("indexer_previous_batch_hash_not_ready")
 					}
 					preceding = nil
 				}
@@ -276,12 +278,12 @@ func (r *Resolver) resolveBatch(ctx context.Context, data []byte) (result *Resol
 			checkpointed = true
 			replayed += limit
 			if replayed >= 4096 && next < request.AnchorIndex {
-				return nil, ErrIndexerNotReady
+				return nil, notReady("indexer_batch_replay_checkpointed")
 			}
 		}
 	}
 	if !anchored {
-		return nil, fmt.Errorf("missing batch anchor")
+		return nil, failure("indexer_missing_batch_anchor", "missing batch anchor")
 	}
 	// 2. The queue commitment fixes every value and its insertion order.
 	values := make([]*big.Int, len(params.NewElementValues))
@@ -290,7 +292,7 @@ func (r *Resolver) resolveBatch(ctx context.Context, data []byte) (result *Resol
 	}
 	computed, err := transcript.HashChain4(values)
 	if err != nil || computed.Cmp(chain) != 0 {
-		return nil, fmt.Errorf("indexer batch hash mismatch")
+		return nil, failure("indexer_batch_hash_mismatch", "indexer batch hash mismatch")
 	}
 	r.batch.latest = tree.fork()
 	r.batch.chains = append(slices.Clone(request.PreviousBatches), request.HashchainHash)
@@ -298,11 +300,11 @@ func (r *Resolver) resolveBatch(ctx context.Context, data []byte) (result *Resol
 	params.NewRoot = new(big.Int).Set(&root)
 	params.PublicInputHash, err = transcript.HashChain4([]*big.Int{params.OldRoot, params.NewRoot, chain, new(big.Int).SetUint64(request.StartIndex)})
 	if err != nil {
-		return nil, err
+		return nil, classifyFailure("indexer_batch_public_input_hash_failed", "cannot hash batch public inputs", err)
 	}
 	payload, err := params.MarshalJSON()
 	if err != nil {
-		return nil, err
+		return nil, failure("indexer_batch_encode_failed", "cannot encode resolved batch")
 	}
 	return &Resolved{Payload: payload, Resolution: &common.ProofResolution{
 		PublicInputHash: common.FeHex(params.PublicInputHash),

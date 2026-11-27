@@ -808,26 +808,54 @@ func keysNotReady() *Error {
 // indexedFailure keeps the resolution cause for queue redaction.
 func indexedFailure(err error) *Error {
 	var rejection *indexed.Rejection
+	var preparation *indexed.Failure
+	var rpcFailure *indexed.RPCError
+	var httpFailure *indexed.HTTPError
 	switch {
 	case errors.Is(err, indexed.ErrIndexerNotReady):
 		failure := notReady("indexer_not_ready", indexed.ErrIndexerNotReady.Error())
+		if errors.As(err, &preparation) {
+			failure.Code = preparation.Code
+		}
 		failure.cause = err
 		return failure
 	case errors.As(err, &rejection):
 		return &Error{StatusCode: http.StatusUnprocessableEntity, Code: rejection.Code, Message: rejection.Message, Detail: rejection.Detail, cause: err}
+	case errors.As(err, &preparation):
+		return &Error{StatusCode: http.StatusBadGateway, Code: preparation.Code, Message: preparation.Message, cause: err}
+	case errors.As(err, &httpFailure):
+		return &Error{StatusCode: http.StatusBadGateway, Code: fmt.Sprintf("indexer_http_%d", httpFailure.Status), Message: "Indexer HTTP request failed", Detail: map[string]string{"method": httpFailure.Method}, cause: err}
+	case errors.As(err, &rpcFailure):
+		code := fmt.Sprintf("indexer_rpc_%d", rpcFailure.Code)
+		status := http.StatusBadGateway
+		if reason := rpcFailure.Diagnostics.Code; reason != "" {
+			code = "indexer_rpc_" + reason
+			switch reason {
+			case "output_leaf_not_found", "validation_error", "invalid_pubkey":
+				status = http.StatusUnprocessableEntity
+			case "stale_slot", "minimum_context_slot", "stale_root":
+				status = http.StatusServiceUnavailable
+			}
+		}
+		failure := &Error{StatusCode: status, Code: code, Message: "Indexer RPC request failed", Detail: map[string]string{"method": rpcFailure.Method, "rpcCode": strconv.Itoa(rpcFailure.Code)}, cause: err}
+		if status == http.StatusServiceUnavailable {
+			failure.RetryAfter = notReadyRetryAfterSecs
+		}
+		return failure
 	}
-	return &Error{StatusCode: http.StatusBadGateway, Code: "indexer_unavailable", Message: "Indexer proof data is unavailable", cause: err}
+	return &Error{StatusCode: http.StatusBadGateway, Code: "indexer_unexpected_error", Message: "Indexer proof preparation failed", cause: err}
 }
 
-// indexerUnavailable reports whether an indexed failure withholds its cause,
-// which the caller then logs. A not-ready or rejected failure tells
-// the client everything the prover knows. The resolver's errors are fixed
-// strings that carry no credentials or request data, so the log may hold them.
+// Upstream failures log their safe cause and structured reason for operators.
 func indexerUnavailable(failure *Error) bool {
-	return failure.Code == "indexer_unavailable"
+	return failure.StatusCode == http.StatusBadGateway
 }
 
 func malformedBodyError(err error) *Error {
+	var failure *indexed.Failure
+	if errors.As(err, &failure) {
+		return &Error{StatusCode: http.StatusBadRequest, Code: failure.Code, Message: failure.Message}
+	}
 	return &Error{StatusCode: http.StatusBadRequest, Code: "malformed_body", Message: err.Error()}
 }
 
@@ -1178,6 +1206,8 @@ func (handler proveHandler) handleSyncProof(w http.ResponseWriter, r *http.Reque
 			if indexerUnavailable(failure) {
 				logging.Logger().Error().
 					Err(err).
+					Str("code", failure.Code).
+					Interface("detail", failure.Detail).
 					Str("circuit_type", string(meta.CircuitType)).
 					Msg("Indexer proof data unavailable")
 			}

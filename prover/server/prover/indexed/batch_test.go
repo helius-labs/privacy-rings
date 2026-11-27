@@ -369,7 +369,7 @@ func TestIndexedBatchTimeoutClassification(t *testing.T) {
 	})
 	t.Run("checkpoint", func(t *testing.T) {
 		request, _ := batchFixture(t)
-		values := make([]Hash, 110)
+		values := make([]Hash, 11)
 		tree, err := newBatchTree(40)
 		if err != nil {
 			t.Fatal(err)
@@ -377,15 +377,15 @@ func TestIndexedBatchTimeoutClassification(t *testing.T) {
 		for i := range values {
 			value := big.NewInt(int64(100 + i))
 			values[i], _ = HashField(value)
-			if i < 100 {
+			if i < 1 {
 				if err := tree.append(value, nil); err != nil {
 					t.Fatal(err)
 				}
 			}
 		}
 		root := tree.tree.Root.Value()
-		request.AnchorIndex, request.StartIndex, request.AnchorRoot = 101, 101, common.FeHex(&root)
-		request.HashchainHash = batchChain(t, values[100:])
+		request.AnchorIndex, request.StartIndex, request.AnchorRoot = 2, 2, common.FeHex(&root)
+		request.HashchainHash = batchChain(t, values[1:])
 		resolver := batchIndexer(t, values, "")
 		transport := resolver.client.Transport
 		calls := 0

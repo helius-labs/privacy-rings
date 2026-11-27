@@ -589,6 +589,8 @@ func (w *BaseQueueWorker) resolve(job *ProofJob, inputHash string) (*indexed.Res
 			if indexerUnavailable(failure) {
 				logging.Logger().Error().
 					Err(err).
+					Str("code", failure.Code).
+					Interface("detail", failure.Detail).
 					Str("job_id", job.ID).
 					Str("queue", w.queueName).
 					Msg("Indexer proof data unavailable")

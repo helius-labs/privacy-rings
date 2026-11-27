@@ -353,6 +353,18 @@ func TestResolveRejectsUnboundAndStaleProofs(t *testing.T) {
 			if errors.Is(err, ErrIndexerNotReady) != (corruption == "stale") {
 				t.Fatalf("unexpected retry classification %v", err)
 			}
+			expectedCode := map[string]string{
+				"leaf":  "indexer_nullifier_proof_binding_mismatch",
+				"path":  "indexer_proof_root_mismatch",
+				"tree":  "indexer_state_proof_binding_mismatch",
+				"root":  "indexer_nullifier_proof_binding_mismatch",
+				"count": "indexer_proof_count_mismatch",
+				"stale": "indexer_state_context_slot_not_reached",
+			}[corruption]
+			var classified *Failure
+			if !errors.As(err, &classified) || classified.Code != expectedCode {
+				t.Fatalf("failure %v, expected %s", err, expectedCode)
+			}
 			if len(resolver.permits) != 0 {
 				t.Fatal("failed resolution retained a permit")
 			}

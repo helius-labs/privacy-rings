@@ -3,7 +3,6 @@ package indexed
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"math/big"
 
 	txcircuit "github.com/helius-labs/zolana/prover/server/circuits/spp_transaction/shared"
@@ -44,7 +43,7 @@ type Prepared struct {
 
 func transferTargets(inputs []transfer.InputParams, cache transfer.CacheSelectionParams) ([]inputTarget, error) {
 	if err := cache.Validate(len(inputs)); err != nil {
-		return nil, err
+		return nil, classifyFailure("indexer_invalid_cache_selection", "invalid cache selection", err)
 	}
 	result := make([]inputTarget, len(inputs))
 	for index := range inputs {
@@ -69,7 +68,7 @@ func transferTargets(inputs []transfer.InputParams, cache transfer.CacheSelectio
 func decodePrepared(request Request) (*Prepared, error) {
 	for _, tree := range request.Trees {
 		if tree.Fallback != nil {
-			return nil, fmt.Errorf("unexpected fallback roots")
+			return nil, failure("indexer_unexpected_fallback_roots", "unexpected fallback roots")
 		}
 	}
 	var prepared struct {
@@ -83,10 +82,10 @@ func decodePrepared(request Request) (*Prepared, error) {
 	case common.TransferConfidentialCircuitType, common.TransferRingCircuitType, common.TransferRingAuthorityCircuitType:
 		var value transfer.TransferParameters
 		if json.Unmarshal(request.Prepared, &value) != nil {
-			return nil, fmt.Errorf("invalid prepared transfer")
+			return nil, failure("indexer_invalid_prepared_transfer", "invalid prepared transfer")
 		}
 		if int(value.NInputs) != len(value.Inputs) || int(value.NOutputs) != len(value.Outputs) {
-			return nil, fmt.Errorf("prepared counts mismatch")
+			return nil, failure("indexer_prepared_counts_mismatch", "prepared counts mismatch")
 		}
 		shape.Inputs, shape.Outputs = value.NInputs, value.NOutputs
 		inputs, err := transferTargets(value.Inputs, value.Cache)
@@ -97,10 +96,10 @@ func decodePrepared(request Request) (*Prepared, error) {
 	case common.TransferConfidentialEddsaCircuitType:
 		var value transfer.ConfidentialEddsaTransferParameters
 		if json.Unmarshal(request.Prepared, &value) != nil {
-			return nil, fmt.Errorf("invalid prepared confidential EdDSA transfer")
+			return nil, failure("indexer_invalid_prepared_confidential_eddsa_transfer", "invalid prepared confidential EdDSA transfer")
 		}
 		if int(value.NInputs) != len(value.Inputs) || int(value.NOutputs) != len(value.Outputs) {
-			return nil, fmt.Errorf("prepared counts mismatch")
+			return nil, failure("indexer_prepared_counts_mismatch", "prepared counts mismatch")
 		}
 		shape.Inputs, shape.Outputs = value.NInputs, value.NOutputs
 		inputs, err := transferTargets(value.Inputs, value.Cache)
@@ -111,10 +110,10 @@ func decodePrepared(request Request) (*Prepared, error) {
 	case common.TransferAnonymousRingEddsaCircuitType:
 		var value transfer.AnonymousEddsaTransferParameters
 		if json.Unmarshal(request.Prepared, &value) != nil {
-			return nil, fmt.Errorf("invalid prepared EdDSA transfer")
+			return nil, failure("indexer_invalid_prepared_eddsa_transfer", "invalid prepared EdDSA transfer")
 		}
 		if int(value.NInputs) != len(value.Inputs) || int(value.NOutputs) != len(value.Outputs) {
-			return nil, fmt.Errorf("prepared counts mismatch")
+			return nil, failure("indexer_prepared_counts_mismatch", "prepared counts mismatch")
 		}
 		shape.Inputs, shape.Outputs = value.NInputs, value.NOutputs
 		inputs, err := transferTargets(value.Inputs, value.Cache)
@@ -125,7 +124,7 @@ func decodePrepared(request Request) (*Prepared, error) {
 	case common.MergeCircuitType, common.MergeRingCircuitType:
 		var value merge.MergeParameters
 		if json.Unmarshal(request.Prepared, &value) != nil {
-			return nil, fmt.Errorf("invalid prepared merge")
+			return nil, failure("indexer_invalid_prepared_merge", "invalid prepared merge")
 		}
 		shape.Inputs, shape.Outputs = uint32(len(value.Inputs)), 1
 		inputs := make([]inputTarget, len(value.Inputs))
@@ -143,10 +142,10 @@ func decodePrepared(request Request) (*Prepared, error) {
 		}
 		prepared.value, prepared.inputs, prepared.slots, prepared.hash = &value, inputs, &value.TreeSlots, &value.PublicInputHash
 	default:
-		return nil, fmt.Errorf("unsupported indexed circuit")
+		return nil, failure("indexer_unsupported_indexed_circuit", "unsupported indexed circuit")
 	}
 	if !shape.Supported() || len(prepared.inputs) != len(request.Inputs) || len(prepared.inputs) == 0 || len(*prepared.slots) != 0 || (*prepared.hash).Sign() != 0 {
-		return nil, fmt.Errorf("invalid prepared shape")
+		return nil, failure("indexer_invalid_prepared_shape", "invalid prepared shape")
 	}
 	// Inputs from different trees may interleave, so a dummy only needs an
 	// earlier input to have opened the tree it names.
@@ -159,23 +158,23 @@ func decodePrepared(request Request) (*Prepared, error) {
 	for index, input := range prepared.inputs {
 		lookup := request.Inputs[index]
 		if input.cached && (input.dummy || request.CircuitType == common.TransferRingAuthorityCircuitType) {
-			return nil, fmt.Errorf("invalid cached input")
+			return nil, failure("indexer_invalid_cached_input", "invalid cached input")
 		}
 		if input.dummy && !deposit && (int(lookup.TreeSlot) >= len(opened) || !opened[lookup.TreeSlot]) {
-			return nil, fmt.Errorf("input tree starts with a dummy")
+			return nil, failure("indexer_input_tree_starts_with_a_dummy", "input tree starts with a dummy")
 		}
 		if input.slot == nil || !input.slot.IsUint64() || input.slot.Uint64() != uint64(lookup.TreeSlot) || int(lookup.TreeSlot) >= len(request.Trees) || (input.dummy || input.cached || input.address) != (lookup.Commitment == nil) {
-			return nil, fmt.Errorf("input lookup mismatch")
+			return nil, failure("indexer_input_lookup_mismatch", "input lookup mismatch")
 		}
 		opened[lookup.TreeSlot] = true
 		if len(*input.State) != 0 || len(*input.Exclusion) != 0 || (*input.StateIndex).Sign() != 0 || (*input.ExclusionIndex).Sign() != 0 || (*input.Low).Sign() != 0 || (*input.High).Sign() != 0 {
-			return nil, fmt.Errorf("prepared request contains indexer data")
+			return nil, failure("indexer_prepared_request_contains_indexer_data", "prepared request contains indexer data")
 		}
 		// Compact padding publishes nullifier 0 but proves non-inclusion of its
 		// derived dummy nullifier, which the lookup carries.
 		compact := input.dummy && input.Nullifier.Sign() == 0
 		if compact != (lookup.Nullifier != nil) {
-			return nil, fmt.Errorf("input lookup mismatch")
+			return nil, failure("indexer_input_lookup_mismatch", "input lookup mismatch")
 		}
 		if compact {
 			nullifier, err := lookup.Nullifier.Field()

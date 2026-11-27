@@ -52,11 +52,11 @@ func indexedTransferRequest(t *testing.T) []byte {
 
 func decodeError(t *testing.T, response *httptest.ResponseRecorder) map[string]string {
 	t.Helper()
-	var body map[string]string
+	var body struct{ Code, Message string }
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatalf("error body %q is not JSON", response.Body.String())
 	}
-	return body
+	return map[string]string{"code": body.Code, "message": body.Message}
 }
 
 func TestIndexedFailureCodes(t *testing.T) {
@@ -70,7 +70,9 @@ func TestIndexedFailureCodes(t *testing.T) {
 	}{
 		{indexed.ErrIndexerNotReady, http.StatusServiceUnavailable, "indexer_not_ready", notReadyRetryAfterSecs, ""},
 		{fmt.Errorf("resolve: %w", rejection), http.StatusUnprocessableEntity, "subject_missing", 0, "s"},
-		{errors.New("upstream detail"), http.StatusBadGateway, "indexer_unavailable", 0, ""},
+		{errors.New("upstream detail"), http.StatusBadGateway, "indexer_unexpected_error", 0, ""},
+		{fmt.Errorf("resolve: %w", &indexed.Failure{Code: "indexer_request_timeout", Message: "indexer request timed out"}), http.StatusBadGateway, "indexer_request_timeout", 0, ""},
+		{&indexed.HTTPError{Status: http.StatusServiceUnavailable, Method: "getMerkleProofs"}, http.StatusBadGateway, "indexer_http_503", 0, ""},
 	}
 	for _, c := range cases {
 		failure := indexedFailure(c.err)
@@ -217,8 +219,7 @@ func failingPhoton(t *testing.T) *indexed.Resolver {
 	return resolver
 }
 
-// A client told indexer_unavailable cannot see why, so the log line has to
-// carry the resolver's error, next to the job on the queue path.
+// Clients get a structured reason; logs retain the safe cause and queue job.
 func TestIndexerUnavailableLogsCause(t *testing.T) {
 	const cause = "indexer response status 500"
 
@@ -229,7 +230,7 @@ func TestIndexerUnavailableLogsCause(t *testing.T) {
 		runOneJob(t, rq, "zk_transfer_queue", WorkerConfig{Indexer: failingPhoton(t)}, &ProofJob{ID: "job-1", Indexed: true, Payload: indexedTransferRequest(t)})
 
 		assertCauseLoggedOnceWithJob(t, logs, cause, "job-1")
-		assertClientSees(t, rq, "job-1", errIndexedProof.Error(), "indexer_unavailable")
+		assertClientSees(t, rq, "job-1", errIndexedProof.Error(), "indexer_http_500")
 	})
 
 	t.Run("sync", func(t *testing.T) {
@@ -241,7 +242,7 @@ func TestIndexerUnavailableLogsCause(t *testing.T) {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/prove/indexed", bytes.NewReader(indexedTransferRequest(t))))
 
-		if body := decodeError(t, response); response.Code != http.StatusBadGateway || body["code"] != "indexer_unavailable" || bytes.Contains(response.Body.Bytes(), []byte(cause)) {
+		if body := decodeError(t, response); response.Code != http.StatusBadGateway || body["code"] != "indexer_http_500" || bytes.Contains(response.Body.Bytes(), []byte(cause)) {
 			t.Errorf("client sees %d %v", response.Code, body)
 		}
 		if logged := len(logLinesMentioning(t, logs, cause)); logged != 1 {
