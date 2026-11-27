@@ -1,6 +1,9 @@
 //! Confidential plaintext with the Poseidon KDF and AES-256-CTR.
 //! The KDF selects encryption only; it does not establish proof verification.
 
+// TODO: Add a separate full-mint plaintext scheme for applications that cannot
+// bind compact asset IDs to their registered mints in the verified flow.
+
 use spr_keypair::{constants::SALT_LEN, EncryptionMode, ViewingKey};
 
 use super::confidential::{ConfidentialCodec, ConfidentialOutputPlaintext};
