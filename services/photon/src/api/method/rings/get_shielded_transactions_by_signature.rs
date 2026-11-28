@@ -5,7 +5,6 @@ use crate::common::bind_sql_value;
 use crate::common::indexer_context::{extract as extract_context, newest_unpaused_tree_id};
 use sea_orm::{
     ConnectionTrait, DatabaseConnection, DatabaseTransaction, FromQueryResult, Statement,
-    TransactionTrait,
 };
 use solana_signature::SIGNATURE_BYTES;
 use spr_indexer_api::{
@@ -19,8 +18,7 @@ pub async fn get_shielded_transactions_by_signature(
 ) -> Result<GetShieldedTransactionsBySignatureResponse, PhotonApiError> {
     let context = extract_context(conn).await?;
     let output_tree_id = newest_unpaused_tree_id(conn).await?;
-    let tx = conn.begin().await?;
-    crate::api::set_transaction_isolation_if_needed(&tx).await?;
+    let tx = crate::api::begin_read_transaction(conn).await?;
 
     let signature = request.tx_signature.0.into();
     let matched_txs = fetch_rings_transactions_by_signature(&tx, signature).await?;

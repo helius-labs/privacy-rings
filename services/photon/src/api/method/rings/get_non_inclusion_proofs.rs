@@ -11,10 +11,7 @@ use crate::ingester::persist::indexed_merkle_tree::{
     get_multiple_indexed_exclusion_ranges_with_custom_empty_proofs,
     get_zeroeth_nullifier_exclusion_range,
 };
-use sea_orm::{
-    ColumnTrait, DatabaseConnection, DatabaseTransaction, EntityTrait, QueryFilter,
-    TransactionTrait,
-};
+use sea_orm::{ColumnTrait, DatabaseConnection, DatabaseTransaction, EntityTrait, QueryFilter};
 use spr_indexer_api::{
     GetNonInclusionProofsRequest, GetNonInclusionProofsResponse, Hash, SerializablePubkey,
 };
@@ -26,8 +23,7 @@ pub async fn get_non_inclusion_proofs(
     validate_proof_leaves(&request.leaves)?;
 
     let context = extract_context(conn).await?;
-    let tx = conn.begin().await?;
-    crate::api::set_transaction_isolation_if_needed(&tx).await?;
+    let tx = crate::api::begin_read_transaction(conn).await?;
 
     let tree_info = get_tree_info(&tx, request.tree_account).await?;
     let tree_bytes = request.tree_account.to_bytes_vec();

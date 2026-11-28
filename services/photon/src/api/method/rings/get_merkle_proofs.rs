@@ -9,7 +9,7 @@ use crate::common::indexer_context::extract as extract_context;
 use crate::common::rings_tree::RingsTreeKind;
 use crate::ingester::persist::get_multiple_compressed_leaf_proofs_by_indices_with_height;
 use crate::rpc::RpcClient;
-use sea_orm::{DatabaseConnection, TransactionTrait};
+use sea_orm::DatabaseConnection;
 use spr_indexer_api::{GetMerkleProofsRequest, GetMerkleProofsResponse};
 
 pub async fn get_merkle_proofs(
@@ -21,8 +21,7 @@ pub async fn get_merkle_proofs(
     validate_proof_leaves(&request.leaves)?;
 
     let context = extract_context(conn).await?;
-    let tx = conn.begin().await?;
-    crate::api::set_transaction_isolation_if_needed(&tx).await?;
+    let tx = crate::api::begin_read_transaction(conn).await?;
 
     let tree_account = request.tree_account;
     let tree_info = get_tree_info(&tx, tree_account).await?;

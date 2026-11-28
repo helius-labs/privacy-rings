@@ -1,10 +1,7 @@
 use crate::api::error::PhotonApiError;
 use crate::common::indexer_context::extract as extract_context;
 use crate::dao::generated::rings_tx_nullifiers;
-use sea_orm::{
-    ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
-    TransactionTrait,
-};
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use spr_indexer_api::{
     GetNullifierQueueElementsRequest, GetNullifierQueueElementsResponse, Hash,
     NullifierQueueElement,
@@ -22,8 +19,7 @@ pub async fn get_nullifier_queue_elements(
     request: GetNullifierQueueElementsRequest,
 ) -> Result<GetNullifierQueueElementsResponse, PhotonApiError> {
     let context = extract_context(conn).await?;
-    let tx = conn.begin().await?;
-    crate::api::set_transaction_isolation_if_needed(&tx).await?;
+    let tx = crate::api::begin_read_transaction(conn).await?;
 
     let tree_bytes = request.tree_account.to_bytes_vec();
     let start_seq = i64::try_from(request.start_seq).map_err(|_| {

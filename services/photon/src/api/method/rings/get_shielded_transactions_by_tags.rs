@@ -11,7 +11,7 @@ use crate::common::bind_sql_value;
 use crate::common::indexer_context::{extract as extract_context, newest_unpaused_tree_id};
 use sea_orm::{
     ConnectionTrait, DatabaseBackend, DatabaseConnection, DatabaseTransaction, FromQueryResult,
-    Statement, TransactionTrait, Value,
+    Statement, Value,
 };
 use solana_pubkey::Pubkey;
 use spr_indexer_api::{
@@ -128,8 +128,7 @@ async fn get_shielded_transactions(
     conn: &DatabaseConnection,
     query: RingsQuery<'_>,
 ) -> Result<GetShieldedTransactionsByTagsResponse, PhotonApiError> {
-    let tx = conn.begin().await?;
-    crate::api::set_transaction_isolation_if_needed(&tx).await?;
+    let tx = crate::api::begin_read_transaction(conn).await?;
     let context = extract_context(&tx).await?;
     require_context(context.slot, &query.page)?;
     let output_tree_id = newest_unpaused_tree_id(&tx).await?;

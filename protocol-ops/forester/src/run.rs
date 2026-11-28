@@ -191,7 +191,22 @@ pub fn run(config: &ForesterConfig, opts: RunOptions) -> Result<()> {
         // Liveness. Without this, "is the forester running?" is only answerable
         // by reading logs.
         crate::metrics::mark_run();
-        report_queue_and_balance(&rpc_url, &member, opts.tree);
+        let ready = report_queue_and_balance(&rpc_url, &member, opts.tree);
+
+        let before = submitted_total.load(Ordering::Relaxed);
+        let remaining = opts.max_batches.map(|max| max.saturating_sub(before));
+        if matches!(remaining, Some(0)) {
+            tracing::info!(submitted_total = before, "reached --max-batches cap");
+            break;
+        }
+
+        // While watching an empty ready queue, the batch prover scales to zero
+        // on the report above. Avoid probing it (and recording false
+        // `prover_unavailable` failures) until at least one zkp-batch is ready.
+        if should_idle_watch(opts.watch, ready) {
+            thread::sleep(Duration::from_secs(opts.poll_secs));
+            continue;
+        }
 
         // A prover on another proving-key set would burn a batch proof that the
         // program's verifying key then rejects; refuse it before draining. The
@@ -223,13 +238,6 @@ pub fn run(config: &ForesterConfig, opts: RunOptions) -> Result<()> {
                     continue;
                 }
             }
-        }
-
-        let before = submitted_total.load(Ordering::Relaxed);
-        let remaining = opts.max_batches.map(|max| max.saturating_sub(before));
-        if matches!(remaining, Some(0)) {
-            tracing::info!(submitted_total = before, "reached --max-batches cap");
-            break;
         }
 
         let outcome = drain_once(
@@ -316,19 +324,25 @@ fn wait_or_fail(opts: &RunOptions, err: anyhow::Error) -> Result<()> {
     Ok(())
 }
 
+/// Whether a watching forester should sleep without probing the prover or
+/// running a drain pass. Returns `true` only when `--watch` is enabled and the
+/// latest on-chain snapshot confirmed zero ready zkp-batches; one-shot runs
+/// still run startup checks so misconfiguration fails fast, and an unavailable
+/// RPC snapshot still falls through so `drain_once` surfaces `rpc_unavailable`.
+fn should_idle_watch(watch: bool, ready: Option<u64>) -> bool {
+    watch && ready == Some(0)
+}
+
 /// Publish queue depth, queue capacity, and payer balance for this iteration.
+///
+/// Returns the observed ready zkp-batch count when the tree snapshot was read,
+/// or `None` if the RPC read failed.
 ///
 /// Metrics are observability: a failure here is logged and skipped rather than
 /// propagated, so a metrics problem can never stop the queue draining.
-///
-/// This re-reads the tree account that `drain_once` will read again, costing one
-/// extra `getAccountInfo` per poll interval. That is deliberate: reporting from
-/// inside the drain path would skip publication on exactly the iterations that
-/// fail, which are the ones worth observing. At a seconds-scale poll interval the
-/// duplicate read is negligible next to proving.
-fn report_queue_and_balance(rpc_url: &str, member: &Keypair, tree: Pubkey) {
+fn report_queue_and_balance(rpc_url: &str, member: &Keypair, tree: Pubkey) -> Option<u64> {
     let tree_label = tree.to_string();
-    match read_snapshot(rpc_url, tree) {
+    let ready = match read_snapshot(rpc_url, tree) {
         Ok(snapshot) => {
             // `pending_queued` counts elements inserted into the pending batch, so
             // the denominator is that batch's element capacity. Both come from the
@@ -349,9 +363,13 @@ fn report_queue_and_balance(rpc_url: &str, member: &Keypair, tree: Pubkey) {
                 snapshot.ready,
                 snapshot.already_applied,
             );
+            Some(snapshot.ready)
         }
-        Err(err) => tracing::debug!(%err, "metrics: tree snapshot unavailable"),
-    }
+        Err(err) => {
+            tracing::debug!(%err, "metrics: tree snapshot unavailable");
+            None
+        }
+    };
 
     let rpc = RpcClient::new(rpc_url.to_string());
     match rpc.get_balance(&member.pubkey()) {
@@ -360,6 +378,8 @@ fn report_queue_and_balance(rpc_url: &str, member: &Keypair, tree: Pubkey) {
         }
         Err(err) => tracing::debug!(%err, "metrics: payer balance unavailable"),
     }
+
+    ready
 }
 
 /// Read the nullifier tree's batch state and the ready zkp-batches' hash chains.
@@ -1151,5 +1171,15 @@ mod tests {
         }
         let (_, last_new) = built.last().unwrap();
         assert_eq!(*last_new, full.root());
+    }
+
+    #[test]
+    fn watch_mode_idles_only_when_queue_confirmed_empty() {
+        assert!(should_idle_watch(true, Some(0)));
+        assert!(!should_idle_watch(true, Some(1)));
+        assert!(!should_idle_watch(true, None));
+        assert!(!should_idle_watch(false, Some(0)));
+        assert!(!should_idle_watch(false, Some(1)));
+        assert!(!should_idle_watch(false, None));
     }
 }

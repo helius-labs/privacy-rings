@@ -4,25 +4,26 @@ pub mod root_index_cache;
 pub mod rpc_server;
 pub mod service;
 
-use sea_orm::{ConnectionTrait, DatabaseBackend, DatabaseTransaction, Statement};
+use sea_orm::{
+    AccessMode, ConnectionTrait, DatabaseBackend, DatabaseConnection, DatabaseTransaction,
+    IsolationLevel, TransactionTrait,
+};
 
-/// Helper function to set transaction isolation level for Postgres.
-/// In test environments, this can be disabled by setting PHOTON_SKIP_ISOLATION_LEVEL=true
-/// to avoid read-after-write visibility issues in tests.
-pub async fn set_transaction_isolation_if_needed(
-    tx: &DatabaseTransaction,
-) -> Result<(), sea_orm::DbErr> {
-    if tx.get_database_backend() == DatabaseBackend::Postgres {
-        // Skip isolation level setting in test environments
-        if std::env::var("PHOTON_SKIP_ISOLATION_LEVEL").is_ok() {
-            return Ok(());
-        }
-
-        tx.execute(Statement::from_string(
-            tx.get_database_backend(),
-            "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;".to_string(),
-        ))
-        .await?;
+/// Begin a read transaction with `REPEATABLE READ` + `READ ONLY` on Postgres.
+/// In test environments, `PHOTON_SKIP_ISOLATION_LEVEL` disables the isolation
+/// level override to avoid read-after-write visibility issues.
+pub async fn begin_read_transaction(
+    conn: &DatabaseConnection,
+) -> Result<DatabaseTransaction, sea_orm::DbErr> {
+    if conn.get_database_backend() == DatabaseBackend::Postgres
+        && std::env::var("PHOTON_SKIP_ISOLATION_LEVEL").is_err()
+    {
+        conn.begin_with_config(
+            Some(IsolationLevel::RepeatableRead),
+            Some(AccessMode::ReadOnly),
+        )
+        .await
+    } else {
+        conn.begin().await
     }
-    Ok(())
 }
