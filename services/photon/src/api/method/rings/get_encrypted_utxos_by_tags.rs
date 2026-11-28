@@ -8,7 +8,7 @@ use crate::common::bind_sql_value;
 use crate::common::indexer_context::{extract as extract_context, newest_unpaused_tree_id};
 use sea_orm::{
     ConnectionTrait, DatabaseBackend, DatabaseConnection, DatabaseTransaction, FromQueryResult,
-    Statement, TransactionTrait, Value,
+    Statement, Value,
 };
 use solana_pubkey::Pubkey;
 use spr_indexer_api::{
@@ -42,8 +42,7 @@ pub async fn get_encrypted_utxos_by_tags(
         filters: request.filters,
         min_context_slot: request.min_context_slot,
     };
-    let tx = conn.begin().await?;
-    crate::api::set_transaction_isolation_if_needed(&tx).await?;
+    let tx = crate::api::begin_read_transaction(conn).await?;
     let context = extract_context(&tx).await?;
     require_context(context.slot, &page)?;
     let output_tree_id = newest_unpaused_tree_id(&tx).await?;

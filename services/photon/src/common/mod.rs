@@ -115,12 +115,41 @@ pub fn setup_logging(logging_format: LoggingFormat) {
     }
 }
 
-pub async fn setup_pg_pool(database_url: &str, max_connections: u32) -> Result<PgPool> {
+const IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS: &str = "60000";
+
+fn pg_connect_options(database_url: &str) -> Result<PgConnectOptions> {
     let options: PgConnectOptions = database_url
         .parse()
         .context("Failed to parse Postgres database URL")?;
+    Ok(options.options([(
+        "idle_in_transaction_session_timeout",
+        IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS,
+    )]))
+}
+
+pub async fn setup_pg_pool(database_url: &str, max_connections: u32) -> Result<PgPool> {
+    let options = pg_connect_options(database_url)?;
     PgPoolOptions::new()
         .max_connections(max_connections)
+        // Guard against leaked open transactions caused by future cancellation in
+        // sqlx-postgres / sea-orm (e.g. a cancelled BEGIN before transaction_depth
+        // increments, or DatabaseTransaction::drop failing try_lock). Returning
+        // Ok(false) (or Err on an aborted transaction) closes and discards the
+        // dirty connection rather than returning it to the pool.
+        .after_release(|conn, _meta| {
+            Box::pin(async move {
+                let in_transaction: bool =
+                    sqlx::query_scalar("SELECT transaction_timestamp() < statement_timestamp()")
+                        .persistent(false)
+                        .fetch_one(conn)
+                        .await?;
+                if in_transaction {
+                    log::warn!("Discarding Postgres connection released with an open transaction");
+                    return Ok(false);
+                }
+                Ok(true)
+            })
+        })
         .connect_with(options)
         .await
         .context("Failed to connect to Postgres database")
@@ -153,5 +182,34 @@ pub fn bind_sql_value(
     match database_backend {
         DatabaseBackend::Postgres => format!("${}", params.len()),
         DatabaseBackend::Sqlite | DatabaseBackend::MySql => "?".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pg_connect_options_sets_idle_in_transaction_timeout() {
+        let opts = pg_connect_options("postgres://photon:secret@localhost:5432/photon").unwrap();
+        let debug = format!("{opts:?}");
+        assert!(
+            debug.contains("-c idle_in_transaction_session_timeout=60000"),
+            "expected idle_in_transaction_session_timeout option in {debug}"
+        );
+    }
+
+    #[test]
+    fn pg_connect_options_preserves_existing_url_options() {
+        let opts = pg_connect_options(
+            "postgres://photon:secret@localhost:5432/photon?options=-c%20statement_timeout%3D5000",
+        )
+        .unwrap();
+        let debug = format!("{opts:?}");
+        assert!(debug.contains("-c statement_timeout=5000"), "got {debug}");
+        assert!(
+            debug.contains("-c idle_in_transaction_session_timeout=60000"),
+            "got {debug}"
+        );
     }
 }
